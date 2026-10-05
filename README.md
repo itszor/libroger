@@ -141,7 +141,7 @@ Implemented:
 
 Not implemented (yet): text rendering, a visible desktop, modes other than
 the 50Hz Archimedes ones (MODE 28, RISC OS 3.5 mode selectors), most OS_CLI
-commands, sound tuning (Sound_Tuning, *Tuning), FIQs.
+commands, FIQs.
 
 Files
 -----

@@ -30,7 +30,10 @@
  * or detached from a channel, Install when it is installed. SCCB layout:
  * +0 amplitude, +1 voice, +3 flags, +4 pitch (the 16-bit increment added
  * to the top of a 32-bit phase accumulator per sample; 256-byte cycles),
- * +12 duration in 5cs units; the rest is the voice's. */
+ * +12 duration as a number of buffer fills; the rest is the voice's. As in
+ * RISC OS, the channel handler doesn't count durations down: a voice that
+ * honours them decrements +12 itself and stops (sample voices commonly
+ * ignore it and play the whole sample). */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +54,8 @@ static int16_t snd_linear[128];
 static uint32_t snd_voice[33];            /* installed voice generators, by slot */
 static uint8_t snd_attached[8];           /* voice slot per channel */
 static int snd_gate[8];                   /* 1 gate on pending, -1 gate off pending */
-static int snd_duration[8];               /* remaining 5cs units, -1 = until released */
+#define DEFAULT_TUNING 0x6AB0                /* the master pitch: &4000 is middle C */
+static uint32_t snd_tuning = DEFAULT_TUNING;
 
 static void voice_call(int c, uint32_t entry, uint32_t buf, uint32_t len)
 {
@@ -118,14 +122,9 @@ static void channel_fill(uint32_t buf, uint32_t len)
     }
 }
 
-/* every centisecond: Sound_Control durations count down in 5cs units */
+/* every centisecond (durations are the voices' business: see above) */
 void sound_tick(void)
 {
-    static int cs5;
-    if (++cs5 < 5) return;
-    cs5 = 0;
-    for (int c = 0; c < 8; c++)
-        if (snd_duration[c] > 0 && --snd_duration[c] == 0) snd_gate[c] = -1;
 }
 
 static void sound_dma_fill(void)
@@ -187,14 +186,15 @@ void roger_log_sound_swi(uint32_t b)
     ev(name, fmts[nargs], R[0], R[1], R[2], R[3], R[4]);
 }
 
-/* Sound_Pitch: 15-bit pitch (&4000 = middle C, 4096 per octave) to the
- * phase accumulator step for a 256-sample wavetable. The OS's pitch table
- * is for the default 48us sample period: at other periods the same steps
- * are taken per (slower or faster) sample (e.g. Galactic Dan's 96us: its
+/* Sound_Pitch: 15-bit pitch (&4000 = middle C at the default tuning, 4096
+ * per octave; the tuning, *Tuning / Sound_Tuning, is added) to the phase
+ * accumulator step for a 256-sample wavetable. The OS's pitch table is for
+ * the default 48us sample period: at other periods the same steps are
+ * taken per (slower or faster) sample (e.g. Galactic Dan's 96us: its
  * notes' durations match their samples' lengths only that way). */
 static uint32_t pitch_step(uint32_t p)
 {
-    double hz = 261.6256 * pow(2.0, ((double)p - 0x4000) / 4096.0);
+    double hz = 261.6256 * pow(2.0, ((double)p + (int)snd_tuning - DEFAULT_TUNING - 0x4000) / 4096.0);
     return (uint32_t)(hz * 256.0 * 48e-6 * 4294967296.0 / 256.0);
 }
 
@@ -202,7 +202,8 @@ static uint32_t pitch_step(uint32_t p)
  * the amplitude of the sound already playing, no new note), or -15..0 as
  * in BBC BASIC's SOUND; anything else changes nothing. Pitch: &100-&7FFF
  * (&4000 middle C, 4096 per octave) or 0-255 as BBC BASIC's (53 middle C,
- * 48 per octave). Duration in 5cs units; &FF and above until released. */
+ * 48 per octave). Duration in 5cs units, &FF forever; stored in the SCCB
+ * as buffer fills. */
 static void control(int chan, int32_t amp, uint32_t pitch, uint32_t dur)
 {
     if (chan < 1 || chan > 8) return;
@@ -217,8 +218,11 @@ static void control(int chan, int32_t amp, uint32_t pitch, uint32_t dur)
     MEM[sccb + 1] = snd_attached[c];
     uint32_t p = pitch >= 0x100 ? pitch & 0x7FFF : (uint32_t)(0x4000 + ((int)pitch - 53) * 4096 / 48);
     WR32(sccb + 4, pitch_step(p) >> 16);           /* the 16-bit phase increment */
-    snd_duration[c] = (dur & 0xFFFF) >= 0xFF ? -1 : (int)(dur & 0xFF);
-    WR32(sccb + 12, dur);
+    if (dur == 0xFF) WR32(sccb + 12, 0x7FFFFFFF);
+    else if (dur) {
+        uint64_t fills = (uint64_t)dur * 50000 / ((uint64_t)snd_samples * snd_period);
+        WR32(sccb + 12, fills > 0x7FFFFFFF ? 0x7FFFFFFF : (uint32_t)fills);
+    }
     snd_gate[c] = dur ? 1 : -1;                    /* the voice applies the amplitude */
 }
 
@@ -251,6 +255,16 @@ static int sound_impl(uint32_t b)
     }
     case 0x40143: R[0] = 2; return 1;      /* Sound_Speaker */
     case 0x40180: R[0] = 127; return 1;    /* Sound_Volume */
+    case 0x40181:                          /* Sound_SoundLog: 32-bit signed linear -> VIDC log
+                                              (top 13 bits through the linear-to-log table; e.g.
+                                              sample voices converting their samples at init) */
+        if (!MEM[LOG_SCALE + 255]) tables_init();
+        R[0] = MEM[LIN_TO_LOG + ((R[0] >> 19) & 0x1FFF)];
+        return 1;
+    case 0x40182:                          /* Sound_LogScale: log amplitude scaled by the volume */
+        if (!MEM[LOG_SCALE + 255]) tables_init();
+        R[0] = (R[0] & ~0xFEu) | MEM[LOG_SCALE + (R[0] & 0xFE)];
+        return 1;
     case 0x401C0: return 1;                /* Sound_QInit */
     case 0x40183: {                        /* Sound_InstallVoice: R0 header, R1 slot (0: any free) */
         uint32_t slot = R[1];
@@ -271,6 +285,12 @@ static int sound_impl(uint32_t b)
         uint32_t old = snd_attached[c];
         if (R[1] && R[1] <= 32) attach(c, R[1]);
         R[1] = old;
+        return 1;
+    }
+    case 0x40187: {                        /* Sound_Tuning: R0 0 read, else the new master pitch */
+        uint32_t old = snd_tuning;
+        if (R[0] & 0xFFFF) snd_tuning = R[0] & 0xFFFF;
+        R[0] = old;
         return 1;
     }
     case 0x40188:                          /* Sound_Pitch */

@@ -5,8 +5,8 @@
  * line is GSTrans'd first (<name> expands to a variable's value, <nn> to a
  * character; an unset variable expands to nothing). Implemented: Set,
  * SetEval (string values only), Unset, If ... Then ... [Else ...], Load,
- * Save, RMLoad, RMRun, RMKill, FX. Anything else is only logged (the
- * OS_CLI event every command writes). */
+ * Save, RMLoad, RMRun, RMKill, FX, Tuning. Anything else is only logged
+ * (the OS_CLI event every command writes). */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -232,6 +232,19 @@ int cli_command(const char *line, int x)
     if ((p = word_at(s, "RMKill"))) {
         arg(&p, name, sizeof name);
         if (!modules_rmkill(name)) return cli_error(x);   /* "Module not found" */
+        return 1;
+    }
+    if ((p = word_at(s, "Tuning"))) {             /* relative to the current tuning; 0: the default */
+        p = skip(p);
+        int neg = *p == '-';
+        if (*p == '-' || *p == '+') p++;
+        long n = *p == '&' ? strtol(p + 1, NULL, 16) : strtol(p, NULL, 10);
+        uint32_t saved = R[0];
+        R[0] = 0;
+        swi(0x40187, swi_pc);                         /* Sound_Tuning: read */
+        R[0] = n ? (uint32_t)((int32_t)R[0] + (neg ? -n : n)) & 0xFFFF : 0x6AB0;
+        swi(0x40187, swi_pc);
+        R[0] = saved;
         return 1;
     }
     if ((p = word_at(s, "FX"))) {
