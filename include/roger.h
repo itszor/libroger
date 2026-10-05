@@ -84,8 +84,10 @@ struct roger_config {
 
     /* --- the machine as !Run left it */
     int initial_mode;                     /* screen mode */
-    uint32_t wimpslot;                    /* application memory: the RAM limit is &8000 + this */
-    uint32_t screen_size;                 /* total screen memory (default &14000) */
+    uint32_t wimpslot;                    /* application memory: the RAM limit is &8000 + this
+                                             (until Wimp_SlotSize changes it) */
+    uint32_t screen_size;                 /* total screen memory (default &14000; the program
+                                             may change it: OS_ChangeDynamicArea) */
     uint32_t screen_base;                 /* where screen memory starts (default: so that it
                                              ends at &2000000, as RISC OS maps it) */
     uint32_t stack;                       /* initial R13 (default: the RAM limit) */
@@ -125,6 +127,9 @@ struct roger_config {
                                              next, e.g. a closing screen); the run then ends */
     void (*finish)(void);                 /* the run is ending */
     const char *usage;                    /* extra --help text for arg() */
+    void (*wimp_idle)(void);              /* Wimp_Poll has no event to return: queue some
+                                             (roger_wimp_click() &c.), standing in for the
+                                             user at the desktop */
 };
 
 /* Parse the command line, set up the machine and run the program; does not
@@ -157,6 +162,12 @@ uint32_t roger_scratch(const char *s);                 /* copy a string into emu
                                                           small runtime buffer) for a SWI argument */
 const char *roger_getvar(const char *name);            /* a system variable (NULL if unset) */
 void roger_setvar(const char *name, const char *value);
+/* The desktop (wimp.c): events for Wimp_Poll to return, in order */
+void roger_wimp_event(uint32_t reason, const uint32_t *block, int nwords);
+void roger_wimp_click(int32_t window, int32_t icon, uint32_t buttons);   /* Mouse_Click; window -2
+                                                          is the icon bar; buttons 4 select, 2 menu */
+void roger_wimp_menu(const int *items);                /* Menu_Selection: item indices, ending -1 */
+void roger_wimp_quit(void);                            /* Message_Quit */
 void roger_audio_out(const int16_t *lr, int frames, int rate);   /* host audio (stereo) */
 extern uint32_t vidc_palette[16];                      /* live VIDC palette (0x0BGR) */
 extern uint32_t vidc_palette_top[16];                  /* palette above palette_split */

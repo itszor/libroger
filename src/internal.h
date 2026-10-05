@@ -89,6 +89,7 @@ uint32_t modevar(int mode, uint32_t v);
 int  video_os_word(uint32_t r0, uint8_t *blk);   /* OS_Word 12/21/22 */
 int  video_timer_line(uint32_t latch);    /* output line where timer 1 (started at flyback) fires */
 void video_set_bank(int which, uint32_t b);
+void video_set_screen_size(uint32_t size);   /* OS_ChangeDynamicArea 2 */
 uint32_t vidc_rgb(int line, uint8_t pixel);   /* host colour of a pixel on an output line */
 void video_default_palette(void);         /* the palette a mode change sets */
 void video_save_vdu(FILE *f);             /* the VDU stream so far */
@@ -135,6 +136,10 @@ int  cli_swi(uint32_t b, int x);
 /* swi.c */
 extern uint32_t swi_pc;
 int  pressed(int inkey);
+
+/* wimp.c: the Window Manager, the application slot, the screen's dynamic area */
+uint32_t ram_limit(void);                 /* &8000 + the application slot */
+int  wimp_swi(uint32_t b);
 
 /* host.c: the SDL front end */
 int  display_init(int scale, const char *fullscreen, int crt);   /* fullscreen: NULL, "" or "WxH[@Hz]" */

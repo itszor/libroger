@@ -11,6 +11,7 @@
  * update, OS_File save, *Save) go to savedir, mirroring their path, so the
  * extracted originals stay untouched; reads prefer a saved copy when there
  * is one. */
+#include <ctype.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
@@ -226,10 +227,70 @@ static void os_find(void)
     if (!R[0] && swi_x) VF = 1;                            /* not found: 0, or an error if asked */
 }
 
+/* OS_GBPB 9/10/12: read a directory's entries. R1 directory, R2 buffer,
+ * R3 entries wanted, R4 offset (0 first), R5 buffer size, R6 wildcarded
+ * name (0: all). Entries come in RISC OS's order (names compared without
+ * case), without the host's ",xxx" suffixes. Returns R3 entries read, R4
+ * the next offset (-1 at the end). */
+static int wild(const char *p, const char *s)
+{
+    if (!*p) return !*s;
+    if (*p == '*') return wild(p + 1, s) || (*s && wild(p, s + 1));
+    return *s && (*p == '#' || tolower((unsigned char)*p) == tolower((unsigned char)*s)) && wild(p + 1, s + 1);
+}
+static int name_cmp(const void *a, const void *b) { return strcasecmp(*(char *const *)a, *(char *const *)b); }
+
+static void gbpb_dir(uint32_t op)
+{
+    char name[1100], dir[2048], pat[256] = "*";
+    cstr(R[1], name, 1);
+    if (R[6]) cstr(R[6], pat, 1);
+    ev("OS_GBPB", "is", op, name, (int)strlen(name));
+    if (!hostpath(name, dir)) { R[3] = 0; R[4] = 0xFFFFFFFF; return; }
+    DIR *d = opendir(dir);
+    char *names[256]; int n = 0;
+    struct dirent *e;
+    while (d && (e = readdir(d)) && n < 256) {
+        if (e->d_name[0] == '.') continue;
+        names[n++] = strdup(e->d_name);
+    }
+    if (d) closedir(d);
+    qsort(names, n, sizeof *names, name_cmp);
+    uint32_t want = R[3], off = R[4], out = R[2], end = R[2] + R[5], got = 0;
+    int k;
+    for (k = 0; k < n && got < want; k++) {
+        char leaf[256], path[2400];
+        snprintf(leaf, sizeof leaf, "%s", names[k]);
+        char *comma = strchr(leaf, ',');
+        if (comma) *comma = 0;
+        for (char *c = leaf; *c; c++) if (*c == '.') *c = '/';
+        if ((uint32_t)k < off || !wild(pat, leaf)) continue;
+        snprintf(path, sizeof path, "%s/%s", dir, names[k]);
+        struct stat st;
+        int isdir = stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+        uint32_t len = strlen(leaf) + 1, rec = op == 9 ? len : ((op == 10 ? 20 : 29) + len + 3) & ~3u;
+        if (out + rec > end) break;
+        if (op != 9) {
+            uint32_t load, exec;
+            file_info(names[k], &load, &exec);
+            if (isdir) { load = 0xFFFFFD00; exec = 0; }
+            WR32(out, load); WR32(out + 4, exec); WR32(out + 8, isdir ? 0 : (uint32_t)st.st_size);
+            WR32(out + 12, 3); WR32(out + 16, isdir ? 2 : 1);                    /* attributes WR, type */
+            if (op == 12) { WR32(out + 20, 0); MEM[out + 24] = 0; memset(MEM + out + 25, 0, 4); }
+            memcpy(MEM + out + (op == 10 ? 20 : 29), leaf, len);
+        } else memcpy(MEM + out, leaf, len);
+        out += rec; got++;
+    }
+    while (k < n && (uint32_t)k < off) k++;
+    R[3] = got; R[4] = k >= n ? 0xFFFFFFFF : (uint32_t)k;
+    for (int j = 0; j < n; j++) free(names[j]);
+}
+
 static void os_gbpb(void)
 {
     FILE *f = handle(R[1]);
     uint32_t op = R[0];
+    if (op == 9 || op == 10 || op == 12) { gbpb_dir(op); return; }
     if (!f || op < 1 || op > 4) { ev("OS_GBPB", "ii", op, R[1]); if (swi_x) VF = 1; return; }
     if (op == 1 || op == 3) fseek(f, R[4], SEEK_SET);
     size_t n = op <= 2 ? fwrite(MEM + R[2], 1, R[3], f) : fread(MEM + R[2], 1, R[3], f);

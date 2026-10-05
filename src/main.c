@@ -178,7 +178,7 @@ static void run_loader_program(const char *name)
     if (n <= 0) return;
     uint32_t saved[16];
     memcpy(saved, R, sizeof R);
-    R[13] = rg->stack ? rg->stack : LOAD + rg->wimpslot; R[14] = RETURN_TO_OS; R[12] = 0;
+    R[13] = rg->stack ? rg->stack : ram_limit(); R[14] = RETURN_TO_OS; R[12] = 0;
     npc = LOAD;
     interp_only = 1;
     run_until(RETURN_TO_OS);
@@ -272,7 +272,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
     modules_load();
     if (cfg->init) cfg->init();
-    R[13] = cfg->stack ? cfg->stack : LOAD + cfg->wimpslot; R[14] = RETURN_TO_OS; R[12] = 0;
+    R[13] = cfg->stack ? cfg->stack : ram_limit(); R[14] = RETURN_TO_OS; R[12] = 0;
     npc = cfg->entry ? cfg->entry : cfg->image->base;
     recompute_irq();
     run_until(RETURN_TO_OS);

@@ -65,6 +65,9 @@ What the configuration covers (all but the image optional):
 - hooks: init, every frame, every centisecond, first look at SWIs and at
   dispatch, extra command-line arguments, the program returning to the OS
   (`exited`: what !Run does next), finish
+- the desktop, for a program that is a Wimp task: `wimp_idle` stands in
+  for the user when Wimp_Poll has nothing to return, queueing events
+  (`roger_wimp_click()`, `roger_wimp_menu()`, `roger_wimp_quit()`)
 
 Game code (hooks, or a loader written in C - e.g. a BASIC program
 translated by hand) can call SWIs and * commands with `roger_swi()` and
@@ -108,7 +111,8 @@ Implemented:
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, tints, windows,
   origin, PLOT lines/points/triangles/rectangles; VDU 21/6; no text),
   OS_SpriteOp on user areas (load, read area information, select, plot)
-- files: OS_File (load, save, catalogue), OS_Find, OS_GBPB, OS_Args,
+- files: OS_File (load, save, catalogue), OS_Find, OS_GBPB (including
+  directory listings, 9/10/12), OS_Args,
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
   `,load-exec` name suffixes, writes redirected to a save directory (and
   read back from there)
@@ -120,14 +124,24 @@ Implemented:
 - the command line: Set, SetEval, Unset, If ... Then ... Else, Load, Save,
   RMLoad, RMRun, RMKill, FX, after GSTrans (<var>); OS_ReadVarVal,
   OS_SetVarVal. Other commands are logged and ignored
+- the Wimp, without a desktop: Wimp_Initialise (version 3.16), Wimp_Poll
+  (events queued by the game's code), templates (Wimp_OpenTemplate,
+  LoadTemplate, CloseTemplate), windows, icons and menus accepted but
+  not shown, Wimp_GetPointerInfo, Wimp_ReportError (to stderr),
+  Wimp_SetMode, Wimp_CloseDown; Wimp_SlotSize (the application slot is
+  the RAM limit) and the screen's dynamic area (OS_ReadDynamicArea,
+  OS_ChangeDynamicArea 2)
 - the kernel: OS_Byte (keyboard scans, INKEY, events, Escape, banks, mode),
   OS_Word (palette, pointer, display start), OS_Mouse, OS_GetEnv,
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
   OS_ReadModeVariable, OS_ReadMonotonicTime, conversions, OS_CLI (logged),
-  modules' SWI chunks, OS_Module claims
+  modules' SWI chunks, OS_Module claims, OS_CheckModeValid,
+  OS_SWINumberFromString (no names: always an error); key transition
+  events (event 11, low-level key numbers, once a frame)
 
-Not implemented (yet): text rendering, the Wimp, most OS_CLI commands,
-keyboard events, sound tuning (Sound_Tuning, *Tuning), FIQs.
+Not implemented (yet): text rendering, a visible desktop, modes other than
+the 50Hz Archimedes ones (MODE 28, RISC OS 3.5 mode selectors), most OS_CLI
+commands, sound tuning (Sound_Tuning, *Tuning), FIQs.
 
 Files
 -----
@@ -143,6 +157,7 @@ Files
     src/files.c          files and sprite files
     src/modules.c        relocatable modules, the RMA
     src/cli.c            OS_CLI (* commands) and system variables
+    src/wimp.c           the Wimp, the application slot, the screen's dynamic area
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse
     src/main.c           start-up, command line, event log, scripts, finish

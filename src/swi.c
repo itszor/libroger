@@ -151,7 +151,7 @@ void swi(uint32_t n, uint32_t nextpc)
         memcpy(MEM + ENV_AREA, cmd, l);
         MEM[ENV_AREA + l] = 0;
         memset(MEM + ENV_AREA + 0x100, 0, 5);
-        R[0] = ENV_AREA; R[1] = LOAD + rg->wimpslot; R[2] = ENV_AREA + 0x100;
+        R[0] = ENV_AREA; R[1] = ram_limit(); R[2] = ENV_AREA + 0x100;
         return;
     }
     case 0x1C:                                   /* OS_Mouse: pointer confined to the bounding box */
@@ -178,6 +178,12 @@ void swi(uint32_t n, uint32_t nextpc)
                    WR32(o, vduvar(v)); i += 4; o += 4; }
         return;
     }
+    case 0x3F:                                   /* OS_CheckModeValid: R0 mode; -1 and C set if not */
+        if (!mode_info(R[0]) || R[0] > 127) { R[0] = 0xFFFFFFFF; CF = 1; } else CF = 0;
+        return;
+    case 0x39:                                   /* OS_SWINumberFromString: no names known */
+        VF = 1;
+        return;
     case 0x35:                                   /* OS_ReadModeVariable: R0 mode (-1 current), R1 variable */
         R[2] = modevar((int32_t)R[0] < 0 ? -1 : (int)R[0], R[1]);
         return;
@@ -187,7 +193,7 @@ void swi(uint32_t n, uint32_t nextpc)
                                      : (uint32_t)(icount / TICK_STEPS); return;
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
-    if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0)) return;
+    if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");

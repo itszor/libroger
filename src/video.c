@@ -44,7 +44,9 @@ const struct rg_mode *cur_mode(void)
     return m ? m : &modes[12];
 }
 uint32_t mode_bytes(const struct rg_mode *m) { return (uint32_t)m->width * m->height * m->bpp / 8; }
-uint32_t screen_size(void) { return rg->screen_size ? rg->screen_size : 0x14000; }
+static uint32_t screen_bytes;             /* after OS_ChangeDynamicArea */
+uint32_t screen_size(void) { return screen_bytes ? screen_bytes : rg->screen_size ? rg->screen_size : 0x14000; }
+void video_set_screen_size(uint32_t size) { screen_bytes = size; }
 uint32_t screen_base(void) { return rg->screen_base ? rg->screen_base : 0x2000000u - screen_size(); }
 uint32_t write_bank_addr(void) { return screen_base() + bank * mode_bytes(cur_mode()); }
 void video_set_bank(int which, uint32_t b) { if (which) display_bank = b; else bank = b; }

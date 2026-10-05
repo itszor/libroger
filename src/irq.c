@@ -168,6 +168,43 @@ static void centisecond(void)
     call_vector(0x1C, 0, 0);                     /* TickerV */
 }
 
+/* Event 11 (key transition): R1 0 up / 1 down, R2 the low-level key
+ * number, R3 the keyboard driver. Key states are compared once a frame;
+ * the table maps internal key numbers (INKEY -(n+1)) to low-level ones. */
+static const uint8_t lowlevel[128] = {
+    [3] = 0x4C, [4] = 0x3B, [5] = 0x5E, [6] = 0x58, [7] = 0x61, [8] = 0x60,
+    [9] = 0x70, [10] = 0x71, [11] = 0x72,
+    [16] = 0x27, [17] = 0x13, [18] = 0x14, [19] = 0x15, [20] = 0x04, [21] = 0x18, [22] = 0x07,
+    [23] = 0x1B, [25] = 0x62, [26] = 0x4A, [27] = 0x37, [28] = 0x0B, [29] = 0x0C, [30] = 0x0A,
+    [31] = 0x0E, [32] = 0x0D, [33] = 0x28, [34] = 0x29, [35] = 0x2B, [36] = 0x17, [37] = 0x2E,
+    [38] = 0x19, [39] = 0x1A, [41] = 0x63, [42] = 0x38, [43] = 0x39, [44] = 0x0F, [45] = 0x10,
+    [46] = 0x1D, [47] = 0x1E, [48] = 0x11, [49] = 0x12, [50] = 0x3E, [51] = 0x2A, [52] = 0x16,
+    [53] = 0x2D, [54] = 0x2F, [55] = 0x30, [56] = 0x31, [57] = 0x59, [58] = 0x4B, [59] = 0x3A,
+    [60] = 0x67, [61] = 0x1F, [62] = 0x20, [63] = 0x21, [64] = 0x5D, [65] = 0x3C, [66] = 0x4F,
+    [67] = 0x3F, [68] = 0x2C, [69] = 0x42, [70] = 0x43, [73] = 0x47, [74] = 0x23, [76] = 0x66,
+    [77] = 0x22, [78] = 0x36, [79] = 0x46, [81] = 0x3D, [82] = 0x50, [83] = 0x40, [84] = 0x41,
+    [85] = 0x53, [86] = 0x44, [87] = 0x45, [88] = 0x32, [89] = 0x34, [90] = 0x25, [91] = 0x24,
+    [93] = 0x1C, [96] = 0x26, [97] = 0x4E, [98] = 0x5F, [99] = 0x51, [100] = 0x52, [101] = 0x54,
+    [102] = 0x55, [103] = 0x56, [104] = 0x57, [105] = 0x35, [106] = 0x65, [107] = 0x5A,
+    [108] = 0x5C, [112] = 0x00, [113] = 0x01, [114] = 0x02, [115] = 0x03, [116] = 0x05,
+    [117] = 0x06, [118] = 0x08, [119] = 0x09, [120] = 0x33, [121] = 0x64, [122] = 0x48,
+    [123] = 0x49, [124] = 0x5B,
+};
+static void key_events(void)
+{
+    static uint8_t was[128];
+    if (!(events_enabled & (1u << 11))) return;
+    for (int k = 3; k < 128; k++) {
+        if (!lowlevel[k] && k != 112) continue;
+        /* a scripted Shift/Ctrl/Alt (internal 0-2, either side) is the left one */
+        int down = pressed(k + 1) || (!rg_interactive && k <= 5 && pressed(k - 2));
+        if (down == was[k]) continue;
+        was[k] = down;
+        uint32_t r[4] = {11, (uint32_t)down, lowlevel[k], 0};
+        call_vector(0x10, 4, r);
+    }
+}
+
 static void vsync(void)
 {
     monotonic += 2;
@@ -175,6 +212,7 @@ static void vsync(void)
     if (rg->frame) rg->frame();
     uint32_t r[2] = {4, 0};                      /* event 4: vsync */
     call_vector(0x10, 2, r);
+    key_events();
 }
 
 void rt_service(int vsync_now)
