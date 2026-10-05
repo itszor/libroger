@@ -1,8 +1,9 @@
 /* The SDL3 front end: window, keyboard and mouse.
  *
  * The screen is shown at 4:3 as on an Archimedes monitor, one texel per
- * pixel of the current mode (160, 320 or 640 by 256), coloured through
- * VIDC's palette (vidc_rgb()). Keys are tracked by RISC OS internal key
+ * pixel of the current mode (160, 320 or 640 by 256 on an Archimedes; any
+ * size on a Risc PC), coloured through VIDC's palette (vidc_rgb()) or, at
+ * 16 and 32 bits per pixel, directly (then through VIDC20's gamma tables). Keys are tracked by RISC OS internal key
  * number (INKEY -(n+1)) and typed characters go to a small key buffer.
  */
 #include <SDL3/SDL.h>
@@ -17,7 +18,7 @@ int quit_requested, escape_pressed;
 static SDL_Window *win;
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
-static int tex_w;                               /* texture is exactly the game screen: tex_w x 256 */
+static int tex_w, tex_h;                        /* texture is exactly the game screen */
 static int cur_shader = -1;                     /* display shader chain (shader.c), -1: none */
 static char shader_capture[96];                 /* screenshot: also save the shaded frame */
 static uint32_t *shader_pix;                    /* the frame as RGBA8 for the shaders */
@@ -60,7 +61,7 @@ void display_set_mouse(int x, int y)
 void display_inject_tap(int px, int py)
 {
     float wx, wy;
-    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * LW / cur_mode()->width, (py + 0.5f) * LH / 256, &wx, &wy);
+    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * LW / cur_mode()->width, (py + 0.5f) * LH / cur_mode()->height, &wx, &wy);
     SDL_Event e;
     SDL_zero(e);
     e.type = SDL_EVENT_MOUSE_MOTION; e.motion.windowID = SDL_GetWindowID(win); e.motion.x = wx; e.motion.y = wy;
@@ -222,12 +223,18 @@ int display_init(int scale, const char *fs, const char *shader)
 /* Pixel values -> host colours, for the lines above the palette split and
  * below it, rebuilt for each frame. */
 static uint32_t pal_top[256], pal_bottom[256];
+static uint32_t apply_gamma(uint32_t c)
+{
+    if (!gamma_set) return c;
+    return (uint32_t)gamma_tab[0][c >> 16 & 0xFF] << 16 | (uint32_t)gamma_tab[1][c >> 8 & 0xFF] << 8 | gamma_tab[2][c & 0xFF];
+}
 static void update_palette(void)
 {
+    if (cur_mode()->bpp > 8) return;
     int n = 1 << cur_mode()->bpp;
     for (int c = 0; c < n; c++) {
-        pal_top[c] = vidc_rgb(0, (uint8_t)c);
-        pal_bottom[c] = vidc_rgb(256, (uint8_t)c);
+        pal_top[c] = apply_gamma(vidc_rgb(0, (uint8_t)c));
+        pal_bottom[c] = apply_gamma(vidc_rgb(256, (uint8_t)c));
     }
 }
 
@@ -237,7 +244,20 @@ static void convert_line(const uint8_t *pix, int y, uint32_t *row)
     const struct rg_mode *m = cur_mode();
     const uint32_t *pal = y < palette_split ? pal_top : pal_bottom;
     const uint8_t *src = pix + (size_t)y * (m->width * m->bpp / 8);
-    int bpp = m->bpp, per = 8 / bpp, mask = (1 << bpp) - 1;
+    int bpp = m->bpp;
+    if (bpp == 32) {                              /* &00BBGGRR */
+        for (int x = 0; x < m->width; x++, src += 4)
+            row[x] = apply_gamma((uint32_t)src[0] << 16 | (uint32_t)src[1] << 8 | src[2]);
+        return;
+    }
+    if (bpp == 16) {                              /* 5 bits each, red lowest */
+        for (int x = 0; x < m->width; x++, src += 2) {
+            int v = src[0] | src[1] << 8, r = v & 31, g = v >> 5 & 31, b = v >> 10 & 31;
+            row[x] = apply_gamma((uint32_t)(r << 3 | r >> 2) << 16 | (uint32_t)(g << 3 | g >> 2) << 8 | (b << 3 | b >> 2));
+        }
+        return;
+    }
+    int per = 8 / bpp, mask = (1 << bpp) - 1;
     for (int x = 0; x < m->width; x++)
         row[x] = pal[bpp == 8 ? src[x] : (src[x / per] >> ((x % per) * bpp)) & mask];
 }
@@ -245,25 +265,28 @@ static void convert_line(const uint8_t *pix, int y, uint32_t *row)
 void display_present(const uint8_t *pix)
 {
     uint32_t *out;
-    int pitch, width = cur_mode()->width;
+    int pitch, width = cur_mode()->width, height = cur_mode()->height;
     update_palette();
-    if (width != tex_w) {                        /* one texel per game pixel */
+    if (width != tex_w || height != tex_h) {     /* one texel per game pixel */
         if (tex) SDL_DestroyTexture(tex);
-        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, 256);
+        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
         SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
-        tex_w = width;
+        tex_w = width; tex_h = height;
     }
     if (!SDL_LockTexture(tex, NULL, (void **)&out, &pitch)) return;
-    for (int y = 0; y < 256; y++) convert_line(pix, y, (uint32_t *)((uint8_t *)out + y * pitch));
+    for (int y = 0; y < height; y++) convert_line(pix, y, (uint32_t *)((uint8_t *)out + y * pitch));
     SDL_UnlockTexture(tex);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
     SDL_Texture *shaded = NULL;
     if (cur_shader >= 0) {
         /* the frame again as RGBA8 (R first in memory) for the shader's upload */
-        static int shader_w;
-        if (shader_w != width) { SDL_free(shader_pix); shader_pix = SDL_malloc((size_t)width * 256 * 4); shader_w = width; }
-        for (int y = 0; y < 256 && shader_pix; y++) {
+        static int shader_w, shader_h;
+        if (shader_w != width || shader_h != height) {
+            SDL_free(shader_pix); shader_pix = SDL_malloc((size_t)width * height * 4);
+            shader_w = width; shader_h = height;
+        }
+        for (int y = 0; y < height && shader_pix; y++) {
             uint32_t *row = shader_pix + (size_t)y * width;
             convert_line(pix, y, row);
             for (int x = 0; x < width; x++) {
@@ -274,7 +297,7 @@ void display_present(const uint8_t *pix)
         SDL_FRect vp;
         SDL_GetRenderLogicalPresentationRect(ren, &vp);
         if (shader_pix && vp.w >= 1 && vp.h >= 1)
-            shaded = shader_run(shader_pix, width, 256, (int)(vp.w + 0.5f), (int)(vp.h + 0.5f));
+            shaded = shader_run(shader_pix, width, height, (int)(vp.w + 0.5f), (int)(vp.h + 0.5f));
     }
     SDL_RenderTexture(ren, shaded ? shaded : tex, NULL, NULL);
     if (shader_capture[0]) {
@@ -374,10 +397,10 @@ void display_poll(void)
 /* save the displayed screen as BMP (F12, or --script shot) */
 void display_screenshot(const uint8_t *pix, const char *path)
 {
-    SDL_Surface *s = SDL_CreateSurface(cur_mode()->width, 256, SDL_PIXELFORMAT_XRGB8888);
+    SDL_Surface *s = SDL_CreateSurface(cur_mode()->width, cur_mode()->height, SDL_PIXELFORMAT_XRGB8888);
     if (!s) return;
     update_palette();
-    for (int y = 0; y < 256; y++) convert_line(pix, y, (uint32_t *)((uint8_t *)s->pixels + y * s->pitch));
+    for (int y = 0; y < cur_mode()->height; y++) convert_line(pix, y, (uint32_t *)((uint8_t *)s->pixels + y * s->pitch));
     SDL_SaveBMP(s, path);
     SDL_DestroySurface(s);
     if (cur_shader >= 0)                         /* the shaded frame is saved by the next present */

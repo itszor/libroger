@@ -91,6 +91,13 @@ struct roger_config {
     uint32_t screen_base;                 /* where screen memory starts (default: so that it
                                              ends at &2000000, as RISC OS maps it) */
     uint32_t stack;                       /* initial R13 (default: the RAM limit) */
+    int vidc20;                           /* a Risc PC rather than an Archimedes: VIDC20's
+                                             modes (taller ones, multisync numbered modes,
+                                             RISC OS 3.5 mode selectors, 16 and 32 bits per
+                                             pixel, gamma tables via PaletteV), and what
+                                             programs check for one - Wimp 3.50,
+                                             OS_ScreenMode, OS_Memory 8 (2MB of VRAM),
+                                             their names for OS_SWINumberFromString */
 
     /* --- interrupts */
     int irq1v;                            /* also call a handler whose address the program

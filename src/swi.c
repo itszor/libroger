@@ -112,6 +112,47 @@ static void convert(uint32_t b)
     R[0] = buf; R[1] = buf + l; R[2] = size - l - 1;
 }
 
+/* OS_SWINumberFromString: R1 the name (control-terminated) -> R0 its
+ * number. Only the names programs look up to find out what the OS can do:
+ * the RISC OS 3.5 ones exist only on a Risc PC (vidc20). */
+static void swi_number_from_string(void)
+{
+    static const struct { const char *name; uint32_t n; int ro35; } names[] = {
+        {"OS_ScreenMode", 0x65, 1}, {"OS_Memory", 0x68, 1}, {"OS_DynamicArea", 0x66, 1},
+        {"OS_ReadDynamicArea", 0x5C, 0}, {"OS_ChangeDynamicArea", 0x2A, 0},
+        {"OS_CheckModeValid", 0x3F, 0}, {"OS_ReadModeVariable", 0x35, 0},
+        {"OS_ReadVduVariables", 0x31, 0}, {"OS_SpriteOp", 0x2E, 0},
+    };
+    char s[64]; int l = 0;
+    while (l < 63 && MEM[R[1] + l] >= ' ') { s[l] = MEM[R[1] + l]; l++; }
+    s[l] = 0;
+    for (unsigned k = 0; k < sizeof names / sizeof names[0]; k++)
+        if (!strcmp(s, names[k].name) && (!names[k].ro35 || rg->vidc20)) { R[0] = names[k].n; return; }
+    VF = 1;                                      /* "SWI name not known" */
+}
+
+/* OS_ScreenMode (Risc PC): 0 select mode R1 (a number or a selector), 1
+ * read the current one into R1 */
+static int screen_mode_swi(void)
+{
+    if (!rg->vidc20) return 0;
+    ev("OS_ScreenMode", "ii", R[0], R[1]);
+    if (R[0] == 0) { if (R[1] < 0x100) { vdu_put(22); vdu_put(R[1]); } else if (!video_set_mode(R[1])) VF = 1; }
+    else if (R[0] == 1) R[1] = screen_mode;
+    return 1;
+}
+
+/* OS_Memory (Risc PC): reason 8, the amount of memory of a type (bits 8-11:
+ * 1 DRAM, 2 VRAM, 3 ROM) as R1 pages of R2 bytes: 2MB of VRAM */
+static int os_memory(void)
+{
+    if (!rg->vidc20 || (R[0] & 0xFF) != 8) return 0;
+    uint32_t type = R[0] >> 8 & 0xF;
+    R[1] = type == 2 ? 512 : type == 1 ? 4096 : type == 3 ? 1024 : 0;
+    R[2] = 4096;
+    return 1;
+}
+
 void swi(uint32_t n, uint32_t nextpc)
 {
     uint32_t x = n & 0x20000, b = n & ~0x20000u;
@@ -179,13 +220,15 @@ void swi(uint32_t n, uint32_t nextpc)
         return;
     }
     case 0x3F:                                   /* OS_CheckModeValid: R0 mode; -1 and C set if not */
-        if (!mode_info(R[0]) || R[0] > 127) { R[0] = 0xFFFFFFFF; CF = 1; } else CF = 0;
+        if (!mode_info(R[0]) || (R[0] > 127 && R[0] < 0x100)) { R[0] = 0xFFFFFFFF; CF = 1; } else CF = 0;
         return;
-    case 0x39:                                   /* OS_SWINumberFromString: no names known */
-        VF = 1;
+    case 0x39: swi_number_from_string(); return;
+    case 0x34:                                   /* OS_CallAVector: R9 the vector */
+        if (R[9] == 0x23 && video_palettev()) return;   /* PaletteV, nobody claiming it */
+        ev("OS_CallAVector", "ii", R[9], R[4]);
         return;
     case 0x35:                                   /* OS_ReadModeVariable: R0 mode (-1 current), R1 variable */
-        R[2] = modevar((int32_t)R[0] < 0 ? -1 : (int)R[0], R[1]);
+        R[2] = modevar((int32_t)R[0] < 0 ? -1 : (int64_t)R[0], R[1]);
         return;
     case 0x11: finish("OS_Exit");
     case 0x2B: finish("OS_GenerateError");
@@ -193,6 +236,7 @@ void swi(uint32_t n, uint32_t nextpc)
                                      : (uint32_t)(icount / TICK_STEPS); return;
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
+    if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
     if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);

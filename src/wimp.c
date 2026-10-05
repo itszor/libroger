@@ -7,7 +7,8 @@
  * hook, which stands in for the user (click the icon bar icon, choose from
  * a menu, Message_Quit) by queueing some. With still nothing queued and
  * null events masked, the task would wait forever, so the run ends. The
- * Wimp reports itself as version 3.16 (RISC OS 3.1).
+ * Wimp reports itself as version 3.16 (RISC OS 3.1), or 3.50 (RISC OS 3.5)
+ * on a Risc PC (roger_config.vidc20).
  *
  * Also the memory calls a Wimp task makes: Wimp_SlotSize (the application
  * slot, which is the RAM limit), and the screen's dynamic area
@@ -15,7 +16,7 @@
 #include <string.h>
 #include "internal.h"
 
-#define WIMP_VERSION 316
+#define WIMP_VERSION (rg->vidc20 ? 350 : 316)   /* RISC OS 3.5 on a Risc PC, else 3.1 */
 #define TASK_HANDLE  0x4B534154u          /* any non-zero handle */
 #define SLOT_MAX     (DMA_BUF - LOAD)     /* the application slot can't grow into the runtime's workspace */
 
@@ -208,11 +209,10 @@ int wimp_swi(uint32_t b)
         R[1] = 1;                                            /* OK */
         return 1;
     }
-    case 0x400E3: {                                          /* Wimp_SetMode */
-        uint8_t m = R[0];
-        vdu_put(22); vdu_put(m);
+    case 0x400E3:                                            /* Wimp_SetMode: a number or a selector */
+        if (R[0] < 0x100) { vdu_put(22); vdu_put(R[0]); }
+        else video_set_mode(R[0]);
         return 1;
-    }
     }
     return 0;
 }

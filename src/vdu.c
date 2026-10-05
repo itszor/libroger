@@ -46,18 +46,21 @@ static uint8_t colour_pixel(int c, int tint)
 static int get_px(const uint8_t *row, int x, int bpp)
 {
     if (bpp == 8) return row[x];
+    if (bpp == 16) return row[2 * x] | row[2 * x + 1] << 8;
+    if (bpp == 32) return (int)(row[4 * x] | row[4 * x + 1] << 8 | row[4 * x + 2] << 16 | (uint32_t)row[4 * x + 3] << 24);
     int per = 8 / bpp, sh = (x % per) * bpp;
     return (row[x / per] >> sh) & ((1 << bpp) - 1);
 }
 static void put_px(uint8_t *row, int x, int bpp, int v)
 {
     if (bpp == 8) { row[x] = (uint8_t)v; return; }
+    if (bpp >= 16) { for (int k = 0; k < bpp / 8; k++) row[bpp / 8 * x + k] = (uint8_t)(v >> 8 * k); return; }
     int per = 8 / bpp, sh = (x % per) * bpp, m = ((1 << bpp) - 1) << sh;
     row[x / per] = (uint8_t)((row[x / per] & ~m) | ((v << sh) & m));
 }
 static int apply(int act, int old, int c, int bpp)
 {
-    int mask = (1 << bpp) - 1;
+    int mask = bpp >= 32 ? -1 : (1 << bpp) - 1;
     switch (act & 7) {
     case 0: return c;
     case 1: return old | c;
@@ -152,6 +155,13 @@ static void reset_colours(void)
     tint_tfg = tint_gfg = 3; tint_tbg = tint_gbg = 0;
 }
 
+/* after a mode change (video_set_mode) */
+void vdu_mode_reset(void)
+{
+    reset_windows(); reset_colours();
+    memset(MEM + screen_base(), 0, screen_size()); cx = cy = px_ = py_ = 0;
+}
+
 static void do_vdu(int code)
 {
     switch (code) {
@@ -162,11 +172,7 @@ static void do_vdu(int code)
                if (c & 128) { gbg_act = a; gbg_col = c & 63; } else { gfg_act = a; gfg_col = c & 63; }
                break; }
     case 20: reset_colours(); break;
-    case 22:                                     /* MODE: screen_mode follows in vdu_put() */
-        if (!mode_info(qbuf[0])) break;
-        screen_mode = qbuf[0] & 127;
-        reset_windows(); reset_colours();
-        memset(MEM + screen_base(), 0, screen_size()); cx = cy = px_ = py_ = 0; break;
+    case 22: break;                              /* MODE: video_set_mode(), from vdu_put() */
     case 23:
         if (qbuf[0] == 17 && qbuf[1] <= 3) {     /* VDU 23,17,n,tint: set tint */
             int t = qbuf[2] >> 6;

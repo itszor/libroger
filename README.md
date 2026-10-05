@@ -57,7 +57,8 @@ What the configuration covers (all but the image optional):
   and the RISC OS prefixes that mean it, and system variables as !Run sets
   them (`variables`; `<Game$Dir>` in a filename or command expands)
 - the machine as !Run left it: screen mode, WimpSlot, screen memory size and
-  placement, initial stack
+  placement, initial stack; and whether it's an Archimedes or a Risc PC
+  (`vidc20`)
 - interrupts: a raw IRQ handler at &100 (`irq1v`) for games that bypass the
   kernel's device vectors
 - input: pointer offset, relative mouse capture, the headless scenario
@@ -112,6 +113,13 @@ Implemented:
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, tints, windows,
   origin, PLOT lines/points/triangles/rectangles; VDU 21/6; no text),
   OS_SpriteOp on user areas (load, read area information, select, plot)
+- a Risc PC (`vidc20`): VIDC20's modes - the multisync numbered ones
+  (18-21, 25-28) and RISC OS 3.5 mode selectors, any size up to 2MB of
+  VRAM at 1 to 32 bits per pixel, shown as they are (no MEMC or VIDC1
+  raster effects) - OS_ScreenMode (select, read), gamma tables (PaletteV
+  9, through OS_CallAVector), OS_Memory 8 (2MB of VRAM), and what
+  programs test to tell one from an Archimedes: Wimp version 3.50 and the
+  RISC OS 3.5 names for OS_SWINumberFromString
 - files: OS_File (load, save, catalogue), OS_Find, OS_GBPB (including
   directory listings, 9/10/12), OS_Args,
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
@@ -137,7 +145,7 @@ Implemented:
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
   OS_ReadModeVariable, OS_ReadMonotonicTime, conversions, OS_CLI (logged),
   modules' SWI chunks, OS_Module claims, OS_CheckModeValid,
-  OS_SWINumberFromString (no names: always an error); key transition
+  OS_SWINumberFromString (a few names programs probe for); key transition
   events (event 11, low-level key numbers, once a frame)
 
 Display shaders
@@ -161,9 +169,9 @@ MIT, GPL (2.0 or later; xBRZ's code GPL-3.0) or public domain - see
 shaders/README. With them included, a program linked with libroger is
 distributed under the GPL, version 3.
 
-Not implemented (yet): text rendering, a visible desktop, modes other than
-the 50Hz Archimedes ones (MODE 28, RISC OS 3.5 mode selectors), most OS_CLI
-commands, FIQs.
+Not implemented (yet): text rendering, a visible desktop, VDU colours and
+sprites at 16 and 32 bits per pixel, a 256-entry palette (8bpp modes keep
+VIDC1's), most OS_CLI commands, FIQs.
 
 Files
 -----

@@ -9,7 +9,8 @@
  *   &0000000  page zero (hardware vectors; &100 see irq1v)
  *   &0008000  the application (to the RAM limit, &8000 + WimpSlot)
  *   &17F0000  runtime workspace: sound DMA buffers, sound channel control
- *             blocks, OS_GetEnv's strings, SVC and IRQ stacks, module
+ *             blocks, the mode selector, OS_GetEnv's strings, SVC and IRQ
+ *             stacks, module
  *             private words (&17FFFFC down)
  *   &1800000  RMA: RMLoaded modules, then OS_Module claims (&1810000 on)
  *   ........  screen memory, ending at &2000000 (configurable)
@@ -20,6 +21,7 @@
 #define LOAD         ROGER_LOAD
 #define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
 #define SCCB_AREA    0x017F4000u          /* 8 sound channel control blocks, &100 each */
+#define MODE_SEL     0x017F6C00u          /* the current mode's selector (OS_ScreenMode 1) */
 #define ENV_AREA     0x017F7000u          /* OS_GetEnv's command line and start time */
 #define SVC_STACK    0x017F8000u          /* R13_svc / R13_irq stack tops */
 #define IRQ_STACK    0x017FC000u
@@ -74,9 +76,10 @@ int  irq_swi(uint32_t b);                 /* OS_Claim/Release, device vectors */
 
 /* video.c */
 struct rg_mode { int width, height, bpp, xeig, yeig, text_cols, text_rows; };
-extern int screen_mode;
+extern uint32_t screen_mode;             /* a number, or a selector's address */
 extern uint32_t bank, display_bank;
-const struct rg_mode *mode_info(int m);   /* NULL if not a known mode */
+const struct rg_mode *mode_info(uint32_t m);   /* NULL if not a mode this machine has */
+int  video_set_mode(uint32_t m);          /* 0 if not a mode */
 const struct rg_mode *cur_mode(void);
 uint32_t screen_base(void);               /* start of screen memory */
 uint32_t screen_size(void);               /* total screen memory */
@@ -85,19 +88,23 @@ uint32_t write_bank_addr(void);           /* screen memory the VDU drivers write
 void vdu_put(uint8_t c);
 const uint8_t *displayed(void);           /* the frame as the display hardware shows it */
 uint32_t vduvar(uint32_t v);
-uint32_t modevar(int mode, uint32_t v);
+uint32_t modevar(int64_t mode, uint32_t v);   /* mode -1: the current one */
 int  video_os_word(uint32_t r0, uint8_t *blk);   /* OS_Word 12/21/22 */
 int  video_timer_line(uint32_t latch);    /* output line where timer 1 (started at flyback) fires */
 void video_set_bank(int which, uint32_t b);
 void video_set_screen_size(uint32_t size);   /* OS_ChangeDynamicArea 2 */
 uint32_t vidc_rgb(int line, uint8_t pixel);   /* host colour of a pixel on an output line */
 void video_default_palette(void);         /* the palette a mode change sets */
-void video_save_vdu(FILE *f);             /* the VDU stream so far */
+void video_save_vdu(FILE *f);
+int  video_palettev(void);                /* PaletteV's default handler: 1 if handled */
+extern uint8_t gamma_tab[3][256];         /* VIDC20 gamma tables (PaletteV 9), if gamma_set */
+extern int gamma_set;             /* the VDU stream so far */
 extern int mbox[4];                       /* OS_Word 21,1 mouse bounding box */
 
 /* vdu.c: the VDU drivers (interactive runs) */
 extern unsigned vdu_unhandled;
 void vdu_write(uint8_t c);
+void vdu_mode_reset(void);                /* after a mode change: windows, colours, CLS */
 int  sprite_op_full(void);
 
 /* sound.c */

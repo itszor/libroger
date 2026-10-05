@@ -8,12 +8,19 @@
  * Vinit/Vstart/Vend itself (e.g. a scrolling play area flipped between two
  * buffers above a fixed panel reached when DMA wraps from Vend to Vstart);
  * the latter takes over once it happens. VIDC's VDSR/VDER crop the picture
- * vertically; the output window is always the standard 256 lines. */
+ * vertically; the output window is always the standard 256 lines. Modes
+ * that only a Risc PC's VIDC20 has (taller, or 16/32 bits per pixel) are
+ * shown as they are, with the gamma tables PaletteV sets. */
 #include <string.h>
 #include "internal.h"
 
 /* ---------------------------------------------------------------- modes
- * The standard graphics modes of the Archimedes' 50Hz monitors. */
+ * The standard graphics modes of the Archimedes' 50Hz monitors, and with
+ * roger_config.vidc20 (a Risc PC) the multisync ones too, and RISC OS
+ * 3.5's mode selectors: any size, 1 to 32 bits per pixel. A mode is
+ * identified as RISC OS does: a number below &100, else the address of a
+ * selector block (+0 flags 1, +4 x pixels, +8 y pixels, +12 log2 bpp, +16
+ * frame rate, then mode variable / value pairs up to -1). */
 static const struct rg_mode modes[] = {
     /*  w    h  bpp xe ye cols rows */
     [0]  = {640, 256, 1, 1, 2, 80, 32},
@@ -27,21 +34,66 @@ static const struct rg_mode modes[] = {
     [12] = {640, 256, 4, 1, 2, 80, 32},
     [13] = {320, 256, 8, 2, 2, 40, 32},
     [15] = {640, 256, 8, 1, 2, 80, 32},
+    /* multisync / VGA (VIDC20 only) */
+    [18] = {640, 512, 1, 1, 1, 80, 64},
+    [19] = {640, 512, 2, 1, 1, 80, 64},
+    [20] = {640, 512, 4, 1, 1, 80, 64},
+    [21] = {640, 512, 8, 1, 1, 80, 64},
+    [25] = {640, 480, 1, 1, 1, 80, 60},
+    [26] = {640, 480, 2, 1, 1, 80, 60},
+    [27] = {640, 480, 4, 1, 1, 80, 60},
+    [28] = {640, 480, 8, 1, 1, 80, 60},
 };
-int screen_mode = 12;
+uint32_t screen_mode = 12;                /* a mode number, or the selector's address (MODE_SEL) */
 uint32_t bank, display_bank;              /* OS_Byte 112 (VDU drivers) / 113 (display), 0-based */
 static uint32_t display_off;              /* OS_Word 22: display start offset */
+static struct rg_mode current = {640, 256, 4, 1, 2, 80, 32};
 
-const struct rg_mode *mode_info(int m)
+/* The 50Hz Archimedes modes (256 lines, up to 8bpp): MEMC and VIDC1's
+ * raster timing apply. */
+static int vidc1_mode(const struct rg_mode *m) { return m->height == 256 && m->bpp <= 8; }
+
+/* m's geometry, or NULL if it isn't a mode this machine has */
+const struct rg_mode *mode_info(uint32_t m)
 {
-    m &= 0x7F;
-    if (m < 0 || m >= (int)(sizeof modes / sizeof modes[0]) || !modes[m].width) return NULL;
-    return &modes[m];
+    static struct rg_mode sel;
+    if (m < 0x100) {
+        m &= 0x7F;
+        if (m >= sizeof modes / sizeof modes[0] || !modes[m].width) return NULL;
+        if (!vidc1_mode(&modes[m]) && !rg->vidc20) return NULL;
+        return &modes[m];
+    }
+    if (!rg->vidc20 || m + 20 > MEMSIZE || (RD32(m) & 0xFF) != 1) return NULL;
+    uint32_t w = RD32(m + 4), h = RD32(m + 8), l2 = RD32(m + 12);
+    if (w < 16 || h < 16 || w > 2048 || h > 2048 || l2 > 5) return NULL;
+    sel = (struct rg_mode){(int)w, (int)h, 1 << l2, 1, h * 2 < w ? 2 : 1, (int)w / 8, (int)h / 8};
+    for (uint32_t p = m + 20; p + 8 <= MEMSIZE && RD32(p) != 0xFFFFFFFF && p < m + 20 + 8 * 32; p += 8) {
+        if (RD32(p) == 4) sel.xeig = RD32(p + 4);
+        if (RD32(p) == 5) sel.yeig = RD32(p + 4);
+    }
+    if (mode_bytes(&sel) > 0x200000) return NULL;          /* more than the Risc PC's 2MB of VRAM */
+    return &sel;
 }
-const struct rg_mode *cur_mode(void)
+const struct rg_mode *cur_mode(void) { return &current; }
+
+/* Change mode (VDU 22, OS_ScreenMode 0, Wimp_SetMode): 0 if m isn't one.
+ * A selector is copied (OS_ScreenMode 1 returns the copy). */
+int video_set_mode(uint32_t m)
 {
-    const struct rg_mode *m = mode_info(screen_mode);
-    return m ? m : &modes[12];
+    const struct rg_mode *mi = mode_info(m);
+    if (!mi) return 0;
+    current = *mi;
+    if (m >= 0x100) {
+        uint32_t len = 20;
+        while (len < 0x100 - 8 && RD32(m + len) != 0xFFFFFFFF) len += 8;
+        if (m != MODE_SEL) memmove(MEM + MODE_SEL, MEM + m, len + 4);
+        m = MODE_SEL;
+    }
+    screen_mode = m;
+    bank = display_bank = 0;
+    video_default_palette();
+    if (rg_full_os) vdu_mode_reset();
+    return 1;
 }
 uint32_t mode_bytes(const struct rg_mode *m) { return (uint32_t)m->width * m->height * m->bpp / 8; }
 static uint32_t screen_bytes;             /* after OS_ChangeDynamicArea */
@@ -52,21 +104,24 @@ uint32_t write_bank_addr(void) { return screen_base() + bank * mode_bytes(cur_mo
 void video_set_bank(int which, uint32_t b) { if (which) display_bank = b; else bank = b; }
 
 /* VDU variables (OS_ReadVduVariables) and mode variables (OS_ReadModeVariable) */
-uint32_t modevar(int mode, uint32_t v)
+static uint32_t log2bpp(int bpp) { return bpp == 32 ? 5 : bpp == 16 ? 4 : bpp == 8 ? 3 : bpp == 4 ? 2 : bpp == 2 ? 1 : 0; }
+
+uint32_t modevar(int64_t mode, uint32_t v)
 {
-    const struct rg_mode *m = mode < 0 ? cur_mode() : mode_info(mode);
+    const struct rg_mode *m = mode < 0 ? cur_mode() : mode_info((uint32_t)mode);
     if (!m) return 0;
     switch (v) {
     case 0: return 0;                          /* ModeFlags */
     case 1: return m->text_cols - 1;           /* ScrRCol */
     case 2: return m->text_rows - 1;           /* ScrBRow */
-    case 3: return m->bpp == 8 ? 63 : (1u << m->bpp) - 1;   /* NColour (RISC OS 2: 63 in 256-colour modes) */
+    case 3: return m->bpp == 32 ? 0xFFFFFFFF : m->bpp == 16 ? 0xFFFF   /* NColour (63 in */
+                 : m->bpp == 8 ? 63 : (1u << m->bpp) - 1;                  /* 256-colour modes) */
     case 4: return m->xeig;
     case 5: return m->yeig;
     case 6: return (uint32_t)m->width * m->bpp / 8;          /* LineLength */
     case 7: return mode_bytes(m);              /* ScreenSize */
     case 8: return 0;                          /* YShftFactor */
-    case 9: case 10: return m->bpp == 8 ? 3 : m->bpp == 4 ? 2 : m->bpp == 2 ? 1 : 0;   /* Log2BPP, Log2BPC */
+    case 9: case 10: return log2bpp(m->bpp);  /* Log2BPP, Log2BPC */
     case 11: return m->width - 1;              /* XWindLimit */
     case 12: return m->height - 1;             /* YWindLimit */
     default: return 0;
@@ -104,7 +159,7 @@ void vdu_put(uint8_t c)
     if (qwant) {
         q[qn++] = c;
         if (qn == qwant) {
-            if (q[0] == 22 && !disabled && mode_info(q[1])) { screen_mode = q[1] & 0x7F; video_default_palette(); }
+            if (q[0] == 22 && !disabled) video_set_mode(q[1]);
             qn = qwant = 0;
         }
     } else if (c < 32 && nparams[c]) {
@@ -210,7 +265,7 @@ const uint8_t *displayed(void)
     static uint8_t frame[640 * 256];
     const struct rg_mode *m = cur_mode();
     uint32_t sz = mode_bytes(m), row = sz / 256, total = screen_size();
-    if (!memc_direct && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256)
+    if (!vidc1_mode(m) || (!memc_direct && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
         return MEM + screen_base() + display_off + display_bank * sz;
     uint32_t p = memc_direct ? memc_vinit : display_off + display_bank * sz;
     uint32_t end = memc_direct && memc_vend != ~0u ? memc_vend + 16 : total;
@@ -225,6 +280,22 @@ const uint8_t *displayed(void)
         }
     }
     return frame;
+}
+
+/* ---------------------------------------------------------------- PaletteV
+ * Gamma correction (VIDC20): reason 9 sets the red, green and blue tables
+ * (R0-R2, 256 bytes each) every output colour goes through. The OS's own
+ * PaletteV handler, for OS_CallAVector with nobody claiming the vector. */
+uint8_t gamma_tab[3][256];
+int gamma_set;
+int video_palettev(void)
+{
+    if (R[4] != 9 || !rg->vidc20) return 0;
+    for (int k = 0; k < 3; k++) memcpy(gamma_tab[k], MEM + R[k], 256);
+    gamma_set = 1;
+    ev("PaletteV", "i", 9);
+    R[4] = 0;                                     /* handled */
+    return 1;
 }
 
 /* ---------------------------------------------------------------- OS_Word */

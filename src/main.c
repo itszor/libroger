@@ -120,7 +120,9 @@ void finish(const char *why)
     snprintf(fn, sizeof fn, "%s.vdu", outprefix);
     FILE *f = fopen(fn, "wb"); video_save_vdu(f); fclose(f);
     snprintf(fn, sizeof fn, "%s.screen", outprefix);
-    f = fopen(fn, "wb"); fwrite(MEM + screen_base() - 0x20000, 1, 0x60000, f); fclose(f);
+    uint32_t dump = screen_size() + 0x20000 > 0x60000 ? screen_size() + 0x20000 : 0x60000;   /* all of it */
+    if (screen_base() - 0x20000 + dump > MEMSIZE) dump = MEMSIZE - (screen_base() - 0x20000);
+    f = fopen(fn, "wb"); fwrite(MEM + screen_base() - 0x20000, 1, dump, f); fclose(f);
     snprintf(fn, sizeof fn, "%s.regs", outprefix);
     f = fopen(fn, "w");
     for (int k = 0; k < 15; k++) fprintf(f, "r%d %08x\n", k, R[k]);
@@ -258,8 +260,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         irq_start_clock(rg_t0_ns);
     }
     if (wavpath && !audio_init_wav(wavpath)) fprintf(stderr, "cannot write %s\n", wavpath);
-    screen_mode = cfg->initial_mode ? cfg->initial_mode : 12;      /* what !Run selected */
-    video_default_palette();
+    if (!video_set_mode(cfg->initial_mode ? cfg->initial_mode : 12)) video_set_mode(12);   /* what !Run selected */
     cli_init();
     if (rg_full_os && !no_title && cfg->loader_programs) {
         for (int k = 0; cfg->loader_programs[k]; k++) run_loader_program(cfg->loader_programs[k]);
