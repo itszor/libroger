@@ -142,8 +142,20 @@ uint32_t ram_limit(void);                 /* &8000 + the application slot */
 int  wimp_swi(uint32_t b);
 
 /* host.c: the SDL front end */
-int  display_init(int scale, const char *fullscreen, int crt);   /* fullscreen: NULL, "" or "WxH[@Hz]" */
+int  display_init(int scale, const char *fullscreen, const char *shader);   /* fullscreen: NULL, "" or "WxH[@Hz]" */
+
+/* shader.c: display shader chains on the GPU renderer's device */
+struct SDL_Renderer;
+struct SDL_Texture;
+int  shader_init(struct SDL_Renderer *ren);   /* 0: unavailable */
+int  shader_count(void);
+const char *shader_name(int i);
+int  shader_find(const char *name);           /* -1 if none */
+int  shader_select(int i);                    /* -1: none; 0 if it failed */
+struct SDL_Texture *shader_run(const uint32_t *rgba, int w, int h, int vw, int vh);
+void shader_list(void);                       /* --list-shaders */
 void display_toggle_fullscreen(void);
+void display_cycle_shader(int dir);       /* F10 / Shift+F10 */
 void display_list_modes(void);
 void display_present(const uint8_t *pixels);
 void display_poll(void);

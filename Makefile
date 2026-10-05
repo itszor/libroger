@@ -4,8 +4,8 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g -Wall -Wno-unused-result -fno-strict-aliasing
 SDL_CFLAGS := $(shell pkg-config --cflags sdl3)
 SRCS    := $(wildcard src/*.c)
-OBJS    := $(SRCS:src/%.c=build/%.o)
-COVOBJS := $(SRCS:src/%.c=build/cov/%.o)
+OBJS    := $(SRCS:src/%.c=build/%.o) build/chains.o
+COVOBJS := $(SRCS:src/%.c=build/cov/%.o) build/chains.o
 
 all: libroger.a
 
@@ -14,6 +14,10 @@ libroger.a: $(OBJS)
 
 build/%.o: src/%.c src/internal.h include/roger.h include/roger_cpu.h | build
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Iinclude -c -o $@ $<
+
+# the display shaders, compiled by shaders/build.py (committed)
+build/chains.o: shaders/generated/chains.c src/shader_chains.h | build
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 cov: libroger-cov.a
 libroger-cov.a: $(COVOBJS)

@@ -1,26 +1,38 @@
 #version 450
-// CRT fragment shader for --crt (SDL 3.4 GPU renderer, SDL_GPURenderState).
+// libroger's CRT shader (formerly shaders/crt.frag for --crt).
 //
-// Draws the game's 1:1 screen texture (320x256 or 640x256, already
-// palette-converted RGB) as a monitor would: each source row is an electron
-// beam with a gaussian vertical profile that widens with brightness, rows are
-// sharply interpolated horizontally, and an aperture-grille mask is applied
-// in output pixels. All blending is done in linear light.
-//
-// Inputs follow SDL's GPU renderer conventions: v_color/v_uv from its vertex
-// shader, the bound texture at set 2 binding 0, uniforms at set 3 binding 0.
-// Rebuild the SPIR-V header with shaders/build.sh after editing.
+// Draws the game's 1:1 screen (320x256 or 640x256, already palette-converted
+// RGB) as a monitor would: each source row is an electron beam with a
+// gaussian vertical profile that widens with brightness, rows are sharply
+// interpolated horizontally, and an aperture-grille mask is applied in
+// output pixels. All blending is done in linear light.
 
-layout(location = 0) in vec4 v_color;
-layout(location = 1) in vec2 v_uv;
-layout(location = 0) out vec4 o_color;
+layout(push_constant) uniform Push
+{
+    vec4 SourceSize;
+    vec4 OutputSize;
+} params;
 
-layout(set = 2, binding = 0) uniform sampler2D u_texture;
+layout(std140, set = 0, binding = 0) uniform UBO
+{
+    mat4 MVP;
+} global;
 
-layout(set = 3, binding = 0, std140) uniform Context {
-    vec2 source_size;       // game pixels (e.g. 320x256)
-    vec2 output_size;       // destination rectangle in output pixels
-};
+#pragma stage vertex
+layout(location = 0) in vec4 Position;
+layout(location = 1) in vec2 TexCoord;
+layout(location = 0) out vec2 vTexCoord;
+
+void main()
+{
+    gl_Position = global.MVP * Position;
+    vTexCoord = TexCoord;
+}
+
+#pragma stage fragment
+layout(location = 0) in vec2 vTexCoord;
+layout(location = 0) out vec4 FragColor;
+layout(set = 0, binding = 2) uniform sampler2D Source;
 
 const float GAMMA = 2.4;            // CRT-ish transfer
 const float BEAM_MIN = 0.30;        // beam half-width (in rows) for dark pixels
@@ -31,8 +43,9 @@ const float BRIGHTNESS = 1.30;      // compensates scanline + mask darkening
 
 vec3 fetch_linear(vec2 texel)
 {
-    vec2 uv = (clamp(texel, vec2(0.0), source_size - 1.0) + 0.5) / source_size;
-    return pow(texture(u_texture, uv).rgb, vec3(GAMMA));
+    vec2 size = params.SourceSize.xy;
+    vec2 uv = (clamp(texel, vec2(0.0), size - 1.0) + 0.5) / size;
+    return pow(texture(Source, uv).rgb, vec3(GAMMA));
 }
 
 // one source row, sharply interpolated horizontally at source x position px
@@ -52,7 +65,7 @@ vec3 beam(vec3 c, float dist)
 
 void main()
 {
-    vec2 pos = v_uv * source_size;
+    vec2 pos = vTexCoord * params.SourceSize.xy;
     float row = floor(pos.y);
     float dy = pos.y - (row + 0.5);                                 // -0.5..0.5 from row centre
     float nrow = row + (dy < 0.0 ? -1.0 : 1.0);                     // nearest neighbouring row
@@ -67,5 +80,5 @@ void main()
     if (phase < 1.0) mask.r = 1.0; else if (phase < 2.0) mask.g = 1.0; else mask.b = 1.0;
     col *= mask * BRIGHTNESS;
 
-    o_color = vec4(pow(clamp(col, 0.0, 1.0), vec3(1.0 / GAMMA)), 1.0) * v_color;
+    FragColor = vec4(pow(clamp(col, 0.0, 1.0), vec3(1.0 / GAMMA)), 1.0);
 }

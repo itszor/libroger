@@ -76,7 +76,8 @@ translated by hand) can call SWIs and * commands with `roger_swi()` and
 Command line (any game): `--limit=N` (headless, deterministic),
 `--script=...` (scripted input: keys, clicks, taps, screenshots),
 `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`,
-`--fullscreen[=WxH@Hz]`, `--crt` (CRT shader), `--no-sound`, `--wav=F`,
+`--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
+`--crt` = `--shader=crt`), `--list-shaders`, `--no-sound`, `--wav=F`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
 
 Determinism: headless runs (`--limit`) advance time by instruction count
@@ -139,6 +140,27 @@ Implemented:
   OS_SWINumberFromString (no names: always an error); key transition
   events (event 11, low-level key numbers, once a frame)
 
+Display shaders
+---------------
+
+Keys in the window: F10 / Shift+F10 cycle through the display shaders, F11
+fullscreen, F12 screenshot (with a shader on, the shaded frame is saved too,
+as screenshot-N-NAME.bmp). The shaders are RetroArch slang presets run on
+SDL_GPU (src/shader.c), with SDL 3.4's GPU renderer and a device that takes
+SPIR-V (Vulkan); without one there's only the plain view.
+
+    none                each game pixel a sharp rectangle (the default)
+    bilinear, lanczos3, spline36             resampling
+    xbr-lv2, xbrz, scalefx                   pixel-art upscalers
+    crt                 libroger's own (before: --crt)
+    crt-lottes, crt-hyllian, crt-geom, crt-easymode,
+    crt-guest-advanced, crt-royale           CRT simulations
+
+Most come from libretro's slang-shaders, under their authors' licences:
+MIT, GPL (2.0 or later; xBRZ's code GPL-3.0) or public domain - see
+shaders/README. With them included, a program linked with libroger is
+distributed under the GPL, version 3.
+
 Not implemented (yet): text rendering, a visible desktop, modes other than
 the 50Hz Archimedes ones (MODE 28, RISC OS 3.5 mode selectors), most OS_CLI
 commands, FIQs.
@@ -161,5 +183,7 @@ Files
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse
     src/main.c           start-up, command line, event log, scripts, finish
-    shaders/             the --crt fragment shader (shaders/build.sh rebuilds
-                         the embedded SPIR-V)
+    src/shader.c         display shader chains on SDL_GPU
+    shaders/             the display shaders: build.py, own/, slang/ (from
+                         libretro's slang-shaders), generated/chains.c; see
+                         shaders/README

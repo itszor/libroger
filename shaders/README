@@ -1,0 +1,54 @@
+libroger display shaders
+========================
+
+    build.py vendor DIR   copy what the chains need from a checkout of
+                          https://github.com/libretro/slang-shaders into slang/
+    build.py [NAME...]    compile the chains (all, or those named) into
+                          generated/chains.c (needs glslang; GLSLANG=path)
+    slangp.py             reading presets and shaders (includes, passes)
+    own/                  libroger's own shaders and presets
+    slang/                shaders from slang-shaders, unmodified, at the
+                          revision in slang/UPSTREAM
+    generated/chains.c    SPIR-V, uniform and sampler tables and lookup
+                          textures (PNG) for src/shader.c - committed, so
+                          building libroger doesn't need glslang
+
+The chains, in F10 order (build.py's CHAINS):
+
+    name                 preset                                       licence
+    bilinear             own/bilinear.slangp                          libroger
+    lanczos3             interpolation/lanczos3-fast.slangp           GPL-2.0+
+    spline36             interpolation/spline36-fast.slangp           GPL-2.0+
+    xbr-lv2              edge-smoothing/xbr/xbr-lv2.slangp            MIT (Hyllian)
+    xbrz                 edge-smoothing/xbrz/xbrz-freescale-multipass MIT (Hyllian) + GPL-3.0 (Zenju's xBRZ)
+    scalefx              edge-smoothing/scalefx/scalefx.slangp        MIT (Sp00kyFox)
+    crt                  own/crt.slangp                               libroger
+    crt-lottes           crt/crt-lottes.slangp                        public domain (Timothy Lottes)
+    crt-hyllian          crt/crt-hyllian-fast.slangp                  MIT (Hyllian)
+    crt-geom             crt/crt-geom.slangp                          GPL-2.0+ (cgwg, Themaister, DOLLS)
+    crt-easymode         crt/crt-easymode.slangp                      GPL (EasyMode; no version given)
+    crt-guest-advanced   crt/crt-guest-advanced.slangp                GPL-2.0+ (guest(r))
+    crt-royale           crt/crt-royale.slangp                        GPL-2.0+ (TroggleMonkey); MIT helpers
+
+Together that makes libroger's shaders GPL-3.0 (xBRZ is GPL-3.0, the
+others GPL-2.0-or-later or permissive); leaving xbrz out of CHAINS would
+leave GPL-2.0-or-later.
+
+Each file in slang/ keeps its own copyright and licence notice; the MIT
+notices are part of what must accompany a binary. Files slang-shaders has
+without a licence notice are not used: stock.slang and xBR's
+linearize/delinearize are replaced by own/stock.slang, own/linearize.slang
+and own/delinearize.slang (build.py's REPLACE), and crt-hyllian uses the
+single-pass "fast" preset rather than the one with unlicensed glow passes.
+
+How a slang shader becomes a pair of SDL_GPU shaders (build.py's convert()):
+the stages are split at #pragma stage; the push-constant block and the UBO
+are merged into one uniform block (vertex set 1, fragment set 3, binding 0),
+also reachable through the old instance names (#define params rs); samplers
+are renumbered (fragment set 2 with Source at 0, vertex set 0); #pragma
+parameter / name / format become table entries. src/shader.c fills the
+block per pass (sizes, FrameCount, parameters with the preset's values)
+and keeps what the presets ask for: pass outputs by alias, feedback,
+history, mipmapped inputs, float / sRGB targets, absolute / source /
+viewport scaling, lookup textures. Not supported: clamp_to_border (taken as
+clamp_to_edge; SDL_GPU has no border colour), runtime parameter changes.

@@ -60,7 +60,7 @@ void roger_log(const char *name, const char *fmt, ...)
  * units), tap:px:py (a host click at screen pixel px,py, through the real
  * SDL event path), poke:addr:value (write a memory word), release,
  * buttons:mask, move:dx:dy, esc, key:inkey (INKEY -inkey held 200ms),
- * type:ascii, shot, quit */
+ * type:ascii, shot, shader[:dir] (as F10: next, or -1 previous), quit */
 #define MAXSCRIPT 8192
 static struct { uint64_t ms; char act[8]; int a, b; } script[MAXSCRIPT];
 static int nscript, script_i;
@@ -100,6 +100,7 @@ void script_run(void)
         else if (!strcmp(a, "key") && x >= 1 && x <= 128) { key_down[x - 1] = 1; key_release_ms[x] = ms + 200; }
         else if (!strcmp(a, "type")) key_buffer_put(x);
         else if (!strcmp(a, "shot")) screenshot_requested = 1;
+        else if (!strcmp(a, "shader")) display_cycle_shader(x ? x : 1);   /* as F10 */
         else if (!strcmp(a, "quit")) quit_requested = 1;
         script_i++;
     }
@@ -197,7 +198,9 @@ static void usage(const char *prog)
            "  --trace-gaps      interpret untranslated code, logging it to untranslated.log\n"
            "  --full-os         VDU and sprite drivers in headless runs too\n"
            "  --no-title        skip loader programs\n"
-           "  --scale=N --fullscreen[=WxH@Hz] --list-modes --crt\n"
+           "  --scale=N --fullscreen[=WxH@Hz] --list-modes\n"
+           "  --shader=NAME     display shader (F10 / Shift+F10 cycle; --crt = --shader=crt)\n"
+           "  --list-shaders\n"
            "  --no-sound --wav=FILE\n"
            "  --app=DIR         the program's directory   --save=DIR  where written files go\n"
            "  --out=PREFIX      output files PREFIX.events/.vdu/.screen/.regs\n%s",
@@ -208,8 +211,8 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
 {
     rg = cfg;
     const char *image = NULL;
-    int scale = 4, headless = 0, no_sound = 0, crt = 0, no_title = 0;
-    const char *fs = NULL, *wavpath = NULL;
+    int scale = 4, headless = 0, no_sound = 0, no_title = 0;
+    const char *fs = NULL, *wavpath = NULL, *shader = NULL;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
     for (int k = 1; k < argc; k++)
         if (!strncmp(argv[k], "--limit=", 8) || !strcmp(argv[k], "--headless")) headless = 1;
@@ -223,7 +226,9 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
         else if (!strcmp(argv[k], "--no-sound")) no_sound = 1;
-        else if (!strcmp(argv[k], "--crt")) crt = 1;
+        else if (!strcmp(argv[k], "--crt")) shader = "crt";
+        else if (!strncmp(argv[k], "--shader=", 9)) shader = argv[k] + 9;
+        else if (!strcmp(argv[k], "--list-shaders")) { shader_list(); exit(0); }
         else if (!strncmp(argv[k], "--wav=", 6)) wavpath = argv[k] + 6;
         else if (!strncmp(argv[k], "--fullscreen=", 13)) fs = argv[k] + 13;
         else if (!strcmp(argv[k], "--list-modes")) { display_list_modes(); exit(0); }
@@ -247,7 +252,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     evlog = fopen(fn, "w");
     if (!evlog) { perror(fn); exit(1); }
     if (rg_interactive) {
-        if (!display_init(scale, fs, crt)) exit(1);
+        if (!display_init(scale, fs, shader)) exit(1);
         if (!no_sound && !wavpath) audio_init_device();
         rg_t0_ns = display_ticks_ns();
         irq_start_clock(rg_t0_ns);

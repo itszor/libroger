@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 #include "internal.h"
-#include "../shaders/crt.frag.spv.h"        /* shaders/crt.frag, see shaders/build.sh */
 
 uint8_t key_down[128];
 int mouse_x = 640, mouse_y = 512, mouse_buttons;
@@ -19,9 +18,9 @@ static SDL_Window *win;
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
 static int tex_w;                               /* texture is exactly the game screen: tex_w x 256 */
-static SDL_GPUShader *crt_shader;               /* --crt: custom fragment shader on the GPU renderer */
-static SDL_GPURenderState *crt_state;
-static char crt_capture[80];                    /* --crt screenshot: also save the shaded frame */
+static int cur_shader = -1;                     /* display shader chain (shader.c), -1: none */
+static char shader_capture[96];                 /* screenshot: also save the shaded frame */
+static uint32_t *shader_pix;                    /* the frame as RGBA8 for the shaders */
 static int kbuf[64], khead, ktail;
 static SDL_DisplayMode fs_mode;                 /* exclusive fullscreen mode, if chosen */
 static int fs_exclusive, fullscreen;
@@ -163,38 +162,29 @@ void display_list_modes(void)
 }
 
 /* spec: NULL windowed, "" desktop fullscreen, "WxH[@Hz]" exclusive mode */
-/* --crt: SDL 3.4's GPU renderer runs our fragment shader (shaders/crt.frag)
- * over the 1:1 game texture when it's drawn to the window - the rest of the
- * renderer (letterboxing, fullscreen, presenting) is unchanged. Only SPIR-V
- * (Vulkan) is built in; anything else falls back to the plain scaler. */
-static int crt_init(void)
+/* Display shaders (shader.c: RetroArch slang presets on SDL_GPU, through
+ * SDL 3.4's GPU renderer): F10 / Shift+F10 cycle through them, starting
+ * from none (each game pixel a sharp rectangle). Without a GPU renderer
+ * with SPIR-V (Vulkan) there are none. */
+static void set_shader(int i)
 {
-    SDL_GPUDevice *dev = SDL_GetGPURendererDevice(ren);
-    if (!dev) return 0;
-    if (!(SDL_GetGPUShaderFormats(dev) & SDL_GPU_SHADERFORMAT_SPIRV)) {
-        SDL_Log("--crt: GPU device has no SPIR-V support");
-        return 0;
-    }
-    SDL_GPUShaderCreateInfo si;
-    SDL_zero(si);
-    si.code = (const Uint8 *)crt_frag_spv;
-    si.code_size = sizeof crt_frag_spv;
-    si.entrypoint = "main";
-    si.format = SDL_GPU_SHADERFORMAT_SPIRV;
-    si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    si.num_samplers = 1;
-    si.num_uniform_buffers = 1;
-    crt_shader = SDL_CreateGPUShader(dev, &si);
-    if (!crt_shader) { SDL_Log("--crt: shader: %s", SDL_GetError()); return 0; }
-    SDL_GPURenderStateCreateInfo ri;
-    SDL_zero(ri);
-    ri.fragment_shader = crt_shader;
-    crt_state = SDL_CreateGPURenderState(ren, &ri);
-    if (!crt_state) { SDL_Log("--crt: render state: %s", SDL_GetError()); return 0; }
-    return 1;
+    int n = shader_count();
+    if (!n) { if (i >= 0) SDL_Log("display shaders unavailable (no GPU renderer with SPIR-V)"); return; }
+    if (i < -1) i = n - 1;
+    if (i >= n) i = -1;
+    if (!shader_select(i)) { SDL_Log("shader %s failed; none", shader_name(i)); i = -1; shader_select(-1); }
+    cur_shader = i;
+    char title[160];
+    const char *t = rg->title ? rg->title : "libroger";
+    if (i >= 0) snprintf(title, sizeof title, "%s [%s]", t, shader_name(i));
+    else snprintf(title, sizeof title, "%s", t);
+    SDL_SetWindowTitle(win, title);
+    SDL_Log("shader: %s", i >= 0 ? shader_name(i) : "none");
 }
 
-int display_init(int scale, const char *fs, int crt)
+void display_cycle_shader(int dir) { set_shader(cur_shader + dir); }
+
+int display_init(int scale, const char *fs, const char *shader)
 {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("SDL_Init: %s", SDL_GetError());
@@ -202,11 +192,8 @@ int display_init(int scale, const char *fs, int crt)
     }
     win = SDL_CreateWindow(rg->title ? rg->title : "libroger", 256 * scale, 192 * scale, SDL_WINDOW_RESIZABLE);
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 0; }
-    if (crt) {
-        ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
-        if (!ren) SDL_Log("--crt: no GPU renderer (%s); using the plain one", SDL_GetError());
-        else if (!crt_init()) { SDL_Log("--crt unavailable; using the plain renderer"); SDL_DestroyRenderer(ren); ren = NULL; }
-    }
+    ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
+    if (ren && !shader_init(ren)) SDL_Log("display shaders unavailable (no SPIR-V)");
     if (!ren) ren = SDL_CreateRenderer(win, NULL);
     if (!ren) { SDL_Log("renderer: %s", SDL_GetError()); return 0; }
     SDL_SetRenderLogicalPresentation(ren, LW, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -222,6 +209,12 @@ int display_init(int scale, const char *fs, int crt)
             } else SDL_Log("no display mode near %s (%s); using desktop fullscreen", fs, SDL_GetError());
         }
         apply_fullscreen();
+    }
+    if (shader && *shader) {
+        int i = shader_find(shader);
+        if (i < 0 && SDL_strcasecmp(shader, "none") && SDL_strcasecmp(shader, "nearest"))
+            SDL_Log("no shader %s (--list-shaders)", shader);
+        set_shader(i);
     }
     return 1;
 }
@@ -265,20 +258,30 @@ void display_present(const uint8_t *pix)
     SDL_UnlockTexture(tex);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
-    if (crt_state) {
-        int ow = 0, oh = 0;
-        SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
-        float u[4] = {(float)width, 256.0f, (float)ow, (float)oh};   /* source_size, output_size */
-        SDL_SetGPURenderStateFragmentUniforms(crt_state, 0, u, sizeof u);
-        SDL_SetGPURenderState(ren, crt_state);
-        SDL_RenderTexture(ren, tex, NULL, NULL);
-        SDL_SetGPURenderState(ren, NULL);
-        if (crt_capture[0]) {
-            SDL_Surface *shot = SDL_RenderReadPixels(ren, NULL);
-            if (shot) { SDL_SaveBMP(shot, crt_capture); SDL_DestroySurface(shot); }
-            crt_capture[0] = 0;
+    SDL_Texture *shaded = NULL;
+    if (cur_shader >= 0) {
+        /* the frame again as RGBA8 (R first in memory) for the shader's upload */
+        static int shader_w;
+        if (shader_w != width) { SDL_free(shader_pix); shader_pix = SDL_malloc((size_t)width * 256 * 4); shader_w = width; }
+        for (int y = 0; y < 256 && shader_pix; y++) {
+            uint32_t *row = shader_pix + (size_t)y * width;
+            convert_line(pix, y, row);
+            for (int x = 0; x < width; x++) {
+                uint32_t c = row[x];
+                row[x] = 0xFF000000u | (c & 0xFF00u) | (c >> 16 & 0xFFu) | (c & 0xFFu) << 16;
+            }
         }
-    } else SDL_RenderTexture(ren, tex, NULL, NULL);
+        SDL_FRect vp;
+        SDL_GetRenderLogicalPresentationRect(ren, &vp);
+        if (shader_pix && vp.w >= 1 && vp.h >= 1)
+            shaded = shader_run(shader_pix, width, 256, (int)(vp.w + 0.5f), (int)(vp.h + 0.5f));
+    }
+    SDL_RenderTexture(ren, shaded ? shaded : tex, NULL, NULL);
+    if (shader_capture[0]) {
+        SDL_Surface *shot = SDL_RenderReadPixels(ren, NULL);
+        if (shot) { SDL_SaveBMP(shot, shader_capture); SDL_DestroySurface(shot); }
+        shader_capture[0] = 0;
+    }
     SDL_RenderPresent(ren);
 }
 
@@ -319,6 +322,10 @@ void display_poll(void)
             if (e.key.scancode == SDL_SCANCODE_LALT || e.key.scancode == SDL_SCANCODE_RALT)
                 key_down[2] = down;
             if (down && e.key.scancode == SDL_SCANCODE_F12) { screenshot_requested = 1; break; }
+            if (e.key.scancode == SDL_SCANCODE_F10) {           /* next / previous display shader */
+                if (down && !e.key.repeat) display_cycle_shader((e.key.mod & SDL_KMOD_SHIFT) ? -1 : 1);
+                break;                                      /* not passed to the game */
+            }
             if (e.key.scancode == SDL_SCANCODE_F11 ||
                 (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT))) {
                 if (down && !e.key.repeat) display_toggle_fullscreen();
@@ -373,9 +380,9 @@ void display_screenshot(const uint8_t *pix, const char *path)
     for (int y = 0; y < 256; y++) convert_line(pix, y, (uint32_t *)((uint8_t *)s->pixels + y * s->pitch));
     SDL_SaveBMP(s, path);
     SDL_DestroySurface(s);
-    if (crt_state) {                             /* the shaded frame is saved by the next present */
-        snprintf(crt_capture, sizeof crt_capture, "%.*s-crt.bmp", (int)strcspn(path, "."), path);
-    }
+    if (cur_shader >= 0)                         /* the shaded frame is saved by the next present */
+        snprintf(shader_capture, sizeof shader_capture, "%.*s-%s.bmp", (int)strcspn(path, "."), path,
+                 shader_name(cur_shader));
 }
 int screenshot_requested;
 
