@@ -181,19 +181,13 @@ void swi(uint32_t n, uint32_t nextpc)
     case 0x35:                                   /* OS_ReadModeVariable: R0 mode (-1 current), R1 variable */
         R[2] = modevar((int32_t)R[0] < 0 ? -1 : (int)R[0], R[1]);
         return;
-    case 5: {                                    /* OS_CLI */
-        char s[1100]; int l = cstr(R[0], s, 1);
-        ev("OS_CLI", "s", s, l);
-        if (!strncasecmp(s, "QUIT", 4)) finish("OS_CLI QUIT");
-        return;
-    }
     case 0x11: finish("OS_Exit");
     case 0x2B: finish("OS_GenerateError");
     case 0x42: R[0] = rg_interactive ? (uint32_t)((display_ticks_ns() - rg_t0_ns) / CS_NS)   /* OS_ReadMonotonicTime */
                                      : (uint32_t)(icount / TICK_STEPS); return;
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
-    if (files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0)) return;
+    if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");

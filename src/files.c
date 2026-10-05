@@ -6,9 +6,11 @@
  * appdir/a/b/c, matched case-insensitively, where a host name may carry the
  * file's catalogue information after a comma - ",xxx" (filetype) or
  * ",llllllll-eeeeeeee" (load and exec addresses) - and RISC OS "/" is ".".
- * Files the program opens for output or update go to savedir (mirroring
- * their path) so the extracted originals stay untouched; reads prefer a
- * saved copy when there is one. */
+ * A <name> in a filename expands to the system variable's value (after any
+ * dir_prefixes are stripped). Files the program writes (open for output or
+ * update, OS_File save, *Save) go to savedir, mirroring their path, so the
+ * extracted originals stay untouched; reads prefer a saved copy when there
+ * is one. */
 #include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +47,9 @@ static const char *strip_prefixes(const char *n)
 
 int hostpath(const char *name, char *out)
 {
-    const char *n = strip_prefixes(name);
+    char x[1100];
+    gstrans(strip_prefixes(name), x, sizeof x);
+    const char *n = x;
     strcpy(out, rg_appdir);
     char part[256];
     while (*n) {
@@ -83,7 +87,7 @@ long load_file(const char *path, uint32_t addr)
 long roger_load_file(const char *path, uint32_t addr) { return load_file(path, addr); }
 
 /* catalogue information from a host name's suffix */
-static void file_info(const char *path, uint32_t *load, uint32_t *exec)
+void file_info(const char *path, uint32_t *load, uint32_t *exec)
 {
     *load = 0xFFFFFD00; *exec = 0;                    /* untyped: Data */
     const char *comma = strrchr(path, ',');
@@ -93,6 +97,29 @@ static void file_info(const char *path, uint32_t *load, uint32_t *exec)
     else if (strlen(comma + 1) == 3 && sscanf(comma + 1, "%3x", &a) == 1) *load = 0xFFF00000u | a << 8;
 }
 
+static void save_path(const char *name, char *out, int create);
+
+/* a file to read: the saved copy if the program has written one */
+int hostpath_read(const char *name, char *out)
+{
+    struct stat st;
+    save_path(name, out, 0);
+    if (stat(out, &st) == 0) return 1;
+    return hostpath(name, out);
+}
+
+/* write memory to a file (in savedir) */
+int save_file(const char *name, uint32_t addr, uint32_t len)
+{
+    char spath[2048];
+    save_path(name, spath, 1);
+    FILE *f = fopen(spath, "wb");
+    if (!f) return 0;
+    fwrite(MEM + addr, 1, len, f);
+    fclose(f);
+    return 1;
+}
+
 /* ---------------------------------------------------------------- OS_File */
 static void os_file(void)
 {
@@ -100,7 +127,11 @@ static void os_file(void)
     char name[1100], path[2048];
     int n = cstr(R[1], name, 1);
     ev("OS_File", "is", op, name, n);
-    int ok = hostpath(name, path);
+    if (op == 0 || op == 10) {                                    /* save (with load/exec, filetype) */
+        if (!save_file(name, R[4], R[5] - R[4]) && swi_x) VF = 1;   /* R4 start, R5 end */
+        return;
+    }
+    int ok = hostpath_read(name, path);
     if (op == 255 || op == 12 || op == 14 || op == 16) {          /* load */
         if (!ok) {
             /* an X-flagged (error-checking) caller handles a missing file
@@ -133,14 +164,17 @@ static void os_file(void)
 #define NHANDLES 32
 static FILE *handles[NHANDLES];           /* RISC OS handle k+1 */
 
-static void save_path(const char *name, char *out)
+/* where the program's copy of a file goes; create: make its directories */
+static void save_path(const char *name, char *out, int create)
 {
-    const char *n = strip_prefixes(name);
+    char x[1100];
+    gstrans(strip_prefixes(name), x, sizeof x);
+    const char *n = x;
     snprintf(out, 2048, "%s/", rg_savedir);
-    mkdir(rg_savedir, 0777);
+    if (create) mkdir(rg_savedir, 0777);
     size_t o = strlen(out);
     for (; *n && o < 2040; n++) {
-        if (*n == '.') { out[o] = 0; mkdir(out, 0777); out[o++] = '/'; }
+        if (*n == '.') { out[o] = 0; if (create) mkdir(out, 0777); out[o++] = '/'; }
         else out[o++] = *n == '/' ? '.' : *n;
     }
     out[o] = 0;
@@ -152,7 +186,7 @@ static uint32_t open_handle(uint32_t reason, const char *name)
     int k;
     for (k = 0; k < NHANDLES && handles[k]; k++) ;
     if (k == NHANDLES) return 0;
-    save_path(name, spath);
+    save_path(name, spath, (reason & 0xC0) != 0x40);
     FILE *f = NULL;
     struct stat st;
     int saved = stat(spath, &st) == 0;
@@ -223,6 +257,10 @@ void sprite_op(void)
 {
     uint32_t op = R[0] & 0xFF;
     ev("OS_SpriteOp", "iii", R[0], R[1], R[2]);
+    if (op == 8 && (R[0] & 0x300) != 0) {         /* read area control block (user area) */
+        R[2] = RD32(R[1]); R[3] = RD32(R[1] + 4); R[4] = RD32(R[1] + 8); R[5] = RD32(R[1] + 12);
+        return;
+    }
     if (rg_full_os && sprite_op_full()) return;
     if (op == 10 || op == 11) {                   /* load / merge sprite file */
         char name[1100], path[2048];

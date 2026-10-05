@@ -29,10 +29,15 @@ struct roger_program {
 /* A relocatable module RMLoaded before the program starts (as !Run would):
  * the file is loaded at image->base (the module was translated for that
  * address), its initialisation entry is run, its SWI chunk is routed to its
- * SWI handler and its code is dispatched from image. */
+ * SWI handler and its code is dispatched from image. An on_demand module is
+ * only loaded when the program asks for that file (*RMLoad, *RMRun,
+ * OS_Module 0/1), and may be killed again (*RMKill, OS_Module 4). Modules
+ * that are never loaded at the same time may share an address, and so an
+ * image when their code is the same (e.g. a music player module per tune). */
 struct roger_module {
     const char *path;                     /* host path, relative to the working directory */
     const struct roger_image *image;
+    int on_demand;
 };
 
 /* An image that copies itself and runs from the copy: while `image` is the
@@ -52,7 +57,10 @@ struct roger_config {
     const char *title;                    /* window title */
 
     /* --- the program */
-    const char *image_path;               /* loaded at &8000 and run; command-line overridable */
+    const char *image_path;               /* loaded at its image's base (normally &8000) and run;
+                                             command-line overridable */
+    uint32_t entry;                       /* where it starts, if not at its base (an absolute
+                                             file's execution address) */
     const struct roger_image *image;      /* its translation */
     const struct roger_program *programs; /* other program files that may be loaded at their
                                              image's base later; NULL-terminated (leaf NULL) */
@@ -68,6 +76,11 @@ struct roger_config {
      * "Disc2:" (disc names) are always ignored */
     const char *appdir;
     const char *const *dir_prefixes;      /* NULL-terminated */
+    const char *const *variables;         /* system variables set before the program runs (as
+                                             !Run's *Set would): name, value, ..., NULL. A
+                                             <name> in a filename or command line expands to its
+                                             value, so e.g. {"Game$Dir", "!Game"} with appdir
+                                             ".." finds <Game$Dir>.Data as ../!Game/Data */
 
     /* --- the machine as !Run left it */
     int initial_mode;                     /* screen mode */
@@ -108,6 +121,8 @@ struct roger_config {
     int  (*swi)(uint32_t swi, int x);     /* first look at every SWI: 1 if handled (x: X bit) */
     int  (*call_addr)(uint32_t a);        /* first look at every dispatch: 1 if handled */
     int  (*arg)(const char *arg);         /* a command-line argument libroger doesn't know: 1 if used */
+    void (*exited)(void);                 /* the program returned to the OS (what !Run does
+                                             next, e.g. a closing screen); the run then ends */
     void (*finish)(void);                 /* the run is ending */
     const char *usage;                    /* extra --help text for arg() */
 };
@@ -135,6 +150,13 @@ int  roger_hostpath(const char *name, char *out);     /* RISC OS filename -> hos
 int  roger_interactive(void);                          /* 0 in headless (--limit) runs */
 int  roger_in_handler(void);                           /* inside an interrupt handler call */
 void roger_log_sound_swi(uint32_t swi);                /* the event line the sound SWIs log */
+void roger_swi(uint32_t swi);                          /* call a SWI from game code with R[] as set;
+                                                          VF reports an error */
+void roger_cli(const char *command);                   /* OS_CLI from game code */
+uint32_t roger_scratch(const char *s);                 /* copy a string into emulated memory (a
+                                                          small runtime buffer) for a SWI argument */
+const char *roger_getvar(const char *name);            /* a system variable (NULL if unset) */
+void roger_setvar(const char *name, const char *value);
 void roger_audio_out(const int16_t *lr, int frames, int rate);   /* host audio (stereo) */
 extern uint32_t vidc_palette[16];                      /* live VIDC palette (0x0BGR) */
 extern uint32_t vidc_palette_top[16];                  /* palette above palette_split */

@@ -44,13 +44,18 @@ fills in a `struct roger_config` (roger.h) and calls `roger_main()`:
 
 What the configuration covers (all but the image optional):
 
-- the program and its translation; other programs it may chain-load at
-  their image's base (`programs`); images that copy themselves elsewhere
-  and run from the copy (`relocations`, with code translated relative to
-  `pc_bias`); relocatable modules to RMLoad first (`modules`); loader
-  programs !Run runs before it (`loader_programs`, interpreted)
+- the program and its translation, and where it starts if not at its load
+  address (`entry`, an absolute file's execution address); other programs
+  it may chain-load at their image's base (`programs`); images that copy
+  themselves elsewhere and run from the copy (`relocations`, with code
+  translated relative to `pc_bias`); relocatable modules to RMLoad first,
+  or when the program asks for them (`modules`, `on_demand`: *RMLoad,
+  *RMRun, OS_Module, and *RMKill again; modules never loaded together may
+  share an address and a translation); loader programs !Run runs before it
+  (`loader_programs`, interpreted)
 - its files: the host directory standing in for the application directory
-  and the RISC OS prefixes that mean it
+  and the RISC OS prefixes that mean it, and system variables as !Run sets
+  them (`variables`; `<Game$Dir>` in a filename or command expands)
 - the machine as !Run left it: screen mode, WimpSlot, screen memory size and
   placement, initial stack
 - interrupts: a raw IRQ handler at &100 (`irq1v`) for games that bypass the
@@ -58,7 +63,12 @@ What the configuration covers (all but the image optional):
 - input: pointer offset, relative mouse capture, the headless scenario
 - translation gaps that are known and may be interpreted
 - hooks: init, every frame, every centisecond, first look at SWIs and at
-  dispatch, extra command-line arguments, finish
+  dispatch, extra command-line arguments, the program returning to the OS
+  (`exited`: what !Run does next), finish
+
+Game code (hooks, or a loader written in C - e.g. a BASIC program
+translated by hand) can call SWIs and * commands with `roger_swi()` and
+`roger_cli()`, and read and set system variables.
 
 Command line (any game): `--limit=N` (headless, deterministic),
 `--script=...` (scripted input: keys, clicks, taps, screenshots),
@@ -88,31 +98,36 @@ Implemented:
 
 - CPU: processor modes with banked registers, TEQP mode changes, the
   ARM2 interpreter (gaps, self-modified instructions), SMC detection
-- interrupts: TickerV, EventV (vsync, mouse), OS_ClaimDeviceVector (vsync,
+- interrupts: TickerV, EventV (vsync, mouse; a claimant can intercept with
+  the return address on the stack), OS_ClaimDeviceVector (vsync,
   IOC timer 1), the raw handler at &100; palette changes part way down the
   frame (timer 1 started at flyback, VIDC VDSR/VDER/VCR timing)
 - video: the standard 50Hz graphics modes (0, 1, 2, 4, 5, 8, 9, 10, 12, 13,
   15), screen banks (OS_Byte 112/113, OS_Word 22), MEMC Vinit/Vstart/Vend
   with wrap-around, VIDC palette including 256-colour modes, VDU and mode
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, tints, windows,
-  origin, PLOT lines/points/triangles/rectangles; no text), OS_SpriteOp on
-  user areas (load, select, plot)
-- files: OS_File, OS_Find, OS_GBPB, OS_Args, OS_BGet/BPut on the host
-  directory, catalogue information from `,xxx` / `,load-exec` name suffixes,
-  writes redirected to a save directory
+  origin, PLOT lines/points/triangles/rectangles; VDU 21/6; no text),
+  OS_SpriteOp on user areas (load, read area information, select, plot)
+- files: OS_File (load, save, catalogue), OS_Find, OS_GBPB, OS_Args,
+  OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
+  `,load-exec` name suffixes, writes redirected to a save directory (and
+  read back from there)
 - sound: DMA at the configured rate with VIDC log samples and stereo
   positions; a program's own Level 1 handler, or the OS's channel handler
   running voice generators (install, attach by number or name, Instantiate/
   Free, GateOn/Fill/GateOff, durations, Sound_Pitch, BBC-style amplitudes
   and pitches); to SDL or a WAV file
+- the command line: Set, SetEval, Unset, If ... Then ... Else, Load, Save,
+  RMLoad, RMRun, RMKill, FX, after GSTrans (<var>); OS_ReadVarVal,
+  OS_SetVarVal. Other commands are logged and ignored
 - the kernel: OS_Byte (keyboard scans, INKEY, events, Escape, banks, mode),
   OS_Word (palette, pointer, display start), OS_Mouse, OS_GetEnv,
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
   OS_ReadModeVariable, OS_ReadMonotonicTime, conversions, OS_CLI (logged),
   modules' SWI chunks, OS_Module claims
 
-Not implemented (yet): text rendering, the Wimp, filing system writes
-other than through open files, most OS_CLI commands, FIQs.
+Not implemented (yet): text rendering, the Wimp, most OS_CLI commands,
+keyboard events, sound tuning (Sound_Tuning, *Tuning), FIQs.
 
 Files
 -----
@@ -127,6 +142,7 @@ Files
     src/audio.c          host audio (SDL stream, WAV)
     src/files.c          files and sprite files
     src/modules.c        relocatable modules, the RMA
+    src/cli.c            OS_CLI (* commands) and system variables
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse
     src/main.c           start-up, command line, event log, scripts, finish

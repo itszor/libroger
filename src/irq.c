@@ -41,13 +41,21 @@ void call_vector(unsigned vec, int nregs, const uint32_t *regs)
     memcpy(saved, R, sizeof R);
     for (int k = 0; k < nregs; k++) R[k] = regs[k];
     R[12] = vectors[vec].ws;
+    /* R14 passes the call on; a claimant that intercepts it instead pulls
+     * the kernel's return address off the stack (ldmfd sp!, {pc}). The
+     * handler runs on the interrupted code's stack, which may be ascending
+     * (Galactic Dan), so the word under it is put back afterwards. */
     R[14] = HANDLER_RET;
+    R[13] -= 4;
+    uint32_t under_sp = R[13], under = RD32(under_sp);
+    WR32(under_sp, HANDLER_RET);
     npc = vectors[vec].code;
     in_handler = 1;
     COV_ASYNC_ENTER();
     run_until(HANDLER_RET);
     COV_ASYNC_EXIT();
     in_handler = 0;
+    WR32(under_sp, under);
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
     npc = snpc;
@@ -143,7 +151,9 @@ int irq_swi(uint32_t b)
         ev(b == 0x1F ? "OS_Claim" : "OS_Release", "iii", R[0], R[1], R[2]);
         if (b == 0x1F && R[0] < 0x20) {
             vectors[R[0]].code = R[1]; vectors[R[0]].ws = R[2]; vectors[R[0]].set = 1;
-        }
+        } else if (b == 0x20 && R[0] < 0x20 && vectors[R[0]].set &&
+                   vectors[R[0]].code == R[1] && vectors[R[0]].ws == R[2])
+            vectors[R[0]].set = 0;               /* e.g. a module's finalisation */
         return 1;
     }
     return 0;

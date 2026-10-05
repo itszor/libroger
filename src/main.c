@@ -109,6 +109,11 @@ void script_run(void)
 void finish(const char *why)
 {
     char fn[512];
+    static int exiting;
+    if (rg->exited && !exiting && !strcmp(why, "returned to OS")) {
+        exiting = 1;                             /* what !Run does after the program */
+        rg->exited();
+    }
     if (rg->finish) rg->finish();
     fclose(evlog);
     snprintf(fn, sizeof fn, "%s.vdu", outprefix);
@@ -250,6 +255,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     if (wavpath && !audio_init_wav(wavpath)) fprintf(stderr, "cannot write %s\n", wavpath);
     screen_mode = cfg->initial_mode ? cfg->initial_mode : 12;      /* what !Run selected */
     video_default_palette();
+    cli_init();
     if (rg_full_os && !no_title && cfg->loader_programs) {
         for (int k = 0; cfg->loader_programs[k]; k++) run_loader_program(cfg->loader_programs[k]);
         recompute_irq();
@@ -267,7 +273,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     modules_load();
     if (cfg->init) cfg->init();
     R[13] = cfg->stack ? cfg->stack : LOAD + cfg->wimpslot; R[14] = RETURN_TO_OS; R[12] = 0;
-    npc = cfg->image->base;
+    npc = cfg->entry ? cfg->entry : cfg->image->base;
     recompute_irq();
     run_until(RETURN_TO_OS);
     finish("returned to OS");

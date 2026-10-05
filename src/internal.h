@@ -55,6 +55,7 @@ void call_code(uint32_t addr, uint32_t mode, uint32_t r14);
 void run_until(uint32_t stop);
 void interp_step(void);
 void cpu_add_image(const struct roger_image *img);    /* dispatched wherever it lies (modules) */
+void cpu_remove_image(const struct roger_image *img);
 int  cpu_translated(uint32_t a);
 void cpu_report_state(const char *why);
 void cpu_dump_pchist(void);
@@ -112,14 +113,24 @@ void audio_close(void);
 extern int swi_x;                         /* the current SWI is X-flagged */
 int  cstr(uint32_t a, char *out, int term_ctrl);
 int  hostpath(const char *name, char *out);
+int  hostpath_read(const char *name, char *out);   /* preferring a saved copy */
+void file_info(const char *path, uint32_t *load, uint32_t *exec);
+int  save_file(const char *name, uint32_t addr, uint32_t len);
 long load_file(const char *path, uint32_t addr);
 int  files_swi(uint32_t b);
 void sprite_op(void);
 
 /* modules.c */
 void modules_load(void);
+int  modules_rmload(const char *name);   /* 0: not a configured module file */
+int  modules_rmkill(const char *title);
 int  modules_swi(uint32_t b, int x);
 int  modules_gap(uint32_t a);             /* an untranslated address in a module */
+
+/* cli.c: OS_CLI and system variables */
+void cli_init(void);
+void gstrans(const char *in, char *out, int size);
+int  cli_swi(uint32_t b, int x);
 
 /* swi.c */
 extern uint32_t swi_pc;

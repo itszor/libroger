@@ -51,7 +51,8 @@ void set_psr_mode(uint32_t m)
  * chain-loaded program takes over) plus any others, e.g. modules in the
  * RMA, dispatched wherever their address range is. */
 struct loaded { const struct roger_image *img; fn_t *tab; };
-static struct loaded prog, extra[16];
+#define MAXIMG 64
+static struct loaded prog, extra[MAXIMG];
 static int nextra;
 
 static fn_t *build_tab(const struct roger_image *img)
@@ -63,8 +64,8 @@ static fn_t *build_tab(const struct roger_image *img)
 
 static fn_t *tab_for(const struct roger_image *img)
 {
-    static struct loaded cache[16];
-    for (int k = 0; k < 16; k++) {
+    static struct loaded cache[MAXIMG];
+    for (int k = 0; k < MAXIMG; k++) {
         if (cache[k].img == img) return cache[k].tab;
         if (!cache[k].img) { cache[k].img = img; return cache[k].tab = build_tab(img); }
     }
@@ -94,7 +95,13 @@ int cpu_translated(uint32_t a)
 
 void cpu_add_image(const struct roger_image *img)
 {
-    if (nextra < 16) { extra[nextra].img = img; extra[nextra].tab = tab_for(img); nextra++; }
+    if (nextra < MAXIMG) { extra[nextra].img = img; extra[nextra].tab = tab_for(img); nextra++; }
+}
+
+void cpu_remove_image(const struct roger_image *img)
+{
+    for (int k = 0; k < nextra; k++)
+        if (extra[k].img == img) { extra[k] = extra[--nextra]; return; }
 }
 
 /* Programs that may be loaded at their image's base: OS_File loaded one;

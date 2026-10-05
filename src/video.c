@@ -93,13 +93,16 @@ void vdu_put(uint8_t c)
 {
     static const uint8_t nparams[32] = {0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
                                         0,1,2,5,0,0,1,9,8,5,0,0,4,4,0,2};
-    static uint8_t q[10]; static int qn, qwant;
+    static uint8_t q[10]; static int qn, qwant, disabled;
     if (nvdu < sizeof vdu_log) vdu_log[nvdu++] = c;
-    if (rg_full_os) vdu_write(c);
+    /* VDU 21 disables the VDU drivers until VDU 6 (sequences are still
+     * parsed, so that a 6 among a sequence's parameters doesn't count) */
+    if (!qwant && (c == 6 || c == 21)) { disabled = c == 21; return; }
+    if (rg_full_os && !disabled) vdu_write(c);
     if (qwant) {
         q[qn++] = c;
         if (qn == qwant) {
-            if (q[0] == 22 && mode_info(q[1])) { screen_mode = q[1] & 0x7F; video_default_palette(); }
+            if (q[0] == 22 && !disabled && mode_info(q[1])) { screen_mode = q[1] & 0x7F; video_default_palette(); }
             qn = qwant = 0;
         }
     } else if (c < 32 && nparams[c]) {
