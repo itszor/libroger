@@ -176,7 +176,11 @@ void call_addr(uint32_t a)
     if (rg->interpreted)
         for (const uint32_t *g = rg->interpreted; g[1]; g += 2)
             if (a >= g[0] && a < g[1]) { interp_step(); return; }   /* a known gap */
-    if (rg->interpret_gaps) { interp_step(); return; }
+    if (rg->interpret_gaps) {                 /* --trace-gaps still logs them */
+        if (rg_trace_gaps && !cpu_seen_gap(a)) cpu_log_gap(a);
+        interp_step();
+        return;
+    }
     for (int k = 0; k < nextra; k++)
         if (a >= extra[k].img->base && a < extra[k].img->end) {
             /* module code should be fully translated: report the gap and end
