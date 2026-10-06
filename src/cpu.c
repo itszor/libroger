@@ -124,12 +124,23 @@ static int seen(uint32_t *tab, int *n, int max, uint32_t a)
 }
 int cpu_seen_gap(uint32_t a) { static uint32_t s[4096]; static int n; return seen(s, &n, 4096, a); }
 
+/* untranslated.log: one line per gap address, the first time it's reached,
+ * with the image it's in ("img=base-end", or "img=none"), which tells apart
+ * images translated for the same address. "from pc" is the instruction
+ * executed before it: a gap word reached from the gap word before it is the
+ * interpreter stepping on, anything else is an entry into untranslated code
+ * (SuperSpider's tools/gap_roots.py makes those roots for the next analysis). */
 void cpu_log_gap(uint32_t a)
 {
     FILE *f = fopen("untranslated.log", "a");
     if (f) {
-        fprintf(f, "%llu: branch to untranslated address %08x (LR=%08x, from pc=%08x)\n",
+        uint32_t b = 0, e = 0;
+        if (a >= img_base && a < img_end) b = img_base, e = img_end;
+        else for (int k = 0; k < nextra; k++)
+            if (a >= extra[k].img->base && a < extra[k].img->end) { b = extra[k].img->base; e = extra[k].img->end; break; }
+        fprintf(f, "%llu: branch to untranslated address %08x (LR=%08x, from pc=%08x)",
                 (unsigned long long)icount, a, R[14], g_cur_pc);
+        if (e) fprintf(f, " img=%08x-%08x\n", b, e); else fprintf(f, " img=none\n");
         fclose(f);
     }
     fprintf(stderr, "branch to untranslated address %08x (icount %llu, LR=%08x, from pc=%08x) - see untranslated.log\n",
@@ -174,9 +185,12 @@ void call_addr(uint32_t a)
             npc = HANDLER_RET;
             return;
         }
-    if (in_handler && !rg_trace_gaps) {
+    if (in_handler && (!rg_trace_gaps || !(a >= img_base && a < img_end))) {
         /* an interrupt handler the runtime called landed somewhere it can't
-         * follow: end that call (the next interrupt tries again) */
+         * follow: end that call (the next interrupt tries again). With
+         * --trace-gaps only untranslated code in the program is followed: a
+         * handler chaining to an old vector the runtime left at 0 would
+         * otherwise have the interpreter walk through zero page for good. */
         if (!cpu_seen_gap(a)) cpu_log_gap(a);
         npc = HANDLER_RET;
         return;
