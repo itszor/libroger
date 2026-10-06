@@ -1,6 +1,7 @@
 /* The SDL3 front end: window, keyboard and mouse.
  *
- * The screen is shown at 4:3 as on an Archimedes monitor, one texel per
+ * The screen is shown at 4:3 as on an Archimedes monitor (a mode a module
+ * defines at the shape its pixels give it: mode_aspect()), one texel per
  * pixel of the current mode (160, 320 or 640 by 256 on an Archimedes; any
  * size on a Risc PC), coloured through VIDC's palette (vidc_rgb()) or, at
  * 16 and 32 bits per pixel, directly (then through VIDC20's gamma tables). Keys are tracked by RISC OS internal key
@@ -25,8 +26,8 @@ static uint32_t *shader_pix;                    /* the frame as RGBA8 for the sh
 static int kbuf[64], khead, ktail;
 static SDL_DisplayMode fs_mode;                 /* exclusive fullscreen mode, if chosen */
 static int fs_exclusive, fullscreen;
-#define LW 1024
 #define LH 768
+static int lw = 1024;                           /* logical size: LH high, the mode's shape */
 /* The game's pointer hit point may sit some OS units below the host
  * pointer's (roger_config.pointer_y_offset). */
 #define POINTER_Y_OFFSET (rg->pointer_y_offset)
@@ -50,7 +51,7 @@ void display_set_mouse(int x, int y)
     if (rg->relative_mouse) return;
     if (win && SDL_GetMouseFocus() == win) {
         float wx, wy;
-        SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * LW / 1280,
+        SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * lw / 1280,
                                       (1023 + POINTER_Y_OFFSET - y + 0.5f) * LH / 1024, &wx, &wy);
         SDL_WarpMouseInWindow(win, wx, wy);
     }
@@ -61,7 +62,7 @@ void display_set_mouse(int x, int y)
 void display_inject_tap(int px, int py)
 {
     float wx, wy;
-    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * LW / cur_mode()->width, (py + 0.5f) * LH / cur_mode()->height, &wx, &wy);
+    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * lw / cur_mode()->width, (py + 0.5f) * LH / cur_mode()->height, &wx, &wy);
     SDL_Event e;
     SDL_zero(e);
     e.type = SDL_EVENT_MOUSE_MOTION; e.motion.windowID = SDL_GetWindowID(win); e.motion.x = wx; e.motion.y = wy;
@@ -197,7 +198,7 @@ int display_init(int scale, const char *fs, const char *shader)
     if (ren && !shader_init(ren)) SDL_Log("display shaders unavailable (no SPIR-V)");
     if (!ren) ren = SDL_CreateRenderer(win, NULL);
     if (!ren) { SDL_Log("renderer: %s", SDL_GetError()); return 0; }
-    SDL_SetRenderLogicalPresentation(ren, LW, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    SDL_SetRenderLogicalPresentation(ren, lw, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     SDL_HideCursor();                            /* the game draws its own pointer */
     if (fs) {
         int w = 0, h = 0;
@@ -267,6 +268,14 @@ void display_present(const uint8_t *pix)
     uint32_t *out;
     int pitch, width = cur_mode()->width, height = cur_mode()->height;
     update_palette();
+    int want = (int)(LH * mode_aspect(cur_mode()) + 0.5f);
+    if (want != lw) {                            /* the mode's shape changed */
+        lw = want;
+        SDL_SetRenderLogicalPresentation(ren, lw, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        int ww, wh;
+        if (!fullscreen && SDL_GetWindowSize(win, &ww, &wh))
+            SDL_SetWindowSize(win, wh * lw / LH, wh);
+    }
     if (width != tex_w || height != tex_h) {     /* one texel per game pixel */
         if (tex) SDL_DestroyTexture(tex);
         tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
@@ -375,7 +384,7 @@ void display_poll(void)
                 SDL_ConvertEventToRenderCoordinates(ren, &e);
                 float x = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x;
                 float y = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y;
-                mouse_x = (int)(x * 1280 / LW);
+                mouse_x = (int)(x * 1280 / lw);
                 mouse_y = 1023 + POINTER_Y_OFFSET - (int)(y * 1024 / LH);
             }
             mouse_x = mouse_x < 0 ? 0 : mouse_x > 1279 ? 1279 : mouse_x;

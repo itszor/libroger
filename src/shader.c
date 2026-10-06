@@ -323,7 +323,7 @@ static void fill_uniforms(int p, uint8_t *u, int vw, int vh)
         case RS_U_VIEWPORT_SIZE: put_vec4(d, (float)vw, (float)vh); break;
         case RS_U_FRAME_COUNT: put_scalar(d, x->type, ps->frame_count_mod ? frame % ps->frame_count_mod : frame); break;
         case RS_U_FRAME_DIRECTION: case RS_U_ONE: put_scalar(d, x->type, 1); break;
-        case RS_U_ASPECT: put_scalar(d, x->type, 4.0 / 3.0); break;      /* the Archimedes' monitor */
+        case RS_U_ASPECT: put_scalar(d, x->type, mode_aspect(cur_mode())); break;
         case RS_U_FPS: put_scalar(d, x->type, 50); break;
         case RS_U_FRAME_TIME: put_scalar(d, x->type, 20000); break;
         case RS_U_TEX_SIZE: { struct target *t = tex_of(x->tex); put_vec4(d, (float)t->w, (float)t->h); break; }

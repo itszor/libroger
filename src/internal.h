@@ -79,12 +79,14 @@ int  irq_sound_claimed(void);             /* a program has the sound DMA interru
 void irq_sound(void);                     /* ...call its handler */
 
 /* video.c */
-struct rg_mode { int width, height, bpp, xeig, yeig, text_cols, text_rows; };
+struct rg_mode { int width, height, bpp, xeig, yeig, text_cols, text_rows;
+                 float aspect; };                /* display width/height; 0: 4:3, the monitor */
 extern uint32_t screen_mode;             /* a number, or a selector's address */
 extern uint32_t bank, display_bank;
 const struct rg_mode *mode_info(uint32_t m);   /* NULL if not a mode this machine has */
 int  video_set_mode(uint32_t m);          /* 0 if not a mode */
 const struct rg_mode *cur_mode(void);
+float mode_aspect(const struct rg_mode *m);   /* the shape it's shown at */
 uint32_t screen_base(void);               /* start of screen memory */
 uint32_t screen_size(void);               /* total screen memory */
 uint32_t mode_bytes(const struct rg_mode *m);

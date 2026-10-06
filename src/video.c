@@ -100,6 +100,12 @@ static const struct rg_mode *module_mode(uint32_t m)
     r.text_cols = v[1] >= 0 ? v[1] + 1 : r.width / 8;
     r.text_rows = v[2] >= 0 ? v[2] + 1 : r.height / 8;
     if (r.width < 16 || r.height < 16 || r.width > 2048 || r.height > 2048) return NULL;
+    /* A mode a module defines keeps the pixel shape its eig factors give it
+     * against the 1280x1024 OS units that fill the 4:3 screen: a smaller or
+     * larger picture rather than one stretched to fill (FervourMode's
+     * 368x216, mode 13's pixels, is wider than 4:3). */
+    int osw = r.width << r.xeig, osh = r.height << r.yeig;
+    r.aspect = osw == 1280 && osh == 1024 ? 0 : 4.0f / 3 * osw * 1024 / (1280.0f * osh);
     ext_modes[m] = r;
     ext_known[m] = 1;
     ev("mode_extension", "iiii", m, r.width, r.height, r.bpp);
@@ -128,6 +134,7 @@ const struct rg_mode *mode_info(uint32_t m)
     return &sel;
 }
 const struct rg_mode *cur_mode(void) { return &current; }
+float mode_aspect(const struct rg_mode *m) { return m->aspect > 0 ? m->aspect : 4.0f / 3; }
 
 /* Change mode (VDU 22, OS_ScreenMode 0, Wimp_SetMode): 0 if m isn't one.
  * A selector is copied (OS_ScreenMode 1 returns the copy). */
