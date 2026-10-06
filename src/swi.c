@@ -4,6 +4,7 @@
  * log (roger_log()). */
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include "internal.h"
 
 uint32_t swi_pc;
@@ -46,14 +47,18 @@ static void os_byte(void)
         }
         return;
     }
-    if (op == 121) {                                   /* keyboard scan */
-        if (R[1] & 0x80) R[1] = pressed((R[1] ^ 0x80) + 1) ? 0xFF : 0;
-        else R[1] = 0xFF;
+    if (op == 121) {                                   /* keyboard scan: R1 key ^ &80 (that key), */
+        if (R[1] & 0x80) { R[1] = pressed((R[1] ^ 0x80) + 1) ? 0xFF : 0; return; }
+        uint32_t k = R[1];                             /* or the first key from R1 up pressed */
+        while (k < 128 && !pressed(k + 1)) k++;
+        R[1] = k < 128 ? k : 0xFF;
         return;
     }
-    if (op == 112 || op == 113) {                      /* screen bank for VDU drivers / display */
-        video_set_bank(op == 113, (R[1] >= 1 ? R[1] - 1 : 0) & 1);
+    if (op == 112 || op == 113) {                      /* screen bank for VDU drivers / display: */
+        uint32_t old = (op == 113 ? display_bank : bank) + 1;   /* R1 the new one (1-based), returns */
+        video_set_bank(op == 113, (R[1] >= 1 ? R[1] - 1 : 0) & 1);   /* the previous one */
         ev("OS_Byte", "ii", op, R[1]);
+        R[1] = old;
         return;
     }
     if (op == 13 || op == 14) {                        /* disable / enable event */
@@ -77,9 +82,23 @@ static void os_byte(void)
     ev("OS_Byte", "iii", op, R[1], R[2]);
 }
 
+/* The real-time clock: centiseconds since 1900. Interactive runs read the
+ * host's clock; headless runs start at a fixed moment (noon, 1 January
+ * 1993) and advance with emulated time, so that they stay deterministic. */
+static uint64_t rtc_cs(void)
+{
+    if (rg_interactive) return ((uint64_t)time(NULL) + 2208988800ull) * 100;   /* 1900 -> 1970 */
+    return 2934878400ull * 100 + icount / TICK_STEPS;
+}
+
 static void os_word(void)
 {
     uint8_t *blk = MEM + R[1];
+    if (R[0] == 14 && blk[0] == 3) {                 /* read the RTC: 5 bytes, centiseconds */
+        uint64_t t = rtc_cs();
+        for (int k = 0; k < 5; k++) blk[k] = (uint8_t)(t >> 8 * k);
+        return;
+    }
     video_os_word(R[0], blk);
     if (R[0] == 21 && blk[0] == 0)
         ev("OS_Word", "isi", R[0], blk, 6, blk[6] | blk[7] << 8 | blk[8] << 16 | (uint32_t)blk[9] << 24);
@@ -179,6 +198,16 @@ void swi(uint32_t n, uint32_t nextpc)
         return;
     }
     case 3: vdu_put('\n'); vdu_put('\r'); return;                   /* OS_NewLine */
+    case 4:                                      /* OS_ReadC: wait for a key; C set on Escape */
+        CF = 0;
+        if (!rg_interactive) { R[0] = 13; return; }   /* headless: Return */
+        for (;;) {
+            if (escape_pressed) { R[0] = 27; CF = 1; return; }
+            int c = key_buffer_get();
+            if (c >= 0) { R[0] = (uint32_t)c; return; }
+            display_sleep_ns(CS_NS);
+            rt_service(0);
+        }
     case 0x46: for (uint32_t k = 0; k < R[1]; k++) vdu_put(MEM[R[0] + k]); return;   /* OS_WriteN */
     case 0x45: vdu_put(25); vdu_put(R[0]); vdu_put(R[1]); vdu_put(R[1] >> 8);       /* OS_Plot */
                vdu_put(R[2]); vdu_put(R[2] >> 8); return;
@@ -211,6 +240,10 @@ void swi(uint32_t n, uint32_t nextpc)
         return;
     }
     case 0x1D: return;                           /* OS_RemoveCursors (old number): no cursor to hide */
+    case 0x13: MODEBITS &= ~0x08000000u; return; /* OS_IntOn / OS_IntOff: the caller's I bit */
+    case 0x14: MODEBITS |= 0x08000000u; return;
+    case 0x51: R[0] = 0x8000; R[1] = 128; return;   /* OS_ReadMemMapInfo: 128 pages of 32K (4MB) */
+    case 0x56: ev("OS_SetECFOrigin", "ii", R[0], R[1]); return;
     case 0x16: set_psr_mode((MODEBITS & ~3u) | 3); return;   /* OS_EnterOS: caller continues in SVC mode */
     case 0x2C: CF = rg_interactive ? escape_pressed : 0; return;   /* OS_ReadEscapeState */
     case 0x31: {                                 /* OS_ReadVduVariables */
@@ -236,6 +269,7 @@ void swi(uint32_t n, uint32_t nextpc)
                                      : (uint32_t)(icount / TICK_STEPS); return;
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
+    if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
     if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);

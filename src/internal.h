@@ -9,8 +9,8 @@
  *   &0000000  page zero (hardware vectors; &100 see irq1v)
  *   &0008000  the application (to the RAM limit, &8000 + WimpSlot)
  *   &17F0000  runtime workspace: sound DMA buffers, sound channel control
- *             blocks, the mode selector, OS_GetEnv's strings, SVC and IRQ
- *             stacks, module
+ *             blocks, a scratch buffer, the mode selector, OS_GetEnv's
+ *             strings, SVC and IRQ stacks, module
  *             private words (&17FFFFC down)
  *   &1800000  RMA: RMLoaded modules, then OS_Module claims (&1810000 on)
  *   ........  screen memory, ending at &2000000 (configurable)
@@ -21,6 +21,7 @@
 #define LOAD         ROGER_LOAD
 #define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
 #define SCCB_AREA    0x017F4000u          /* 8 sound channel control blocks, &100 each */
+#define SCRATCH      0x017F6400u          /* 1K for strings game code passes to SWIs */
 #define MODE_SEL     0x017F6C00u          /* the current mode's selector (OS_ScreenMode 1) */
 #define ENV_AREA     0x017F7000u          /* OS_GetEnv's command line and start time */
 #define SVC_STACK    0x017F8000u          /* R13_svc / R13_irq stack tops */
@@ -54,6 +55,7 @@ extern int in_handler, interp_only;
 extern uint32_t g_cur_pc;
 extern uint64_t interp_count, smc_count;
 void call_code(uint32_t addr, uint32_t mode, uint32_t r14);
+void call_swi_code(uint32_t addr, uint32_t mode, uint32_t r14);   /* interruptible (a SWI handler) */
 void run_until(uint32_t stop);
 void interp_step(void);
 void cpu_add_image(const struct roger_image *img);    /* dispatched wherever it lies (modules) */
@@ -73,6 +75,8 @@ void rt_service(int vsync_now);
 void wait_vsync(void);
 void call_vector(unsigned vec, int nregs, const uint32_t *regs);
 int  irq_swi(uint32_t b);                 /* OS_Claim/Release, device vectors */
+int  irq_sound_claimed(void);             /* a program has the sound DMA interrupt (device 9) */
+void irq_sound(void);                     /* ...call its handler */
 
 /* video.c */
 struct rg_mode { int width, height, bpp, xeig, yeig, text_cols, text_rows; };
@@ -111,6 +115,7 @@ int  sprite_op_full(void);
 void sound_dma_advance(uint32_t us);
 void sound_tick(void);                    /* every centisecond */
 int  sound_swi(uint32_t b);
+void sound_memc(int reg, uint32_t v);     /* MEMC sound DMA registers: 4 Sstart, 5 SendN, 6 Sptr */
 
 /* audio.c: host audio */
 int  audio_init_device(void);
@@ -134,6 +139,8 @@ int  modules_rmload(const char *name);   /* 0: not a configured module file */
 int  modules_rmkill(const char *title);
 int  modules_swi(uint32_t b, int x);
 int  modules_gap(uint32_t a);             /* an untranslated address in a module */
+int  modules_command(const char *cmd, const char *tail, int x);   /* a module's *command: 1 if found */
+int  modules_service(void);               /* service call R1 (R0-R9 as set): 1 if claimed */
 
 /* cli.c: OS_CLI and system variables */
 void cli_init(void);

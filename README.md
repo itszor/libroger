@@ -102,13 +102,19 @@ The emulated machine
 Implemented:
 
 - CPU: processor modes with banked registers, TEQP mode changes, the
-  ARM2 interpreter (gaps, self-modified instructions), SMC detection
+  ARM2 interpreter (gaps, self-modified instructions); self-modified code
+  at run time: a compiled word the program stores to is interpreted as it
+  now is until it holds its original value again
 - interrupts: TickerV, EventV (vsync, mouse; a claimant can intercept with
   the return address on the stack), OS_ClaimDeviceVector (vsync,
-  IOC timer 1), the raw handler at &100; palette changes part way down the
+  IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100;
+  OS_IntOff/IntOn (the I bit; interrupts wait); module SWIs run with
+  interrupts enabled, as on RISC OS (one may wait for a handler); palette changes part way down the
   frame (timer 1 started at flyback, VIDC VDSR/VDER/VCR timing)
 - video: the standard 50Hz graphics modes (0, 1, 2, 4, 5, 8, 9, 10, 12, 13,
-  15), screen banks (OS_Byte 112/113, OS_Word 22), MEMC Vinit/Vstart/Vend
+  15), modes modules define (Service_ModeExtension: VIDC and workspace
+  lists, e.g. an overscan mode, shown at their own size), screen banks
+  (OS_Byte 112/113, returning the previous bank; OS_Word 22), MEMC Vinit/Vstart/Vend
   with wrap-around, VIDC palette including 256-colour modes, VDU and mode
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, tints, windows,
   origin, PLOT lines/points/triangles/rectangles; VDU 21/6; no text),
@@ -120,33 +126,44 @@ Implemented:
   9, through OS_CallAVector), OS_Memory 8 (2MB of VRAM), and what
   programs test to tell one from an Archimedes: Wimp version 3.50 and the
   RISC OS 3.5 names for OS_SWINumberFromString
-- files: OS_File (load, save, catalogue), OS_Find, OS_GBPB (including
+- files: OS_File (load, save, catalogue; along a path string or
+  variable; directories), OS_Find, OS_GBPB (including
   directory listings, 9/10/12), OS_Args,
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
   `,load-exec` name suffixes, writes redirected to a save directory (and
   read back from there)
 - sound: DMA at the configured rate with VIDC log samples and stereo
-  positions; a program's own Level 1 handler, or the OS's channel handler
+  positions; a program that drives the DMA itself (MEMC Sstart/SendN,
+  the device 9 interrupt, the OS's buffers at &1F06000/&1F07000 as RISC
+  OS 3.1 maps them); a program's own Level 1 handler, or the OS's channel handler
   running voice generators (install, attach by number or name, Instantiate/
   Free, GateOn/Fill/GateOff, durations, Sound_Pitch, BBC-style amplitudes
   and pitches); to SDL or a WAV file
 - the command line: Set, SetEval, Unset, If ... Then ... Else, Load, Save,
-  RMLoad, RMRun, RMKill, FX, after GSTrans (<var>); OS_ReadVarVal,
-  OS_SetVarVal. Other commands are logged and ignored
+  RMLoad, RMRun, RMKill, FX, and loaded modules' commands, after GSTrans
+  (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
+  integers). Other commands are logged and ignored
 - the Wimp, without a desktop: Wimp_Initialise (version 3.16), Wimp_Poll
   (events queued by the game's code), templates (Wimp_OpenTemplate,
-  LoadTemplate, CloseTemplate), windows, icons and menus accepted but
-  not shown, Wimp_GetPointerInfo, Wimp_ReportError (to stderr),
+  LoadTemplate, CloseTemplate), windows and icons kept as the program
+  defines them but not shown (create, open, close, state, information,
+  outline, extent, icon state, WhichIcon, the icon bar; redraws find
+  nothing to draw), menus accepted, the caret, messages to itself,
+  Wimp_GetPointerInfo, Wimp_ReportError (to stderr),
   Wimp_SetMode, Wimp_CloseDown; Wimp_SlotSize (the application slot is
   the RAM limit) and the screen's dynamic area (OS_ReadDynamicArea,
   OS_ChangeDynamicArea 2)
-- the kernel: OS_Byte (keyboard scans, INKEY, events, Escape, banks, mode),
-  OS_Word (palette, pointer, display start), OS_Mouse, OS_GetEnv,
+- the kernel: OS_Byte (keyboard scans, single key or first key pressed;
+  INKEY, events, Escape, banks, mode), OS_Word (palette, pointer, display
+  start, the real-time clock: the host's, or fixed in headless runs),
+  OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ServiceCall,
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
   OS_ReadModeVariable, OS_ReadMonotonicTime, conversions, OS_CLI (logged),
   modules' SWI chunks, OS_Module claims, OS_CheckModeValid,
   OS_SWINumberFromString (a few names programs probe for); key transition
-  events (event 11, low-level key numbers, once a frame)
+  events (event 11, low-level key numbers, once a frame); Hourglass
+  (nothing shown); OS_SpriteOp select and area operations in headless
+  runs too (only plotting needs the VDU drivers)
 
 Display shaders
 ---------------

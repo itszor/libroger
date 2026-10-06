@@ -17,7 +17,8 @@
 /* ---------------------------------------------------------------- modes
  * The standard graphics modes of the Archimedes' 50Hz monitors, and with
  * roger_config.vidc20 (a Risc PC) the multisync ones too, and RISC OS
- * 3.5's mode selectors: any size, 1 to 32 bits per pixel. A mode is
+ * 3.5's mode selectors: any size, 1 to 32 bits per pixel; and modes
+ * modules define (Service_ModeExtension, below). A mode is
  * identified as RISC OS does: a number below &100, else the address of a
  * selector block (+0 flags 1, +4 x pixels, +8 y pixels, +12 log2 bpp, +16
  * frame rate, then mode variable / value pairs up to -1). */
@@ -53,14 +54,66 @@ static struct rg_mode current = {640, 256, 4, 1, 2, 80, 32};
  * raster timing apply. */
 static int vidc1_mode(const struct rg_mode *m) { return m->height == 256 && m->bpp <= 8; }
 
+/* A mode a module defines: Service_ModeExtension (&50, R2 the mode, R3 the
+ * monitor type - 0, a TV-standard monitor) answered with R3 a VIDC list
+ * (+0 format, +4 base mode, then VIDC register values up to -1) and R4 a
+ * workspace list (+0 flags, +4 base mode, then mode variable / value pairs
+ * up to -1). The geometry comes from the workspace list, what it leaves
+ * out from the base mode (or, for the depth, VIDC's control register);
+ * such a mode is shown as it is, like a Risc PC's (no MEMC/VIDC1 raster
+ * effects). Defined modes are remembered; a mode nobody claims is asked
+ * about again next time (FervourMode claims the number it found free only
+ * once *FModeOn has chosen it). */
+static struct rg_mode ext_modes[128];
+static uint8_t ext_known[128];
+
+static const struct rg_mode *module_mode(uint32_t m)
+{
+    static int asking;
+    if (ext_known[m]) return &ext_modes[m];
+    if (asking) return NULL;                       /* a module's own mode checks */
+    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
+    memcpy(saved, R, sizeof R);
+    R[1] = 0x50; R[2] = m; R[3] = 0; R[4] = 0;
+    asking = 1;
+    int claimed = modules_service();
+    asking = 0;
+    uint32_t vl = R[3], wl = R[4];
+    memcpy(R, saved, sizeof R);
+    NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+    if (!claimed || !wl || wl + 8 > MEMSIZE) return NULL;
+    uint32_t base_mode = RD32(wl + 4) & 0x7F;
+    struct rg_mode r = base_mode < sizeof modes / sizeof modes[0] && modes[base_mode].width
+                       ? modes[base_mode] : (struct rg_mode){640, 256, 8, 1, 2, 80, 32};
+    if (vl && vl + 8 <= MEMSIZE)
+        for (uint32_t p = vl + 8; p < vl + 8 + 4 * 64 && RD32(p) != 0xFFFFFFFF; p += 4)
+            if (RD32(p) >> 26 == 0x38) r.bpp = 1 << (RD32(p) >> 2 & 3);   /* control register */
+    int32_t v[13];
+    for (int k = 0; k < 13; k++) v[k] = -1;
+    for (uint32_t p = wl + 8; p < wl + 8 + 8 * 64 && RD32(p) != 0xFFFFFFFF; p += 8)
+        if (RD32(p) < 13) v[RD32(p)] = (int32_t)RD32(p + 4);
+    if (v[9] >= 0) r.bpp = 1 << v[9];
+    if (v[4] >= 0) r.xeig = v[4];
+    if (v[5] >= 0) r.yeig = v[5];
+    if (v[6] > 0) r.width = v[6] * 8 / r.bpp; else if (v[11] >= 0) r.width = v[11] + 1;
+    if (v[12] >= 0) r.height = v[12] + 1; else if (v[7] > 0 && v[6] > 0) r.height = v[7] / v[6];
+    r.text_cols = v[1] >= 0 ? v[1] + 1 : r.width / 8;
+    r.text_rows = v[2] >= 0 ? v[2] + 1 : r.height / 8;
+    if (r.width < 16 || r.height < 16 || r.width > 2048 || r.height > 2048) return NULL;
+    ext_modes[m] = r;
+    ext_known[m] = 1;
+    ev("mode_extension", "iiii", m, r.width, r.height, r.bpp);
+    return &ext_modes[m];
+}
+
 /* m's geometry, or NULL if it isn't a mode this machine has */
 const struct rg_mode *mode_info(uint32_t m)
 {
     static struct rg_mode sel;
     if (m < 0x100) {
         m &= 0x7F;
-        if (m >= sizeof modes / sizeof modes[0] || !modes[m].width) return NULL;
-        if (!vidc1_mode(&modes[m]) && !rg->vidc20) return NULL;
+        if (m >= sizeof modes / sizeof modes[0] || !modes[m].width) return module_mode(m);
+        if (!vidc1_mode(&modes[m]) && !rg->vidc20) return module_mode(m);
         return &modes[m];
     }
     if (!rg->vidc20 || m + 20 > MEMSIZE || (RD32(m) & 0xFF) != 1) return NULL;
@@ -243,7 +296,7 @@ void video_default_palette(void)
  * Writes to &3600000-&37FFFFF: the register is address bits 17-19, the
  * value address bits 2-16, a physical address in 16-byte units (the data
  * is ignored). DMA starts each frame at Vinit and, after the 16 bytes at
- * Vend, continues at Vstart. */
+ * Vend, continues at Vstart. The sound DMA registers are sound.c's. */
 static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
 static int memc_direct;
 void memc_write(uint32_t a)
@@ -253,7 +306,8 @@ void memc_write(uint32_t a)
     case 0: memc_vinit = v; memc_direct = 1; break;
     case 1: memc_vstart = v; break;
     case 2: memc_vend = v; break;
-    default: break;                     /* Cinit, sound DMA, control register */
+    case 4: case 5: case 6: sound_memc((a >> 17) & 7, v); break;   /* Sstart, SendN, Sptr */
+    default: break;                     /* Cinit, control register */
     }
 }
 

@@ -74,14 +74,22 @@ void undefined_insn(uint32_t a, uint32_t w);
 
 /* ---- instruction prologue: count, and service interrupts at exact counts ---- */
 void dbg_hook(uint32_t a);              /* PC histogram and current-PC tracking (cpu.c) */
+/* A compiled word the program has stored to since (smc_write) is dirty:
+ * its translation may be stale, so control goes back to the dispatcher,
+ * which interprets the word as it now is (or, if it holds its original
+ * value again, carries on with the translation). */
+extern uint8_t smc_dirty[];
+#define SMC_DIRTY(a)  (smc_dirty[((a) & 0x3FFFFFC) >> 5] >> (((a) >> 2) & 7) & 1)
 #ifdef RECOMP_TRACE
 void trace_insn(uint32_t a);
-#define I(a)  do { if (icount >= irq_next) { COV_ASYNC_ENTER(); irq_point(); COV_ASYNC_EXIT(); } \
+#define I_(a) do { if (icount >= irq_next) { COV_ASYNC_ENTER(); irq_point(); COV_ASYNC_EXIT(); } \
                     trace_insn(a); dbg_hook(a); COV_INSN(a); icount++; } while (0)
 #else
-#define I(a)  do { if (icount >= irq_next) { COV_ASYNC_ENTER(); irq_point(); COV_ASYNC_EXIT(); } \
+#define I_(a) do { if (icount >= irq_next) { COV_ASYNC_ENTER(); irq_point(); COV_ASYNC_EXIT(); } \
                     dbg_hook(a); COV_INSN(a); icount++; } while (0)
 #endif
+/* translated code's instruction prologue; the interpreter uses I_() */
+#define I(a)  do { if (SMC_DIRTY(a)) { npc = (a); return; } I_(a); } while (0)
 
 /* ---- flags ------------------------------------------------------------------ */
 /* MODEBITS: R15's other PSR bits - I/F (bits 27/26) and the processor mode

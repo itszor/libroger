@@ -134,13 +134,74 @@ static void module_swi(int k, uint32_t b, int x)
     uint32_t r10 = R[10], r11 = R[11], r12 = R[12];
     R[11] = b & 0x3F; R[12] = mods[k].private_word;
     if ((MODEBITS & 3) == 0) bank_r13[3] = SVC_STACK;   /* a SWI from USR mode starts on an empty SVC stack */
-    call_code(mods[k].base + handler, MODE_SVC, HANDLER_RET | (PSR() & ~0x10000000u));
+    call_swi_code(mods[k].base + handler, MODE_SVC, HANDLER_RET | (PSR() & ~0x10000000u));
     R[10] = r10; R[11] = r11; R[12] = r12;
     if (VF && !x) fprintf(stderr, "module SWI &%x returned an error: %s\n", b, (char *)MEM + ((R[0] + 4) & 0x3FFFFFF));
 }
 
+/* *commands in loaded modules' command tables (header +&18): entries of
+ * a name (zero-terminated, padded to a word), then the code offset, an
+ * information word, the syntax and help offsets; a table ends with a zero
+ * byte. The code runs in SVC mode with R0 the command tail and R1 the
+ * number of parameters; V set on return is an error. 1 if a module has
+ * the command (with code). */
+int modules_command(const char *cmd, const char *tail, int x)
+{
+    for (int k = 0; k < MAXMOD; k++) {
+        if (!mods[k].m) continue;
+        uint32_t base = mods[k].base, t = RD32(base + 0x18);
+        if (!t || t >= mods[k].size) continue;
+        for (uint32_t e = base + t; MEM[e]; ) {
+            const char *name = (const char *)MEM + e;
+            uint32_t code = RD32((e + strlen(name) + 4) & ~3u);
+            uint32_t next = ((e + strlen(name) + 4) & ~3u) + 16;
+            if (!strcasecmp(name, cmd) && code) {
+                uint32_t a = roger_scratch(tail);
+                int n = 0, in = 0;
+                for (const char *c = tail; *c; c++) { if (*c != ' ' && !in) n++; in = *c != ' '; }
+                ev("module_command", "s", name, (int)strlen(name));
+                uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
+                memcpy(saved, R, sizeof R);
+                R[0] = a; R[1] = n; R[12] = mods[k].private_word;
+                VF = 0;
+                call_swi_code(base + code, MODE_SVC, HANDLER_RET | MODEBITS);
+                int err = VF;
+                uint32_t r0 = R[0];
+                memcpy(R, saved, sizeof R);
+                NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+                if (err) {
+                    fprintf(stderr, "*%s: %s\n", name, (char *)MEM + ((r0 + 4) & 0x3FFFFFF));
+                    if (x) { VF = 1; R[0] = r0; }
+                }
+                return 1;
+            }
+            e = next;
+        }
+    }
+    return 0;
+}
+
+/* A service call to every module with a service entry (header +&0C), in
+ * SVC mode with R12 its private word and R0-R9 as given, until one claims
+ * it (R1 = 0). The registers are left as the modules returned them; 1 if
+ * claimed. */
+int modules_service(void)
+{
+    for (int k = 0; k < MAXMOD && R[1]; k++) {
+        if (!mods[k].m) continue;
+        uint32_t entry = RD32(mods[k].base + 0x0C);
+        if (!entry) continue;
+        uint32_t r10 = R[10], r11 = R[11], r12 = R[12];
+        R[12] = mods[k].private_word;
+        call_code(mods[k].base + entry, MODE_SVC, HANDLER_RET | MODEBITS);
+        R[10] = r10; R[11] = r11; R[12] = r12;
+    }
+    return R[1] == 0;
+}
+
 int modules_swi(uint32_t b, int x)
 {
+    if (b == 0x30) { modules_service(); return 1; }          /* OS_ServiceCall */
     for (int k = 0; k < MAXMOD; k++)
         if (mods[k].m && mods[k].chunk && (b & ~0x3Fu) == mods[k].chunk) {
             char name[24];

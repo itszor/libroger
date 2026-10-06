@@ -275,10 +275,10 @@ int sprite_op_full(void)
         if (spr) R[2] = spr;
         return 1;
     case 28:                                     /* put sprite at graphics cursor */
-        if (spr) put_sprite(spr, cx - ox, cy - oy, R[5]);
+        if (spr && rg_full_os) put_sprite(spr, cx - ox, cy - oy, R[5]);
         return 1;
     case 34:                                     /* put sprite at user coordinates */
-        if (spr) put_sprite(spr, (int32_t)R[3], (int32_t)R[4], R[5]);
+        if (spr && rg_full_os) put_sprite(spr, (int32_t)R[3], (int32_t)R[4], R[5]);
         return 1;
     default:
         return 0;

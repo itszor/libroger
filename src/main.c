@@ -59,7 +59,8 @@ void roger_log(const char *name, const char *fmt, ...)
  * --script=ms:action[:args],...  in time order. Actions: click:x:y (OS
  * units), tap:px:py (a host click at screen pixel px,py, through the real
  * SDL event path), poke:addr:value (write a memory word), release,
- * buttons:mask, move:dx:dy, esc, key:inkey (INKEY -inkey held 200ms),
+ * buttons:mask, move:dx:dy, esc, key:inkey[:ms] (INKEY -inkey held ms,
+ * default 200),
  * type:ascii, shot, shader[:dir] (as F10: next, or -1 previous), quit */
 #define MAXSCRIPT 8192
 static struct { uint64_t ms; char act[8]; int a, b; } script[MAXSCRIPT];
@@ -97,7 +98,7 @@ void script_run(void)
         else if (!strcmp(a, "buttons")) mouse_buttons = x;
         else if (!strcmp(a, "move")) { mouse_x += x; mouse_y += y; }
         else if (!strcmp(a, "esc")) escape_pressed = 1;
-        else if (!strcmp(a, "key") && x >= 1 && x <= 128) { key_down[x - 1] = 1; key_release_ms[x] = ms + 200; }
+        else if (!strcmp(a, "key") && x >= 1 && x <= 128) { key_down[x - 1] = 1; key_release_ms[x] = ms + (y > 0 ? y : 200); }
         else if (!strcmp(a, "type")) key_buffer_put(x);
         else if (!strcmp(a, "shot")) screenshot_requested = 1;
         else if (!strcmp(a, "shader")) display_cycle_shader(x ? x : 1);   /* as F10 */

@@ -5,19 +5,18 @@
  * line is GSTrans'd first (<name> expands to a variable's value, <nn> to a
  * character; an unset variable expands to nothing). Implemented: Set,
  * SetEval (string values only), Unset, If ... Then ... [Else ...], Load,
- * Save, RMLoad, RMRun, RMKill, FX, Tuning. Anything else is only logged
- * (the OS_CLI event every command writes). */
+ * Save, RMLoad, RMRun, RMKill, FX, Tuning, and the commands of loaded
+ * modules. Anything else is only logged (the OS_CLI event every command
+ * writes). */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
 #include "internal.h"
 
-#define SCRATCH 0x017F6C00u                   /* 1K for strings game code passes to SWIs */
-
 /* ---------------------------------------------------------------- variables */
 #define MAXVAR 64
-static struct { char name[64]; char *val; } vars[MAXVAR];
+static struct { char name[64]; char *val; int number; } vars[MAXVAR];   /* number: type 1 */
 
 const char *roger_getvar(const char *name)
 {
@@ -36,6 +35,7 @@ void roger_setvar(const char *name, const char *value)
     if (k == MAXVAR) { if (free_k < 0 || !value) return; k = free_k; }
     free(vars[k].val);
     vars[k].val = NULL;
+    vars[k].number = 0;
     if (!value) return;
     snprintf(vars[k].name, sizeof vars[k].name, "%s", name);
     vars[k].val = strdup(value);
@@ -263,6 +263,9 @@ int cli_command(const char *line, int x)
         R[0] = saved[0]; R[1] = saved[1]; R[2] = saved[2];
         return 1;
     }
+    /* a command a loaded module provides (*FModeOn...) */
+    arg(&s, word, sizeof word);
+    if (modules_command(word, skip(s), x)) return 1;
     return 0;
 }
 
@@ -277,15 +280,30 @@ void os_cli(int x)
     R[0] = r0;
 }
 
+static int var_is_number(const char *name)
+{
+    for (int k = 0; k < MAXVAR; k++)
+        if (vars[k].val && !strcasecmp(vars[k].name, name)) return vars[k].number;
+    return 0;
+}
+
 /* OS_ReadVarVal: R0 name, R1 buffer, R2 size (negative: does it exist?),
- * R3 context (0: first), R4 type wanted -> R2 length, R3 name, R4 type 0
- * (string) */
+ * R3 context (0: first), R4 type wanted (3: an expanded string) -> R2
+ * length, R3 name, R4 type: 0 string, or 1 a number (4 bytes, unless a
+ * string was asked for) */
 static void read_var(int x)
 {
     char name[256];
     cstr(R[0], name, 1);
     const char *v = R[3] ? NULL : roger_getvar(name);
     if (!v) { R[2] = 0; if (x) VF = 1; return; }
+    if (var_is_number(name) && R[4] != 3) {
+        if ((int32_t)R[2] < 0) { R[2] = ~4u; return; }
+        if (R[2] < 4) { if (x) VF = 1; return; }
+        WR32(R[1], (uint32_t)strtol(v, NULL, 10));
+        R[2] = 4; R[3] = R[0]; R[4] = 1;
+        return;
+    }
     uint32_t l = (uint32_t)strlen(v);
     if ((int32_t)R[2] < 0) { R[2] = ~l; return; }
     if (l > R[2]) { if (x) VF = 1; return; }          /* "Buffer overflow" */
@@ -294,7 +312,8 @@ static void read_var(int x)
 }
 
 /* OS_SetVarVal: R0 name, R1 value, R2 length (negative: delete), R4 type
- * (0 string, 1 number, 2 macro, 3 expression - all taken as strings) */
+ * (0 string, GSTrans'd; 1 number, a 4-byte integer, kept as a number;
+ * 2 macro, 3 expression - taken as strings) */
 static void set_var(void)
 {
     char name[256], val[1100];
@@ -308,6 +327,9 @@ static void set_var(void)
         if (R[4] == 0) { char t[1100]; gstrans(val, t, sizeof t); strcpy(val, t); }
     }
     roger_setvar(name, val);
+    if (R[4] == 1)
+        for (int k = 0; k < MAXVAR; k++)
+            if (vars[k].val && !strcasecmp(vars[k].name, name)) vars[k].number = 1;
 }
 
 int cli_swi(uint32_t b, int x)

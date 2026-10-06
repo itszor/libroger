@@ -122,6 +122,21 @@ int save_file(const char *name, uint32_t addr, uint32_t len)
 }
 
 /* ---------------------------------------------------------------- OS_File */
+/* name looked up along a path: a comma-separated list of prefixes
+ * ("Levels.!Beginner.,Lib:"), each tried in turn */
+static int hostpath_along(const char *name, const char *list, char *out)
+{
+    char full[2200];
+    while (*list) {
+        const char *e = strchr(list, ',');
+        int l = e ? (int)(e - list) : (int)strlen(list);
+        snprintf(full, sizeof full, "%.*s%s", l, list, name);
+        if (hostpath_read(full, out)) return 1;
+        list += l + (e != NULL);
+    }
+    return 0;
+}
+
 static void os_file(void)
 {
     uint32_t op = R[0] & 0xFF;
@@ -132,7 +147,13 @@ static void os_file(void)
         if (!save_file(name, R[4], R[5] - R[4]) && swi_x) VF = 1;   /* R4 start, R5 end */
         return;
     }
-    int ok = hostpath_read(name, path);
+    int ok;
+    if (op == 12 || op == 13 || op == 14 || op == 15) {          /* along a path (string or variable) */
+        char list[1100];
+        cstr(R[4], list, 1);
+        if (op == 14 || op == 15) { const char *v = roger_getvar(list); snprintf(list, sizeof list, "%s", v ? v : ""); }
+        ok = hostpath_along(name, list, path);
+    } else ok = hostpath_read(name, path);
     if (op == 255 || op == 12 || op == 14 || op == 16) {          /* load */
         if (!ok) {
             /* an X-flagged (error-checking) caller handles a missing file
@@ -155,7 +176,9 @@ static void os_file(void)
         stat(path, &st);
         uint32_t load, exec;
         file_info(path, &load, &exec);
-        R[0] = 1; R[2] = load; R[3] = exec; R[4] = (uint32_t)st.st_size; R[5] = 3;
+        R[0] = S_ISDIR(st.st_mode) ? 2 : 1;                       /* object type: file, directory */
+        if (R[0] == 2) { load = 0xFFFFFD00; exec = 0; st.st_size = 0x800; }
+        R[2] = load; R[3] = exec; R[4] = (uint32_t)st.st_size; R[5] = 3;
         return;
     }
     finish("OS_File op unsupported");
@@ -322,7 +345,7 @@ void sprite_op(void)
         R[2] = RD32(R[1]); R[3] = RD32(R[1] + 4); R[4] = RD32(R[1] + 8); R[5] = RD32(R[1] + 12);
         return;
     }
-    if (rg_full_os && sprite_op_full()) return;
+    if (sprite_op_full()) return;             /* (plotting only in full-OS runs) */
     if (op == 10 || op == 11) {                   /* load / merge sprite file */
         char name[1100], path[2048];
         cstr(R[2], name, 1);

@@ -67,6 +67,7 @@ void call_vector(unsigned vec, int nregs, const uint32_t *regs)
  * return to R14. */
 #define DEV_VSYNC    3
 #define DEV_TIMER1   6
+#define DEV_SOUND    9
 static struct { uint32_t code, ws; } devices[16];
 static uint32_t timer1_latch;
 
@@ -75,13 +76,19 @@ static void call_device(int dev, uint32_t irq_bit)
     if (!devices[dev].code) return;
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
     memcpy(saved, R, sizeof R);
-    MEM[IOC + 0x10] = MEM[IOC + 0x14] = irq_bit;       /* IRQ status / request A */
+    if (dev < 8) MEM[IOC + 0x10] = MEM[IOC + 0x14] = irq_bit;   /* IRQ status / request A */
+    else MEM[IOC + 0x20] = MEM[IOC + 0x24] = irq_bit;           /* B (podules, sound...) */
     R[3] = IOC; R[12] = devices[dev].ws;
     bank_r13[2] = IRQ_STACK;                          /* each interrupt starts on an empty IRQ stack */
     call_code(devices[dev].code, MODE_IRQ, HANDLER_RET | MODE_IRQ);
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
 }
+
+/* Device 9: the sound DMA buffer interrupt (IRQ B bit 1), for a program
+ * that drives the sound DMA itself (sound.c) */
+int irq_sound_claimed(void) { return devices[DEV_SOUND].code != 0; }
+void irq_sound(void) { call_device(DEV_SOUND, 0x02); }
 
 /* The raw handler at &100 (roger_config.irq1v), with IOC's IRQ request A
  * (&3200014) saying which interrupt this is. */
@@ -261,6 +268,11 @@ void wait_vsync(void)
 void irq_point(void)
 {
     if (in_handler) return;
+    if (!rg_interactive && icount >= rg_limit) finish("instruction limit");
+    if (MODEBITS & 0x08000000u) {               /* IRQs disabled: they wait */
+        irq_next = icount + 64;
+        return;
+    }
     if (rg_interactive) {
         rt_service(0);
         irq_next = icount + 20000;

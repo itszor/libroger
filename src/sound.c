@@ -127,20 +127,10 @@ void sound_tick(void)
 {
 }
 
-static void sound_dma_fill(void)
+/* VIDC log bytes (snd_nchan interleaved channels) at buf to the host:
+ * 16-bit stereo */
+static void sound_out(uint32_t buf, uint32_t len)
 {
-    uint32_t len = snd_nchan * snd_samples, buf = DMA_BUF + (snd_buf ^= 1) * 0x2000;
-    if (len > 0x2000) len = 0x2000;
-    if (snd_level1 != DEFAULT_LEVEL1 && snd_enabled == 2) {
-        uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
-        memcpy(saved, R, sizeof R);
-        R[9] = snd_level1; R[10] = buf + len; R[11] = snd_nchan; R[12] = buf;
-        bank_r13[2] = IRQ_STACK;               /* each interrupt starts on an empty IRQ stack */
-        call_code(RD32(snd_level1), MODE_IRQ, HANDLER_RET | MODE_IRQ);
-        memcpy(R, saved, sizeof R);
-        NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
-    } else if (snd_enabled == 2) channel_fill(buf, len);
-    else memset(MEM + buf, 0, len);
     if (!snd_linear[127])
         for (int m = 0; m < 128; m++)                       /* VIDC log: 3-bit chord, 4-bit step */
             snd_linear[m] = (int16_t)((((2 * (m & 15) + 33) << (m >> 4)) - 33) * 4);
@@ -164,13 +154,79 @@ static void sound_dma_fill(void)
     roger_audio_out(out, (int)frames, (int)(1000000 / snd_period));
 }
 
+static void sound_dma_fill(void)
+{
+    uint32_t len = snd_nchan * snd_samples, buf = DMA_BUF + (snd_buf ^= 1) * 0x2000;
+    if (len > 0x2000) len = 0x2000;
+    if (snd_level1 != DEFAULT_LEVEL1 && snd_enabled == 2) {
+        uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
+        memcpy(saved, R, sizeof R);
+        R[9] = snd_level1; R[10] = buf + len; R[11] = snd_nchan; R[12] = buf;
+        bank_r13[2] = IRQ_STACK;               /* each interrupt starts on an empty IRQ stack */
+        call_code(RD32(snd_level1), MODE_IRQ, HANDLER_RET | MODE_IRQ);
+        memcpy(R, saved, sizeof R);
+        NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+    } else if (snd_enabled == 2) channel_fill(buf, len);
+    else memset(MEM + buf, 0, len);
+    sound_out(buf, len);
+}
+
+/* ---------------------------------------------------------------- MEMC sound DMA
+ * A program that claims the sound DMA interrupt (device 9) drives the DMA
+ * itself, as RISC OS's SoundDMA module would: MEMC plays the bytes of the
+ * current buffer, then reloads its pointers from Sstart and SendN (the
+ * next buffer, which the interrupt handler programmed) and interrupts; the
+ * handler programs the one after. Physical addresses are screen memory
+ * from 0 (as for video DMA) and the page at &78000 holding the OS's sound
+ * buffers, which RISC OS 3.1 maps at &1F00000 (its two buffers are
+ * &1F06000 and &1F07000, physical &7E000 and &7F000) - where MEMC points
+ * until the program changes it. Without such a claimant, libroger's own
+ * SoundDMA above fills its buffers through the Level 1 handler. */
+#define OS_SNDBUF(k) (0x7E000u + 0x1000u * (k))
+static uint32_t memc_sstart = OS_SNDBUF(0), memc_sendn = OS_SNDBUF(0) + 208 - 16;
+static uint32_t cur_start = OS_SNDBUF(1), cur_end = OS_SNDBUF(1) + 208 - 16;
+
+void sound_memc(int reg, uint32_t v)
+{
+    if (reg == 4) memc_sstart = v;
+    else if (reg == 5) memc_sendn = v;
+    else { cur_start = memc_sstart; cur_end = memc_sendn; }   /* Sptr: start again from Sstart */
+}
+
+static uint32_t sound_phys(uint32_t p)
+{
+    if (p >= 0x78000 && p < 0x80000) return 0x1F00000 + (p - 0x78000);
+    if (p < screen_size()) return screen_base() + p;
+    return 0;
+}
+
+static uint32_t level0_len(void)              /* the current buffer's length (SendC is its last 16 bytes) */
+{
+    return cur_end >= cur_start && cur_end - cur_start < 0x10000 ? cur_end + 16 - cur_start : 0;
+}
+
+static void sound_level0(void)
+{
+    uint32_t len = level0_len(), a = sound_phys(cur_start);
+    if (len && a && snd_enabled == 2) sound_out(a, len);
+    cur_start = memc_sstart; cur_end = memc_sendn;
+    irq_sound();
+}
+
 /* Advance the sound DMA clock by `us` of emulated time. */
 void sound_dma_advance(uint32_t us)
 {
-    uint64_t buf_us = (uint64_t)snd_samples * snd_period;
-    if (!buf_us) return;
-    snd_acc_us += us;
-    while (snd_acc_us >= buf_us) { snd_acc_us -= buf_us; sound_dma_fill(); }
+    for (;;) {
+        int level0 = irq_sound_claimed();
+        uint64_t buf_us = level0 ? (uint64_t)(level0_len() / snd_nchan) * snd_period
+                                 : (uint64_t)snd_samples * snd_period;
+        if (!buf_us) buf_us = (uint64_t)snd_samples * snd_period;
+        if (!buf_us) return;
+        if (us) { snd_acc_us += us; us = 0; }
+        if (snd_acc_us < buf_us) return;
+        snd_acc_us -= buf_us;
+        if (level0) sound_level0(); else sound_dma_fill();
+    }
 }
 
 void roger_log_sound_swi(uint32_t b)

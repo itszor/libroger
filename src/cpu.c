@@ -115,6 +115,7 @@ void cpu_programs_loaded(const char *leaf, uint32_t addr)
 }
 
 /* ---------------------------------------------------------------- dispatch */
+static int smc_stale(uint32_t a);
 static int seen(uint32_t *tab, int *n, int max, uint32_t a)
 {
     for (int k = 0; k < *n; k++) if (tab[k] == a) return 1;
@@ -152,6 +153,7 @@ void call_addr(uint32_t a)
         pending = NULL;
         pc_bias = 0;
     }
+    if (SMC_DIRTY(a) && smc_stale(a)) { interp_step(); return; }   /* self-modified: as it is now */
     fn_t f = 0;
     if (!interp_only) {
         if (a >= img_base && a < img_end) f = prog.tab[(a - img_base) >> 2];
@@ -199,12 +201,15 @@ void roger_run_until(uint32_t stop) { run_until(stop); }
 
 /* Run code at addr in processor mode `mode` with R14 = r14 until it returns
  * to HANDLER_RET (interrupt handlers, voice generators, module entries).
- * No interrupts are taken meanwhile. */
-void call_code(uint32_t addr, uint32_t mode, uint32_t r14)
+ * No interrupts are taken meanwhile, unless it is interruptible: a SWI
+ * handler, which RISC OS runs with interrupts enabled (and which may wait
+ * for an interrupt handler to change something) - not if it's called from
+ * an interrupt handler itself. */
+static void run_code(uint32_t addr, uint32_t mode, uint32_t r14, int interruptible)
 {
     uint32_t snpc = npc, smode = MODEBITS;
     int sh = in_handler;
-    in_handler = 1;
+    if (!interruptible) in_handler = 1;
     set_psr_mode(mode);
     R[14] = r14;
     npc = addr;
@@ -212,7 +217,7 @@ void call_code(uint32_t addr, uint32_t mode, uint32_t r14)
     uint64_t i0 = icount;
     while (npc != HANDLER_RET) {
         if (npc == RETURN_TO_OS) finish("returned to OS");
-        if (icount - i0 > 50000000) {
+        if (in_handler && icount - i0 > 50000000) {
             fprintf(stderr, "call_code(%08x): bailing out after 50M instructions, pc=%08x\n", addr, npc);
             break;
         }
@@ -223,6 +228,8 @@ void call_code(uint32_t addr, uint32_t mode, uint32_t r14)
     npc = snpc;
     in_handler = sh;
 }
+void call_code(uint32_t addr, uint32_t mode, uint32_t r14) { run_code(addr, mode, r14, 0); }
+void call_swi_code(uint32_t addr, uint32_t mode, uint32_t r14) { run_code(addr, mode, r14, 1); }
 void roger_call(uint32_t addr, uint32_t mode, uint32_t r14) { call_code(addr, mode, r14); }
 int roger_in_handler(void) { return in_handler; }
 
@@ -236,12 +243,48 @@ void undefined_insn(uint32_t a, uint32_t w)
     fprintf(stderr, "undefined/coproc instruction %08x at %08x\n", w, a);
     finish("undefined instruction");
 }
+/* Self-modified compiled code. A store to a compiled word (CODECHK, before
+ * the store) marks it dirty and, the first time, records the word it
+ * held: the one it was translated from. Translated code leaves through
+ * the dispatcher at a dirty word (I()); dispatching it interprets it,
+ * unless it holds its original value again. */
+uint8_t smc_dirty[MEMSIZE / 32];
+#define SMC_ORIG 65536
+static struct { uint32_t a, w; } smc_orig[SMC_ORIG];      /* open addressing; a = 0 free */
+
+static uint32_t *orig_slot(uint32_t a, int add)
+{
+    unsigned h = (a >> 2) % SMC_ORIG;
+    for (int k = 0; k < SMC_ORIG; k++, h = (h + 1) % SMC_ORIG) {
+        if (smc_orig[h].a == a) return &smc_orig[h].w;
+        if (!smc_orig[h].a) {
+            if (!add) return NULL;
+            smc_orig[h].a = a; smc_orig[h].w = RD32(a);
+            return &smc_orig[h].w;
+        }
+    }
+    return NULL;
+}
+
 void smc_write(uint32_t a)
 {
+    a &= 0x3FFFFFC;
+    if (SMC_DIRTY(a)) return;
+    if (!orig_slot(a, 1)) return;             /* (table full: left as it was) */
+    smc_dirty[a >> 5] |= 1 << ((a >> 2) & 7);
     static uint32_t s[64]; static int n;
     if (seen(s, &n, 64, a)) return;
     smc_count++;
     fprintf(stderr, "note: store to compiled code at %08x (icount %llu)\n", a, (unsigned long long)icount);
+}
+
+/* a dirty word dispatched: 1 if it differs from what was translated (so
+ * interpret it); one back to its original value is clean again */
+static int smc_stale(uint32_t a)
+{
+    uint32_t *o = orig_slot(a, 0);
+    if (o && RD32(a) == *o) { smc_dirty[a >> 5] &= ~(1 << ((a >> 2) & 7)); return 0; }
+    return 1;
 }
 
 /* ---------------------------------------------------------------- diagnostics
@@ -465,7 +508,7 @@ void cpu_report_interp(void)
 void interp_step(void)
 {
     uint32_t pc = npc;
-    I(pc);
+    I_(pc);
     interp_count++;
     note_interp(pc, 0);
     uint32_t w;
