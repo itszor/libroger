@@ -76,7 +76,8 @@ static void os_byte(void)
         R[1] = op == 126 ? 0xFF : R[1];
         return;
     }
-    if (op == 135) { R[1] = 0; R[2] = screen_mode; return; }   /* character at cursor, screen mode */
+    if (op == 135) { R[1] = 0; R[2] = screen_mode; return; }
+    if (op == 106) pointer_shape = R[1] & 0x7F;      /* select pointer (bit 7: unlinked from the mouse) */   /* character at cursor, screen mode */
     /* OS_Byte 15 (flush all / current input buffer), 21 (flush buffer r1; 0 = keyboard) */
     if (rg_interactive && (op == 15 || (op == 21 && R[1] == 0))) key_buffer_flush();
     ev("OS_Byte", "iii", op, R[1], R[2]);

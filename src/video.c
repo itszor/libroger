@@ -151,6 +151,7 @@ int video_set_mode(uint32_t m)
     }
     screen_mode = m;
     bank = display_bank = 0;
+    pointer_shape = 0;
     video_default_palette();
     if (rg_full_os) vdu_mode_reset();
     return 1;
@@ -360,6 +361,7 @@ int video_palettev(void)
 }
 
 /* ---------------------------------------------------------------- OS_Word */
+int pointer_shape;                              /* a mode change turns the pointer off */
 int mbox[4] = {0, 0, 1279, 1023};               /* OS_Word 21,1: left, bottom, right, top */
 static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 

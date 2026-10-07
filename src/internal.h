@@ -106,6 +106,7 @@ int  video_palettev(void);                /* PaletteV's default handler: 1 if ha
 extern uint8_t gamma_tab[3][256];         /* VIDC20 gamma tables (PaletteV 9), if gamma_set */
 extern int gamma_set;             /* the VDU stream so far */
 extern int mbox[4];                       /* OS_Word 21,1 mouse bounding box */
+extern int pointer_shape;                 /* OS_Byte 106: the OS pointer shown (1-4), or 0 off */
 
 /* vdu.c: the VDU drivers (interactive runs) */
 extern unsigned vdu_unhandled;

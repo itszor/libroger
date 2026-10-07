@@ -337,6 +337,14 @@ void display_poll(void)
             SDL_SetWindowRelativeMouseMode(win, relative);
         }
     }
+    /* A game that turns the OS pointer on (OS_Byte 106) and doesn't draw its
+     * own sees the host pointer in its place, except while captured. */
+    static int cursor_shown;
+    int show = pointer_shape && !relative;
+    if (show != cursor_shown) {
+        cursor_shown = show;
+        if (show) SDL_ShowCursor(); else SDL_HideCursor();
+    }
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_EVENT_QUIT:
