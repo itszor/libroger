@@ -229,6 +229,11 @@ int cli_command(const char *line, int x)
         }
         return 1;
     }
+    if ((p = word_at(s, "SChoose"))) {          /* a system sprite, for PLOT &E8-&EF */
+        arg(&p, name, sizeof name);
+        if (!vdu_schoose(name)) ev("SChoose_missing", "s", name, (int)strlen(name));
+        return 1;
+    }
     if ((p = word_at(s, "Save"))) {
         arg(&p, name, sizeof name);
         arg(&p, word, sizeof word);

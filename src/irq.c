@@ -211,9 +211,11 @@ static void key_events(void)
     }
 }
 
+uint8_t vsync_counter;                     /* OS_Byte 176: down by one each vsync */
 static void vsync(void)
 {
     monotonic += 2;
+    vsync_counter--;
     frame_irq();
     if (rg->frame) rg->frame();
     uint32_t r[2] = {4, 0};                      /* event 4: vsync */
@@ -272,6 +274,23 @@ void wait_vsync(void)
     rt_service(1);
 }
 
+/* Interactive runs at rg_mips million instructions a second (if set): an
+ * instruction count due at a time; ahead of it, sleep (a game that never
+ * waits for the frame runs at the original machine's speed). Falling far
+ * behind (the host stalled, or the program waited for something) starts
+ * the count afresh rather than bursting to catch up. */
+float rg_mips;
+static void throttle(void)
+{
+    static uint64_t base_icount, base_ns;
+    if (rg_mips <= 0) return;
+    uint64_t now = display_ticks_ns();
+    if (!base_ns) { base_ns = now; base_icount = icount; return; }
+    uint64_t due = base_ns + (uint64_t)((double)(icount - base_icount) * 1000.0 / rg_mips);
+    if (due > now) display_sleep_ns(due - now > 50000000ull ? 50000000ull : due - now);
+    else if (now - due > 50000000ull) { base_ns = now; base_icount = icount; }
+}
+
 void irq_point(void)
 {
     if (in_handler) return;
@@ -282,6 +301,7 @@ void irq_point(void)
     }
     if (rg_interactive) {
         rt_service(0);
+        throttle();
         irq_next = icount + 20000;
         return;
     }

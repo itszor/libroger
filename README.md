@@ -78,7 +78,9 @@ Command line (any game): `--limit=N` (headless, deterministic),
 `--script=...` (scripted input: keys, clicks, taps, screenshots - in
 headless runs too, timed in emulated milliseconds, so a scenario can be
 replayed and screenshotted deterministically),
-`--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`,
+`--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
+speed in interactive runs, for games that don't pace themselves:
+roger_config.mips; unthrottled by default),
 `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
 `--crt` = `--shader=crt`), `--list-shaders`, `--no-sound`, `--wav=F`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
@@ -123,7 +125,9 @@ Implemented:
   21/6; text: VDU 4 in a text window, VDU 5 at the graphics cursor, VDU
   23 characters, cursor control), OS_SpriteOp on user areas and the
   system sprite area (*SLoad/*SMerge; load, merge, read area information,
-  select, plot), *Print and BBC font files (&FF7) run by name. A mode
+  select, plot; *SChoose and PLOT &E8-&EF), *Print and BBC font files
+  (&FF7) run by name. OS_Byte 113 and OS_Word 22 set the same display
+  start (the last one counts). A mode
   change resets the VIDC/MEMC display timing a program set itself.
   The character set is font/mkfont.py's, from the X11 misc-fixed 5x8
   font (public domain) - not the ROM's
@@ -162,7 +166,7 @@ Implemented:
   the RAM limit) and the screen's dynamic area (OS_ReadDynamicArea,
   OS_ChangeDynamicArea 2)
 - the kernel: OS_Byte (keyboard scans, single key or first key pressed;
-  INKEY, events, Escape, banks, mode), OS_Word (palette, pointer, display
+  INKEY, the OS version, events, Escape, banks, mode, the vsync counter), OS_Word (palette, pointer, display
   start, the real-time clock: the host's, or fixed in headless runs),
   OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ServiceCall,
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,

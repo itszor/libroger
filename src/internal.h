@@ -44,6 +44,7 @@ extern const struct roger_config *rg;     /* the game's configuration */
 
 /* main.c */
 extern int rg_interactive, rg_full_os, rg_trace_gaps;
+extern float rg_mips;                     /* interactive CPU speed (MIPS), 0 unthrottled */
 extern uint64_t rg_limit, rg_t0_ns;
 extern const char *rg_appdir, *rg_savedir;
 void ev(const char *name, const char *fmt, ...);
@@ -137,6 +138,7 @@ int  save_file(const char *name, uint32_t addr, uint32_t len);
 long load_file(const char *path, uint32_t addr);
 uint32_t sprite_area(void);               /* the area OS_SpriteOp R0/R1 name */
 uint32_t sys_sprites(void);               /* the system sprite area */
+int  vdu_schoose(const char *name);       /* *SChoose */
 int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */
 int  files_swi(uint32_t b);
 void sprite_op(void);

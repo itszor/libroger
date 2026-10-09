@@ -26,7 +26,9 @@ static void os_byte(void)
 {
     uint32_t op = R[0] & 0xFF;
     if (op == 129) {                                   /* INKEY */
-        if (R[2] == 0xFF && (R[1] & 0xFF) >= 0x80) {   /* scan one key (R1's low byte) */
+        if (R[2] == 0xFF && (R[1] & 0xFF) == 0) {      /* the OS version: 3.1, or 3.5 on a Risc PC */
+            R[1] = rg->vidc20 ? 0xA5 : 0xA4; R[2] = 0;
+        } else if (R[2] == 0xFF && (R[1] & 0xFF) >= 0x80) {   /* scan one key (R1's low byte) */
             int k = 256 - (int)(R[1] & 0xFF);
             R[1] = R[2] = pressed(k) ? 0xFF : 0;
         } else if (rg_interactive) {                    /* read a key, with time limit */
@@ -67,6 +69,13 @@ static void os_byte(void)
         ev("OS_Byte", "iii", op, R[1], R[2]);
         R[1] = (events_enabled & m) ? 1 : 0;              /* old state */
         if (op == 14) events_enabled |= m; else events_enabled &= ~m;
+        return;
+    }
+    if (op == 176) {                                   /* the vsync counter: read/write */
+        extern uint8_t vsync_counter;
+        uint8_t old = vsync_counter;
+        vsync_counter = (uint8_t)((old & R[2]) ^ R[1]);
+        R[1] = old;
         return;
     }
     if (op == 19) { if (rg_interactive) wait_vsync(); else monotonic++; return; }

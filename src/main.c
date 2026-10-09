@@ -201,6 +201,7 @@ static void usage(const char *prog)
            "  --limit=N         headless: run N instructions, deterministic timing\n"
            "  --headless        headless with the default limit\n"
            "  --script=...      scripted input (see src/main.c)\n"
+           "  --mips=N          the CPU's speed, interactive (0: unthrottled; default: the game's)\n"
            "  --trace-gaps      interpret untranslated code, logging it to untranslated.log\n"
            "  --full-os         VDU and sprite drivers in headless runs too\n"
            "  --no-title        skip loader programs\n"
@@ -219,6 +220,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     const char *image = NULL;
     int scale = 4, headless = 0, no_sound = 0, no_title = 0;
     const char *fs = NULL, *wavpath = NULL, *shader = NULL;
+    float mips_opt = -1;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
     for (int k = 1; k < argc; k++)
         if (!strncmp(argv[k], "--limit=", 8) || !strcmp(argv[k], "--headless")) headless = 1;
@@ -228,6 +230,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         if (!strncmp(argv[k], "--limit=", 8)) rg_limit = (uint64_t)strtod(argv[k] + 8, 0);
         else if (!strcmp(argv[k], "--headless")) ;
         else if (!strcmp(argv[k], "--full-os")) rg_full_os = 1;
+        else if (!strncmp(argv[k], "--mips=", 7)) mips_opt = (float)atof(argv[k] + 7);
         else if (!strcmp(argv[k], "--trace-gaps")) rg_trace_gaps = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
@@ -248,6 +251,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (argv[k][0] == '-') { fprintf(stderr, "unknown option %s\n", argv[k]); usage(argv[0]); exit(1); }
         else image = argv[k];
     }
+    rg_mips = mips_opt >= 0 ? mips_opt : cfg->mips;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     if (rg_interactive) { pthread_t wd; pthread_create(&wd, NULL, watchdog, NULL); pthread_detach(wd); }

@@ -164,7 +164,9 @@ uint32_t screen_size(void) { return screen_bytes ? screen_bytes : rg->screen_siz
 void video_set_screen_size(uint32_t size) { screen_bytes = size; }
 uint32_t screen_base(void) { return rg->screen_base ? rg->screen_base : 0x2000000u - screen_size(); }
 uint32_t write_bank_addr(void) { return screen_base() + bank * mode_bytes(cur_mode()); }
-void video_set_bank(int which, uint32_t b) { if (which) display_bank = b; else bank = b; }
+/* OS_Byte 112/113. The display bank and OS_Word 22's display start set the
+ * same thing (VIDC's display start): the last one counts. */
+void video_set_bank(int which, uint32_t b) { if (which) { display_bank = b; display_off = 0; } else bank = b; }
 
 /* VDU variables (OS_ReadVduVariables) and mode variables (OS_ReadModeVariable) */
 static uint32_t log2bpp(int bpp) { return bpp == 32 ? 5 : bpp == 16 ? 4 : bpp == 8 ? 3 : bpp == 4 ? 2 : bpp == 2 ? 1 : 0; }
@@ -402,6 +404,6 @@ int video_os_word(uint32_t r0, uint8_t *blk)
         vidc_palette[colour] = (blk[2] >> 4) | (uint32_t)(blk[3] >> 4) << 4 | (uint32_t)(blk[4] >> 4) << 8;
     }
     if (r0 == 22 && (blk[0] & 2))                       /* set display start */
-        display_off = (blk[1] | blk[2] << 8 | blk[3] << 16 | (uint32_t)blk[4] << 24) & 0xFFFFF;
+        { display_off = (blk[1] | blk[2] << 8 | blk[3] << 16 | (uint32_t)blk[4] << 24) & 0xFFFFF; display_bank = 0; }
     return 0;
 }

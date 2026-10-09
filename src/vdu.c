@@ -29,6 +29,8 @@ unsigned vdu_unhandled;
  * cursor and window in character cells (x right, y down) */
 extern const uint8_t roger_font[256][8];
 static uint8_t chars[256][8];
+static uint32_t chosen_sprite;                   /* for PLOT &E8-&EF (*SChoose, OS_SpriteOp 24) */
+static void put_sprite(uint32_t s, int x, int y, int action);
 static int chars_set, vdu5;
 static int tcx, tcy, twl, twt, twr = 39, twb = 31;
 
@@ -139,7 +141,10 @@ static void plot(int k, int x, int y)
         if (grp <= 56) line(X0, Y0, X1, Y1, fg);
         else if (grp == 64) pset(X1, Y1, fg);
         else if (grp == 80) triangle(tox(px_), toy(py_), X0, Y0, X1, Y1, fg);
-        else if (grp == 96) {
+        else if (grp == 232) {                     /* PLOT &E8-&EF: the chosen sprite, its */
+            if (chosen_sprite)                     /* bottom left at the point */
+                put_sprite(chosen_sprite, x - ox, y - oy, gfg_act);
+        } else if (grp == 96) {
             int ya = Y0 < Y1 ? Y0 : Y1, yb = Y0 < Y1 ? Y1 : Y0;
             for (int yy = ya; yy <= yb; yy++) hline(X0, X1, yy, fg);
         } else vdu_unhandled++;
@@ -371,6 +376,15 @@ static void put_sprite(uint32_t s, int x, int y, int action)
     }
 }
 
+/* *SChoose: a sprite of the system area, for PLOT &E8-&EF; 0 if none */
+int vdu_schoose(const char *name)
+{
+    uint32_t n = SCRATCH;
+    snprintf((char *)MEM + n, 13, "%s", name);
+    chosen_sprite = find_sprite(sys_sprites(), n);
+    return chosen_sprite != 0;
+}
+
 /* OS_SpriteOp 9/24/28/34 on a user area or the system area: 1 if handled */
 int sprite_op_full(void)
 {
@@ -384,8 +398,8 @@ int sprite_op_full(void)
         *(uint32_t *)(MEM + area + 8) = 16;
         *(uint32_t *)(MEM + area + 12) = 16;
         return 1;
-    case 24:                                     /* select sprite */
-        if (spr) R[2] = spr;
+    case 24:                                     /* select sprite (for PLOT &E8-&EF too) */
+        if (spr) { R[2] = spr; chosen_sprite = spr; }
         return 1;
     case 28:                                     /* put sprite at graphics cursor */
         if (spr && rg_full_os) put_sprite(spr, cx - ox, cy - oy, R[5]);
