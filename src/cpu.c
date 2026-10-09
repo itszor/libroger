@@ -111,7 +111,10 @@ void cpu_programs_loaded(const char *leaf, uint32_t addr)
 {
     if (!rg->programs) return;
     for (const struct roger_program *p = rg->programs; p->leaf; p++)
-        if (!strcasecmp(p->leaf, leaf) && p->image->base == addr) pending = p->image;
+        if (!strcasecmp(p->leaf, leaf) && p->image->base == addr) {
+            if (!p->overlay) pending = p->image;
+            else { cpu_remove_image(p->image); cpu_add_image(p->image); }
+        }
 }
 
 /* ---------------------------------------------------------------- dispatch */

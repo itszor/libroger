@@ -19,11 +19,16 @@
 
 /* A program file that may be loaded at its image's base while running
  * (e.g. a loader that chain-loads the main program to &8000). When OS_File
- * loads a file whose leaf name is `leaf` to `image->base`, the image becomes
- * the one dispatched once control next arrives at that address. */
+ * or *Load loads a file whose leaf name is `leaf` to `image->base`, the
+ * image becomes the one dispatched once control next arrives at that
+ * address. An overlay is code the program loads and calls alongside its
+ * own (e.g. a BASIC program's CALL into a file it *Loads into a DIMmed
+ * block): once loaded, its image is dispatched from as well, like a
+ * module's. */
 struct roger_program {
     const char *leaf;
     const struct roger_image *image;
+    int overlay;
 };
 
 /* A relocatable module RMLoaded before the program starts (as !Run would):

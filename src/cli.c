@@ -204,6 +204,8 @@ int cli_command(const char *line, int x)
         if (*word) addr = (uint32_t)strtoul(word, NULL, 16);
         else { uint32_t load, exec; file_info(path, &load, &exec); addr = load; }
         load_file(path, addr);
+        const char *leaf = strrchr(name, '.');
+        cpu_programs_loaded(leaf ? leaf + 1 : name, addr);
         return 1;
     }
     if ((p = word_at(s, "Save"))) {
