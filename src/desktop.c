@@ -986,9 +986,11 @@ void desktop_create_menu(uint32_t menu, int x, int y)
 void desktop_create_submenu(uint32_t menu, int x, int y)
 {
     if (warned_level < 0 || warned_level >= nlv) { desktop_create_menu(menu, x, y); return; }
-    close_levels(warned_level + 1);
-    lv[warned_level].opened = warned_item;
-    open_level(menu, x, y, lv[warned_level].x - 2 * B);
+    int k = warned_level, i = warned_item;        /* (closing the levels after it forgets the warning) */
+    close_levels(k + 1);
+    lv[k].opened = i;                             /* opened: no more warnings while it is */
+    warned_level = k; warned_item = i;
+    open_level(menu, x, y, lv[k].x - 2 * B);
 }
 
 void desktop_window_gone(struct win *w)

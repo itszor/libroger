@@ -150,6 +150,53 @@ static int wildmatch(const char *pat, const char *s)
     return *s <= ' ';
 }
 
+/* A string in a template's indirected data: its length to the terminator
+ * (a control character) inclusive; 0 if off isn't in the data */
+static uint32_t template_str(const uint8_t *w, uint32_t fixed, uint32_t size, uint32_t off)
+{
+    if (off < fixed || off >= size) return 0;
+    uint32_t n = 0;
+    while (off + n < size && w[off + n] >= 32) n++;
+    return off + n < size ? n + 1 : n;
+}
+
+/* Lay out a template's indirected data at ws, pointing the window block at
+ * blk to it (blk 0: just measure); returns its size. Indirected title
+ * (flags at +56, data at +72) and icons (32 bytes each from +88: flags at
+ * +16, data at +20): each text gets a buffer of the length its block gives
+ * - a template file holds just the strings, packed, but a program may use
+ * the whole buffer (Elite's Preferences end it with a terminator, which
+ * packed would land in the next icon's validation string) - then its
+ * validation string. */
+static uint32_t template_data(const uint8_t *w, uint32_t fixed, uint32_t size, uint32_t nicons,
+                              uint32_t blk, uint32_t ws)
+{
+    uint32_t used = 0;
+    for (int k = -1; k < (int)nicons; k++) {
+        uint32_t fo = k < 0 ? 56 : 88 + 32 * k + 16, d = k < 0 ? 72 : 88 + 32 * k + 20;
+        uint32_t flags = *(const uint32_t *)(w + fo);
+        if (!(flags & 0x100) || d + 12 > fixed) continue;
+        uint32_t text = *(const uint32_t *)(w + d), val = *(const uint32_t *)(w + d + 4);
+        uint32_t len = *(const uint32_t *)(w + d + 8);
+        uint32_t tn = template_str(w, fixed, size, text);
+        if (tn) {
+            uint32_t bn = len > tn && len < 0x10000 ? len : tn;
+            if (blk) {
+                memcpy(MEM + ws + used, w + text, tn);
+                memset(MEM + ws + used + tn, 0, bn - tn);
+                WR32(blk + d, ws + used);
+            }
+            used += bn;
+        }
+        uint32_t vn = (flags & 1) ? template_str(w, fixed, size, val) : 0;   /* text: validation */
+        if (vn) {
+            if (blk) { memcpy(MEM + ws + used, w + val, vn); WR32(blk + d + 4, ws + used); }
+            used += vn;
+        }
+    }
+    return (used + 3) & ~3u;
+}
+
 /* Wimp_LoadTemplate: R1 window buffer (<= 0: just the sizes), R2/R3
  * indirected workspace and its end, R4 font array, R5 name (wildcarded;
  * the name found is written back), R6 index entry to search from. Returns
@@ -173,22 +220,11 @@ static void load_template(void)
         R[6] = (e - 16) / 24 + 1;
         for (l = 0; l < 12 && ename[l] > ' '; l++) MEM[R[5] + l] = ename[l];
         MEM[R[5] + l] = 13;
-        if ((int32_t)R[1] <= 0) { R[1] = fixed; R[2] = size - fixed; return; }
-        if (R[2] + (size - fixed) > R[3]) { VF = 1; return; }       /* workspace too small */
+        uint32_t need = template_data(w, fixed, size, nicons, 0, 0);
+        if ((int32_t)R[1] <= 0) { R[1] = fixed; R[2] = need; return; }
+        if (R[2] + need > R[3]) { VF = 1; return; }                 /* workspace too small */
         memcpy(MEM + R[1], w, fixed);
-        memcpy(MEM + R[2], w + fixed, size - fixed);
-        /* indirected title (flags at +56) and icons (each 32 bytes from +88:
-         * flags at +16, data at +20): relocate offsets into the workspace */
-        for (int k = -1; k < (int)nicons; k++) {
-            uint32_t flags = RD32(R[1] + (k < 0 ? 56 : 88 + 32 * k + 16));
-            uint32_t data = R[1] + (k < 0 ? 72 : 88 + 32 * k + 20);
-            if (!(flags & 0x100)) continue;
-            for (int p = 0; p < 2; p++) {
-                uint32_t v = RD32(data + 4 * p);
-                if (v >= fixed && v < size) WR32(data + 4 * p, R[2] + v - fixed);
-            }
-        }
-        R[2] += size - fixed;
+        R[2] += template_data(w, fixed, size, nicons, R[1], R[2]);
         ev("Wimp_LoadTemplate", "s", ename, l);
         return;
     }
@@ -255,7 +291,7 @@ static void create_window(void)           /* R1 block -> R0 handle */
 {
     int k;
     for (k = 0; k < WIMP_MAXWIN && wins[k].handle; k++) ;
-    if (k == WIMP_MAXWIN) { VF = 1; return; }
+    if (k == WIMP_MAXWIN) { os_error(0, "Too many windows"); return; }
     struct win *w = &wins[k];
     free(w->back);
     memset(w, 0, sizeof *w);
@@ -592,6 +628,7 @@ int wimp_swi(uint32_t b)
     case 0x400C3: {                                         /* Wimp_DeleteWindow: R1 -> handle */
         struct win *w = win_of(RD32(R[1]));
         if (w && w != &iconbar) {
+            ev("Wimp_DeleteWindow", "i", w->handle);
             if (rg_desktop) wimp_close(w);
             if (menu_window == w->handle) menu_window = 0;
             w->handle = 0;
