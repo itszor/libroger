@@ -249,6 +249,9 @@ static void run_code(uint32_t addr, uint32_t mode, uint32_t r14, int interruptib
 void call_code(uint32_t addr, uint32_t mode, uint32_t r14) { run_code(addr, mode, r14, 0); }
 void call_swi_code(uint32_t addr, uint32_t mode, uint32_t r14) { run_code(addr, mode, r14, 1); }
 void roger_call(uint32_t addr, uint32_t mode, uint32_t r14) { call_code(addr, mode, r14); }
+/* Code the program runs as itself (a translated BASIC program's CALL):
+ * interrupts are taken meanwhile, as for the program proper. */
+void roger_call_program(uint32_t addr, uint32_t r14) { run_code(addr, 0, r14, 1); }
 int roger_in_handler(void) { return in_handler; }
 
 void bad_entry(uint32_t fn, uint32_t e)
@@ -510,8 +513,10 @@ static int exec_word(uint32_t pc, uint32_t i)
 static struct { uint32_t a, why; uint64_t n; } istat[ISTAT];
 static void note_interp(uint32_t a, uint32_t why)
 {
-    unsigned h = (a >> 2) % ISTAT;
-    while (istat[h].n && (istat[h].a != a || istat[h].why != why)) h = (h + 1) % ISTAT;
+    unsigned h = (a >> 2) % ISTAT, probes = 0;
+    while (istat[h].n && (istat[h].a != a || istat[h].why != why))
+        if (++probes == ISTAT) return;          /* table full: no more statistics */
+        else h = (h + 1) % ISTAT;
     istat[h].a = a; istat[h].why = why; istat[h].n++;
 }
 /* RECOMP_ISTAT=1: what was interpreted, at exit */

@@ -296,3 +296,13 @@ void irq_point(void)
     }
     recompute_irq();
 }
+
+/* Host code standing in for the program (a translated BASIC program
+ * polling TIME, INKEY or the mouse): count n instructions' worth of time
+ * and take what falls due - ticks, vsyncs and scripted input when
+ * headless, the display and host events when interactive. */
+void roger_idle(unsigned n)
+{
+    icount += n;
+    irq_point();
+}

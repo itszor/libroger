@@ -291,7 +291,8 @@ static void gbpb_dir(uint32_t op)
         snprintf(path, sizeof path, "%s/%s", dir, names[k]);
         struct stat st;
         int isdir = stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-        uint32_t len = strlen(leaf) + 1, rec = op == 9 ? len : ((op == 10 ? 20 : 29) + len + 3) & ~3u;
+        uint32_t noff = op == 10 ? 20 : op == 11 ? 29 : 24;               /* where the name goes */
+        uint32_t len = strlen(leaf) + 1, rec = op == 9 ? len : (noff + len + 3) & ~3u;
         if (out + rec > end) break;
         if (op != 9) {
             uint32_t load, exec;
@@ -299,8 +300,10 @@ static void gbpb_dir(uint32_t op)
             if (isdir) { load = 0xFFFFFD00; exec = 0; }
             WR32(out, load); WR32(out + 4, exec); WR32(out + 8, isdir ? 0 : (uint32_t)st.st_size);
             WR32(out + 12, 3); WR32(out + 16, isdir ? 2 : 1);                    /* attributes WR, type */
-            if (op == 12) { WR32(out + 20, 0); MEM[out + 24] = 0; memset(MEM + out + 25, 0, 4); }
-            memcpy(MEM + out + (op == 10 ? 20 : 29), leaf, len);
+            if (op == 11) { WR32(out + 20, 0); memset(MEM + out + 24, 0, 5); }  /* SIN, 5-byte date */
+            if (op == 12)                                                    /* filetype */
+                WR32(out + 20, isdir ? 0x1000 : (load >> 20) == 0xFFF ? (load >> 8) & 0xFFF : 0xFFFFFFFF);
+            memcpy(MEM + out + noff, leaf, len);
         } else memcpy(MEM + out, leaf, len);
         out += rec; got++;
     }
@@ -313,7 +316,7 @@ static void os_gbpb(void)
 {
     FILE *f = handle(R[1]);
     uint32_t op = R[0];
-    if (op == 9 || op == 10 || op == 12) { gbpb_dir(op); return; }
+    if (op >= 9 && op <= 12) { gbpb_dir(op); return; }
     if (!f || op < 1 || op > 4) { ev("OS_GBPB", "ii", op, R[1]); if (swi_x) VF = 1; return; }
     if (op == 1 || op == 3) fseek(f, R[4], SEEK_SET);
     size_t n = op <= 2 ? fwrite(MEM + R[2], 1, R[3], f) : fread(MEM + R[2], 1, R[3], f);

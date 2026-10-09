@@ -141,6 +141,7 @@ void modules_load(void);
 int  modules_rmload(const char *name);   /* 0: not a configured module file */
 int  modules_rmkill(const char *title);
 int  modules_swi(uint32_t b, int x);
+int  modules_swi_number(const char *name, uint32_t *n);   /* a loaded module's SWI by name */
 int  modules_gap(uint32_t a);             /* an untranslated address in a module */
 int  modules_command(const char *cmd, const char *tail, int x);   /* a module's *command: 1 if found */
 int  modules_service(void);               /* service call R1 (R0-R9 as set): 1 if claimed */

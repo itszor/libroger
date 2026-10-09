@@ -230,3 +230,20 @@ int modules_swi(uint32_t b, int x)
     }
     return 0;
 }
+
+/* OS_SWINumberFromString for module SWIs: each loaded module's SWI decoding
+ * table (header +&24: the prefix, then one name per SWI from its chunk,
+ * ending with an empty name). "Prefix_Name" -> chunk + index. */
+int modules_swi_number(const char *name, uint32_t *n)
+{
+    for (int k = 0; k < MAXMOD; k++) {
+        if (!mods[k].m || !RD32(mods[k].base + 0x24) || !RD32(mods[k].base + 0x1C)) continue;
+        const char *t = (const char *)MEM + mods[k].base + RD32(mods[k].base + 0x24);
+        size_t pl = strlen(t);
+        if (strncmp(name, t, pl) || name[pl] != '_') continue;
+        const char *p = t + pl + 1;
+        for (uint32_t i = 0; *p && i < 64; i++, p += strlen(p) + 1)
+            if (!strcmp(name + pl + 1, p)) { *n = RD32(mods[k].base + 0x1C) + i; return 1; }
+    }
+    return 0;
+}

@@ -142,12 +142,28 @@ static void swi_number_from_string(void)
         {"OS_ReadDynamicArea", 0x5C, 0}, {"OS_ChangeDynamicArea", 0x2A, 0},
         {"OS_CheckModeValid", 0x3F, 0}, {"OS_ReadModeVariable", 0x35, 0},
         {"OS_ReadVduVariables", 0x31, 0}, {"OS_SpriteOp", 0x2E, 0},
+        {"OS_WriteC", 0x00, 0}, {"OS_WriteS", 0x01, 0}, {"OS_Write0", 0x02, 0}, {"OS_NewLine", 0x03, 0},
+        {"OS_ReadC", 0x04, 0}, {"OS_CLI", 0x05, 0}, {"OS_Byte", 0x06, 0}, {"OS_Word", 0x07, 0},
+        {"OS_File", 0x08, 0}, {"OS_Args", 0x09, 0}, {"OS_BGet", 0x0A, 0}, {"OS_BPut", 0x0B, 0},
+        {"OS_GBPB", 0x0C, 0}, {"OS_Find", 0x0D, 0}, {"OS_ReadLine", 0x0E, 0}, {"OS_GetEnv", 0x10, 0},
+        {"OS_Exit", 0x11, 0}, {"OS_Module", 0x1E, 0}, {"OS_Mouse", 0x1C, 0}, {"OS_ReadUnsigned", 0x21, 0},
+        {"OS_ReadVarVal", 0x23, 0}, {"OS_SetVarVal", 0x24, 0}, {"OS_GSTrans", 0x27, 0},
+        {"OS_ReadPalette", 0x2F, 0}, {"OS_ValidateAddress", 0x3A, 0}, {"OS_ReadMonotonicTime", 0x42, 0},
+        {"OS_ReadMemMapInfo", 0x51, 0}, {"OS_ReadRAMFsLimits", 0x55, 0}, {"OS_SerialOp", 0x57, 0},
+        {"OS_ConvertStandardDateAndTime", 0xC0, 0}, {"OS_ConvertDateAndTime", 0xC1, 0},
+        {"Sound_Configure", 0x40140, 0}, {"Sound_Enable", 0x40141, 0}, {"Sound_Volume", 0x40180, 0},
+        {"Sound_SoundLog", 0x40181, 0}, {"Sound_AttachVoice", 0x40185, 0}, {"Sound_Control", 0x40189, 0},
+        {"Sound_AttachNamedVoice", 0x4018A, 0}, {"Sound_ReadControlBlock", 0x4018B, 0},
+        {"Sound_Tuning", 0x40182, 0}, {"Sound_Speaker", 0x40143, 0}, {"Sound_InstallVoice", 0x40183, 0},
+        {"Hourglass_On", 0x406C0, 0}, {"Hourglass_Off", 0x406C1, 0}, {"Hourglass_Smash", 0x406C2, 0},
+        {"Wimp_Initialise", 0x400C0, 0}, {"Wimp_Poll", 0x400C7, 0}, {"Wimp_CloseDown", 0x400DD, 0},
     };
     char s[64]; int l = 0;
     while (l < 63 && MEM[R[1] + l] >= ' ') { s[l] = MEM[R[1] + l]; l++; }
     s[l] = 0;
     for (unsigned k = 0; k < sizeof names / sizeof names[0]; k++)
         if (!strcmp(s, names[k].name) && (!names[k].ro35 || rg->vidc20)) { R[0] = names[k].n; return; }
+    if (modules_swi_number(s, &R[0])) return;
     VF = 1;                                      /* "SWI name not known" */
 }
 
@@ -257,6 +273,38 @@ void swi(uint32_t n, uint32_t nextpc)
         if (!mode_info(R[0]) || (R[0] > 127 && R[0] < 0x100)) { R[0] = 0xFFFFFFFF; CF = 1; } else CF = 0;
         return;
     case 0x39: swi_number_from_string(); return;
+    case 0x55: R[0] = R[1] = 0x01000000; return;   /* OS_ReadRAMFsLimits: no RAM disc (start = end) */
+    case 0x57:                                   /* OS_SerialOp: no serial port - nothing arrives, */
+        if (R[0] == 4) CF = 1;                   /* nothing is sent, settings read back as 0 */
+        else if (R[0] != 3) R[1] = 0;
+        return;
+    case 0x3A:                                   /* OS_ValidateAddress: [R0, R1) mapped -> C clear. Everything
+                                                    below 64M is (application space, RMA, screen,
+                                                    dynamic areas) except between the RAM limit and RMA */
+        CF = !(R[0] <= R[1] && R[1] <= MEMSIZE && (R[1] <= ram_limit() || R[0] >= 0x1800000));
+        return;
+    case 0x21: {                                 /* OS_ReadUnsigned: R0 flags + base, R1 string -> R1 past it, R2 value */
+        uint32_t base = R[0] & 0xFF ? R[0] & 0xFF : 10, p = R[1], v = 0, lim = 0xFFFFFFFF, b = 0, q;
+        while (MEM[p] == ' ') p++;               /* leading spaces are skipped */
+        q = p;
+        if (MEM[p] == '&') { base = 16; p++; }
+        else {                                   /* "base_digits" */
+            while (MEM[q] >= '0' && MEM[q] <= '9') b = b * 10 + MEM[q++] - '0';
+            if (q > p && MEM[q] == '_' && b >= 2 && b <= 36) { base = b; p = q + 1; }
+        }
+        int n = 0;
+        for (;; p++, n++) {
+            int c = MEM[p] | 0x20, d = MEM[p] >= '0' && MEM[p] <= '9' ? MEM[p] - '0'
+                                     : c >= 'a' && c <= 'z' ? c - 'a' + 10 : 99;
+            if (d >= (int)base) break;
+            v = v * base + d;
+        }
+        if (R[0] & 0x40000000u) lim = 255;       /* bit 30: 0-255; bit 29: 0-R2 */
+        if (R[0] & 0x20000000u) lim = R[2];
+        if (!n || v > lim || ((R[0] & 0x80000000u) && MEM[p] >= ' ')) { if (swi_x) VF = 1; return; }
+        R[1] = p; R[2] = v;
+        return;
+    }
     case 0x34:                                   /* OS_CallAVector: R9 the vector */
         if (R[9] == 0x23 && video_palettev()) return;   /* PaletteV, nobody claiming it */
         ev("OS_CallAVector", "ii", R[9], R[4]);

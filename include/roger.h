@@ -154,7 +154,9 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg) __attribut
 void roger_log(const char *name, const char *fmt, ...);   /* event log: 'i' word, 's' bytes+len */
 void roger_finish(const char *why) __attribute__((noreturn));
 void roger_call(uint32_t addr, uint32_t mode, uint32_t r14);   /* run code until HANDLER_RET */
+void roger_call_program(uint32_t addr, uint32_t r14);          /* ...as the program (USR, interrupts taken) */
 void roger_run_until(uint32_t stop);
+void roger_idle(unsigned n);                           /* host code waiting: n instructions' worth of time passes */
 void roger_set_image(const struct roger_image *img);  /* dispatch addresses through img */
 const struct roger_image *roger_current_image(void);
 long roger_load_file(const char *path, uint32_t addr);
