@@ -15,7 +15,6 @@ uint32_t monotonic, events_enabled;
 static uint64_t next_tick = TICK_STEPS, next_vsync = VSYNC_STEPS;
 static uint64_t next_tick_ns, next_vsync_ns;
 static unsigned click_i;
-static int last_buttons, shots;
 volatile uint64_t rg_last_service_ns;      /* watchdog: last time rt_service() ran a vsync */
 
 void irq_start_clock(uint64_t now) { next_tick_ns = next_vsync_ns = now; }
@@ -222,6 +221,29 @@ static void vsync(void)
     key_events();
 }
 
+/* After a vsync: a mouse button change (event 10), and a screenshot asked
+ * for. (Presenting comes last: what the program does at flyback - palette
+ * pushes, bank flips, pointer redraw in its vsync event - shows in the
+ * frame scanned out right after it.) */
+static void mouse_and_shots(void)
+{
+    static int last_buttons;
+    static int shots;
+    if (mouse_buttons != last_buttons) {
+        last_buttons = mouse_buttons;
+        ev("mouse", "iii", mouse_x, mouse_y, mouse_buttons);
+        uint32_t m[5] = {10, mouse_x, mouse_y, mouse_buttons, monotonic};   /* event 10: mouse */
+        call_vector(0x10, 5, m);
+    }
+    if (screenshot_requested) {
+        char fn[64];
+        snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
+        display_screenshot(displayed(), fn);
+        fprintf(stderr, "saved %s\n", fn);
+        screenshot_requested = 0;
+    }
+}
+
 void rt_service(int vsync_now)
 {
     uint64_t now = display_ticks_ns();
@@ -238,22 +260,7 @@ void rt_service(int vsync_now)
         if (quit_requested) finish("window closed");
         rg_last_service_ns = now;
         vsync();
-        if (mouse_buttons != last_buttons) {
-            last_buttons = mouse_buttons;
-            ev("mouse", "iii", mouse_x, mouse_y, mouse_buttons);
-            uint32_t m[5] = {10, mouse_x, mouse_y, mouse_buttons, monotonic};   /* event 10: mouse */
-            call_vector(0x10, 5, m);
-        }
-        /* Present last: what the program does at flyback (palette pushes,
-         * bank flips, pointer redraw in its vsync event) shows in the frame
-         * scanned out right after it. */
-        if (screenshot_requested) {
-            char fn[64];
-            snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
-            display_screenshot(displayed(), fn);
-            fprintf(stderr, "saved %s\n", fn);
-            screenshot_requested = 0;
-        }
+        mouse_and_shots();
         display_present(displayed());
     }
 }
@@ -286,6 +293,7 @@ void irq_point(void)
     if (icount >= next_vsync) {
         next_vsync += VSYNC_STEPS;
         vsync();
+        if (script_active()) { script_run(); mouse_and_shots(); }
     }
     if (click_i < rg->nclicks && icount >= rg->clicks[click_i].icount) {
         uint32_t x = rg->clicks[click_i].x, y = rg->clicks[click_i].y, b = rg->clicks[click_i].buttons;

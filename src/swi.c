@@ -13,7 +13,8 @@ uint32_t swi_pc;
  * headless runs the scripted keys */
 int pressed(int inkey)
 {
-    if (rg_interactive) return inkey >= 1 && inkey <= 128 && key_down[inkey - 1];
+    if (inkey >= 1 && inkey <= 128 && key_down[inkey - 1]) return 1;   /* (headless: --script keys) */
+    if (rg_interactive) return 0;
     for (unsigned k = 0; k < rg->nkeys; k++)
         if (rg->keys[k].inkey == inkey && rg->keys[k].from <= icount && icount < rg->keys[k].to) return 1;
     return 0;
@@ -25,8 +26,8 @@ static void os_byte(void)
 {
     uint32_t op = R[0] & 0xFF;
     if (op == 129) {                                   /* INKEY */
-        if (R[2] == 0xFF && R[1] >= 0x80) {            /* scan one key */
-            int k = 256 - R[1];
+        if (R[2] == 0xFF && (R[1] & 0xFF) >= 0x80) {   /* scan one key (R1's low byte) */
+            int k = 256 - (int)(R[1] & 0xFF);
             R[1] = R[2] = pressed(k) ? 0xFF : 0;
         } else if (rg_interactive) {                    /* read a key, with time limit */
             uint64_t until = display_ticks_ns() + (uint64_t)((R[2] & 0x7F) << 8 | R[1]) * CS_NS;
@@ -130,6 +131,61 @@ static void convert(uint32_t b)
     int l = strlen(s);
     memcpy(MEM + buf, s, l + 1);
     R[0] = buf; R[1] = buf + l; R[2] = size - l - 1;
+}
+
+/* OS_ConvertDateAndTime (R3 the format) and OS_ConvertStandardDateAndTime
+ * (Sys$DateFormat's default): R0 a 5-byte time, centiseconds since 1900
+ * (UTC), R1/R2 the buffer and its size. The format's %-codes: CS SE MI 12
+ * 24 AM PM WE W3 WN DY ST MO M3 MN CE YR WK DN %; %Z before one drops its
+ * leading zero. */
+static void convert_time(uint32_t b)
+{
+    static const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    static const char *const months[] = {"January", "February", "March", "April", "May", "June", "July",
+                                         "August", "September", "October", "November", "December"};
+    uint64_t cs = 0;
+    for (int k = 4; k >= 0; k--) cs = cs << 8 | MEM[R[0] + k];
+    time_t t = (time_t)(cs / 100) - 2208988800LL;     /* 1900 -> 1970 */
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    char fmt[256], out[256];
+    if (b == 0xC1) cstr(R[3], fmt, 1); else strcpy(fmt, "%W3,%DY %M3 %CE%YR.%24:%MI:%SE");
+    int o = 0;
+    for (const char *p = fmt; *p && o < 200; p++) {
+        if (*p != '%') { out[o++] = *p; continue; }
+        int z = 0;
+        if ((p[1] | 32) == 'z') { z = 1; p++; }
+        char c1 = p[1] ? (p[1] & ~32) : 0, c2 = c1 && p[2] ? (p[2] & ~32) : 0, v[32] = "";
+        int num = -1, two = 1;
+        if (p[1] == '%') { out[o++] = '%'; p++; continue; }
+        if (c1 == 'C' && c2 == 'S') num = (int)(cs % 100);
+        else if (c1 == 'S' && c2 == 'E') num = tm.tm_sec;
+        else if (c1 == 'M' && c2 == 'I') num = tm.tm_min;
+        else if (c1 == '1' && c2 == '2') num = tm.tm_hour % 12 ? tm.tm_hour % 12 : 12;
+        else if (c1 == '2' && c2 == '4') num = tm.tm_hour;
+        else if ((c1 == 'A' || c1 == 'P') && c2 == 'M') strcpy(v, tm.tm_hour < 12 ? "AM" : "PM");
+        else if (c1 == 'W' && c2 == 'E') strcpy(v, days[tm.tm_wday]);
+        else if (c1 == 'W' && c2 == '3') snprintf(v, 4, "%s", days[tm.tm_wday]);
+        else if (c1 == 'W' && c2 == 'N') { num = tm.tm_wday + 1; two = 0; }
+        else if (c1 == 'D' && c2 == 'Y') num = tm.tm_mday;
+        else if (c1 == 'S' && c2 == 'T') { int d = tm.tm_mday;
+            strcpy(v, d % 10 == 1 && d != 11 ? "st" : d % 10 == 2 && d != 12 ? "nd" : d % 10 == 3 && d != 13 ? "rd" : "th"); }
+        else if (c1 == 'M' && c2 == 'O') strcpy(v, months[tm.tm_mon]);
+        else if (c1 == 'M' && c2 == '3') snprintf(v, 4, "%s", months[tm.tm_mon]);
+        else if (c1 == 'M' && c2 == 'N') num = tm.tm_mon + 1;
+        else if (c1 == 'C' && c2 == 'E') num = (tm.tm_year + 1900) / 100;
+        else if (c1 == 'Y' && c2 == 'R') num = tm.tm_year % 100;
+        else if (c1 == 'W' && c2 == 'K') num = tm.tm_yday / 7 + 1;
+        else if (c1 == 'D' && c2 == 'N') { num = tm.tm_yday + 1; two = 3; }
+        else { out[o++] = '%'; continue; }
+        if (num >= 0) snprintf(v, sizeof v, z || !two ? "%d" : two == 3 ? "%03d" : "%02d", num);
+        for (char *q = v; *q && o < 200; q++) out[o++] = *q;
+        p += 2;
+    }
+    out[o] = 0;
+    if ((uint32_t)o + 1 > R[2]) { VF = 1; return; }
+    memcpy(MEM + R[1], out, o + 1);
+    R[0] = R[1]; R[1] += o; R[2] -= o + 1;
 }
 
 /* OS_SWINumberFromString: R1 the name (control-terminated) -> R0 its
@@ -242,7 +298,8 @@ void swi(uint32_t n, uint32_t nextpc)
         return;
     }
     case 0x1C:                                   /* OS_Mouse: pointer confined to the bounding box */
-        if (rg_interactive) { R[0] = clamp_i(mouse_x, mbox[0], mbox[2]); R[1] = clamp_i(mouse_y, mbox[1], mbox[3]);
+        if (rg_interactive || script_active()) {      /* (headless: --script's mouse) */
+                              R[0] = clamp_i(mouse_x, mbox[0], mbox[2]); R[1] = clamp_i(mouse_y, mbox[1], mbox[3]);
                               R[2] = mouse_buttons; R[3] = monotonic; }
         else { R[0] = 640; R[1] = 512; R[2] = 0; R[3] = monotonic; }
         return;
@@ -318,6 +375,7 @@ void swi(uint32_t n, uint32_t nextpc)
                                      : (uint32_t)(icount / TICK_STEPS); return;
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
+    if (b == 0xC0 || b == 0xC1) { convert_time(b); return; }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
     if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;

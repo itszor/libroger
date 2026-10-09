@@ -153,6 +153,17 @@ static int arg(const char **s, char *out, int size)
     return o;
 }
 
+/* send a file's bytes to the VDU stream (as OS_WriteC); 0 if it can't be read */
+static int print_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    int c;
+    while ((c = fgetc(f)) != EOF) vdu_put((uint8_t)c);
+    fclose(f);
+    return 1;
+}
+
 static int cli_error(int x)
 {
     if (x) { VF = 1; return 1; }
@@ -206,6 +217,16 @@ int cli_command(const char *line, int x)
         load_file(path, addr);
         const char *leaf = strrchr(name, '.');
         cpu_programs_loaded(leaf ? leaf + 1 : name, addr);
+        return 1;
+    }
+    if ((p = word_at(s, "SLoad")) || (p = word_at(s, "SMerge"))) {   /* the system sprite area */
+        int merge = !strncasecmp(s, "SMerge", 6);
+        arg(&p, name, sizeof name);
+        if (!sprite_file(sys_sprites(), name, merge)) {
+            fprintf(stderr, "*%s: file not found %s\n", merge ? "SMerge" : "SLoad", name);
+            if (cli_error(x)) return 1;
+            finish("file not found");
+        }
         return 1;
     }
     if ((p = word_at(s, "Save"))) {
@@ -265,9 +286,32 @@ int cli_command(const char *line, int x)
         R[0] = saved[0]; R[1] = saved[1]; R[2] = saved[2];
         return 1;
     }
+    if ((p = word_at(s, "Print"))) {             /* a file's bytes, to the VDU drivers */
+        char path[2048];
+        arg(&p, name, sizeof name);
+        if (!hostpath_read(name, path) || !print_file(path)) {
+            fprintf(stderr, "*Print: file not found %s\n", name);
+            return cli_error(x);
+        }
+        return 1;
+    }
     /* a command a loaded module provides (*FModeOn...) */
+    const char *cmd = s;
     arg(&s, word, sizeof word);
     if (modules_command(word, skip(s), x)) return 1;
+    /* running a file (*Run name, or the name as the command, with or
+     * without a leading slash): a BBC font file (&FF7) is printed, as
+     * Alias$@RunType_FF7 (Print %*0) does */
+    if ((p = word_at(cmd, "Run"))) arg(&p, word, sizeof word);
+    {
+        char path[2048];
+        const char *f = word[0] == '/' ? word + 1 : word;
+        uint32_t load, exec;
+        if (*f && hostpath_read(f, path)) {
+            file_info(path, &load, &exec);
+            if ((load >> 20) == 0xFFF && ((load >> 8) & 0xFFF) == 0xFF7) return print_file(path);
+        }
+    }
     return 0;
 }
 

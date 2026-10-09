@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "roger.h"
 
-/* ---- the emulated machine's memory map
+/* ---- the emulated machine's memory map (see also SYS_SPRITES)
  *   &0000000  page zero (hardware vectors; &100 see irq1v)
  *   &0008000  the application (to the RAM limit, &8000 + WimpSlot)
  *   &17F0000  runtime workspace: sound DMA buffers, sound channel control
@@ -16,6 +16,8 @@
  *   ........  screen memory, ending at &2000000 (configurable)
  *   &3200000  IOC, &3400000 VIDC, &3600000 MEMC (writes are emulated) */
 #define MEMSIZE      0x4000000u
+#define SYS_SPRITES  0x3000000u           /* the system sprite area (*SLoad, OS_SpriteOp < 256) */
+#define SYS_SPRITES_MAX 0x100000u
 #define RETURN_TO_OS 0x3FFFFF0u           /* R14 the program starts with */
 #define HANDLER_RET  ROGER_HANDLER_RET
 #define LOAD         ROGER_LOAD
@@ -133,6 +135,9 @@ int  hostpath_read(const char *name, char *out);   /* preferring a saved copy */
 void file_info(const char *path, uint32_t *load, uint32_t *exec);
 int  save_file(const char *name, uint32_t addr, uint32_t len);
 long load_file(const char *path, uint32_t addr);
+uint32_t sprite_area(void);               /* the area OS_SpriteOp R0/R1 name */
+uint32_t sys_sprites(void);               /* the system sprite area */
+int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */
 int  files_swi(uint32_t b);
 void sprite_op(void);
 

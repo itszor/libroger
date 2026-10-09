@@ -138,6 +138,7 @@ float mode_aspect(const struct rg_mode *m) { return m->aspect > 0 ? m->aspect : 
 
 /* Change mode (VDU 22, OS_ScreenMode 0, Wimp_SetMode): 0 if m isn't one.
  * A selector is copied (OS_ScreenMode 1 returns the copy). */
+static void reset_timing(void);
 int video_set_mode(uint32_t m)
 {
     const struct rg_mode *mi = mode_info(m);
@@ -153,6 +154,7 @@ int video_set_mode(uint32_t m)
     bank = display_bank = 0;
     pointer_shape = 0;
     video_default_palette();
+    reset_timing();                       /* the OS programs VIDC and MEMC for the mode */
     if (rg_full_os) vdu_mode_reset();
     return 1;
 }
@@ -200,6 +202,11 @@ uint32_t vduvar(uint32_t v)
     }
 }
 
+/* the standard 16 colours (0x0BGR) */
+static const uint32_t std16[16] = {
+    0x000, 0x00F, 0x0F0, 0x0FF, 0xF00, 0xF0F, 0xFF0, 0xFFF,
+    0x555, 0x009, 0x090, 0x099, 0x900, 0x909, 0x990, 0xAAA};
+
 /* ---------------------------------------------------------------- VDU stream
  * Every byte written is recorded (finish() saves it); interactive runs also
  * pass it to the VDU drivers (vdu.c). Mode changes are followed here. */
@@ -221,6 +228,11 @@ void vdu_put(uint8_t c)
         q[qn++] = c;
         if (qn == qwant) {
             if (q[0] == 22 && !disabled) video_set_mode(q[1]);
+            if (q[0] == 19 && !disabled) {          /* palette: logical, physical (16: R,G,B) */
+                int l = q[1] & 15, p = q[2];
+                if (p == 16) vidc_palette[l] = (q[3] >> 4) | (uint32_t)(q[4] >> 4) << 4 | (uint32_t)(q[5] >> 4) << 8;
+                else if (p < 16) vidc_palette[l] = std16[p];    /* (24 border, 25 pointer: not shown) */
+            }
             qn = qwant = 0;
         }
     } else if (c < 32 && nparams[c]) {
@@ -240,6 +252,18 @@ int palette_split;
 #define STD_VDSR 38
 static int vidc_vcr = 312, vidc_vdsr = STD_VDSR, vidc_vder = STD_VDSR + 256;
 static int vidc_seen[64];
+static int memc_direct;
+static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
+
+/* a mode change: the mode's standard vertical timing, and the display
+ * starting at the screen's start (a program's own VIDC/MEMC settings, and
+ * an OS_Word 22 display start, are undone) */
+static void reset_timing(void)
+{
+    vidc_vcr = 312; vidc_vdsr = STD_VDSR; vidc_vder = STD_VDSR + 256;
+    memc_direct = 0; memc_vinit = 0; memc_vstart = 0; memc_vend = ~0u;
+    display_off = 0;
+}
 
 void vidc_write(uint32_t v)
 {
@@ -289,9 +313,6 @@ uint32_t vidc_rgb(int line, uint8_t p)
  * (bits 0-1 tint, bit 2 red 2, bit 3 blue 2). */
 void video_default_palette(void)
 {
-    static const uint32_t std16[16] = {
-        0x000, 0x00F, 0x0F0, 0x0FF, 0xF00, 0xF0F, 0xFF0, 0xFFF,
-        0x555, 0x009, 0x090, 0x099, 0x900, 0x909, 0x990, 0xAAA};
     for (int c = 0; c < 16; c++) {
         if (cur_mode()->bpp == 8) {
             int t = c & 3;
@@ -304,9 +325,8 @@ void video_default_palette(void)
  * Writes to &3600000-&37FFFFF: the register is address bits 17-19, the
  * value address bits 2-16, a physical address in 16-byte units (the data
  * is ignored). DMA starts each frame at Vinit and, after the 16 bytes at
- * Vend, continues at Vstart. The sound DMA registers are sound.c's. */
-static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
-static int memc_direct;
+ * Vend, continues at Vstart. The sound DMA registers are sound.c's.
+ * (memc_vinit etc. are defined above, with reset_timing.) */
 void memc_write(uint32_t a)
 {
     uint32_t v = ((a >> 2) & 0x7FFF) << 4;
@@ -372,6 +392,11 @@ int video_os_word(uint32_t r0, uint8_t *blk)
                           clamp_i((int16_t)(blk[3] | blk[4] << 8), mbox[1], mbox[3]));
     if (r0 == 21 && blk[0] == 1)                        /* define the pointer's bounding box */
         for (int k = 0; k < 4; k++) mbox[k] = (int16_t)(blk[1 + 2 * k] | blk[2 + 2 * k] << 8);
+    if (r0 == 11) {                                     /* read palette: colour -> mode 16, R, G, B */
+        uint32_t v = vidc_palette[blk[0] & 0xF];
+        blk[1] = 16;
+        blk[2] = (uint8_t)((v & 0xF) * 17); blk[3] = (uint8_t)((v >> 4 & 0xF) * 17); blk[4] = (uint8_t)((v >> 8 & 0xF) * 17);
+    }
     if (r0 == 12) {                                     /* write palette: colour, mode, R, G, B */
         unsigned colour = blk[0] & 0xF;
         vidc_palette[colour] = (blk[2] >> 4) | (uint32_t)(blk[3] >> 4) << 4 | (uint32_t)(blk[4] >> 4) << 8;

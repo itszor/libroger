@@ -1,9 +1,12 @@
 /* The VDU drivers and sprite plotting, enough for games that draw through
  * the OS: MODE, CLS/CLG, COLOUR/GCOL and tints, graphics windows, origin,
- * PLOT (move, lines, points, triangles, rectangles) and OS_SpriteOp
- * 9/24/28/34 on user sprite areas, in any of the standard graphics modes.
- * Text is not rendered (counted in vdu_unhandled). Used in interactive runs
- * (and with --full-os); headless runs only record the VDU stream. */
+ * PLOT (move, lines, points, triangles, rectangles), text (VDU 4 at the
+ * text cursor in a text window, VDU 5 at the graphics cursor; VDU 23
+ * characters; the character set is font.c's, public domain, not the
+ * ROM's) and OS_SpriteOp 8/9/10/11/24/28/34 on user sprite areas and the
+ * system sprite area, in any of the standard graphics modes. Used in
+ * interactive runs (and with --full-os); headless runs only record the VDU
+ * stream. */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -21,6 +24,13 @@ static int ox, oy;                              /* graphics origin (OS units) */
 static int wl, wb, wr = 319, wt = 255;          /* graphics window (pixels, y down) */
 static int cx, cy, px_, py_;                    /* last two points (absolute OS units) */
 unsigned vdu_unhandled;
+
+/* text: the character set (VDU 23 redefines it), VDU 4 / VDU 5, the text
+ * cursor and window in character cells (x right, y down) */
+extern const uint8_t roger_font[256][8];
+static uint8_t chars[256][8];
+static int chars_set, vdu5;
+static int tcx, tcy, twl, twt, twr = 39, twb = 31;
 
 static const struct rg_mode *md(void) { return cur_mode(); }
 static int scr_w(void) { return md()->width; }
@@ -147,7 +157,91 @@ static void clear_rect(int x0, int y0, int x1, int y1, int c)
         for (int x = x0; x <= x1; x++) put_px(bankmem() + y * line_bytes(), x, bpp, c);
 }
 
-static void reset_windows(void) { wl = 0; wb = 0; wr = scr_w() - 1; wt = scr_h() - 1; ox = oy = 0; }
+static void reset_windows(void)
+{
+    wl = 0; wb = 0; wr = scr_w() - 1; wt = scr_h() - 1; ox = oy = 0;
+    twl = 0; twt = 0; twr = scr_w() / 8 - 1; twb = scr_h() / 8 - 1; tcx = tcy = 0;
+}
+
+/* ------------------------------------------------------------------ text */
+static int char_w(void) { return 8 << md()->xeig; }     /* in OS units */
+static int char_h(void) { return 8 << md()->yeig; }
+
+static void text_scroll(void)                   /* the text window up a line */
+{
+    int bpp = md()->bpp, bg = colour_pixel(tbg_col, tint_tbg);
+    int x0 = twl * 8, x1 = twr * 8 + 7, y0 = twt * 8, y1 = twb * 8 + 7;
+    for (int y = y0; y <= y1; y++) {
+        uint8_t *dst = bankmem() + y * line_bytes();
+        const uint8_t *src = bankmem() + (y + 8) * line_bytes();
+        for (int x = x0; x <= x1; x++) put_px(dst, x, bpp, y + 8 <= y1 ? get_px(src, x, bpp) : bg);
+    }
+}
+
+static void text_down(void)
+{
+    if (++tcy > twb) { tcy = twb; text_scroll(); }
+}
+
+static void text_cell(int c, int col, int row)  /* VDU 4: an opaque cell */
+{
+    int bpp = md()->bpp, fg = colour_pixel(tfg_col, tint_tfg), bg = colour_pixel(tbg_col, tint_tbg);
+    if (col < 0 || row < 0 || (col + 1) * 8 > scr_w() || (row + 1) * 8 > scr_h()) return;
+    for (int r = 0; r < 8; r++) {
+        uint8_t *dst = bankmem() + (row * 8 + r) * line_bytes();
+        for (int b = 0; b < 8; b++) put_px(dst, col * 8 + b, bpp, chars[c][r] & (0x80 >> b) ? fg : bg);
+    }
+}
+
+static void put_char(int c)
+{
+    if (!chars_set) { memcpy(chars, roger_font, sizeof chars); chars_set = 1; }
+    if (vdu5) {                                  /* at the graphics cursor, its top left */
+        if (c == 127) { cx -= char_w(); return; }
+        int x0 = tox(cx), y0 = toy(cy);
+        for (int r = 0; r < 8; r++)
+            for (int b = 0; b < 8; b++)
+                if (chars[c][r] & (0x80 >> b)) pset(x0 + b, y0 + r, 1);
+        cx += char_w();
+        return;
+    }
+    if (c == 127) {                              /* delete: back one and blank it */
+        if (tcx > twl) tcx--;
+        text_cell(' ', tcx, tcy);
+        return;
+    }
+    text_cell(c, tcx, tcy);
+    if (++tcx > twr) { tcx = twl; text_down(); }
+}
+
+/* cursor control codes, for VDU 4 or VDU 5 text: 1 if handled */
+static int text_control(int code)
+{
+    if (vdu5) {
+        switch (code) {
+        case 8: cx -= char_w(); return 1;
+        case 9: cx += char_w(); return 1;
+        case 10: cy -= char_h(); return 1;
+        case 11: cy += char_h(); return 1;
+        case 13: cx = wl << md()->xeig; return 1;
+        case 30: cx = wl << md()->xeig; cy = ((scr_h() - 1 - wb) << md()->yeig) + (1 << md()->yeig) - 1; return 1;
+        case 31: cx = (twl + qbuf[0]) * char_w();
+                 cy = (scr_h() << md()->yeig) - 1 - (twt + qbuf[1]) * char_h(); return 1;
+        }
+        return 0;
+    }
+    switch (code) {
+    case 8: if (--tcx < twl) { tcx = twr; if (tcy > twt) tcy--; } return 1;
+    case 9: if (++tcx > twr) { tcx = twl; text_down(); } return 1;
+    case 10: text_down(); return 1;
+    case 11: if (tcy > twt) tcy--; return 1;
+    case 13: tcx = twl; return 1;
+    case 30: tcx = twl; tcy = twt; return 1;
+    case 31: if (twl + qbuf[0] <= twr && twt + qbuf[1] <= twb) { tcx = twl + qbuf[0]; tcy = twt + qbuf[1]; }
+             return 1;
+    }
+    return 0;
+}
 static void reset_colours(void)
 {
     int top = md()->bpp == 8 ? 63 : (1 << md()->bpp) - 1;
@@ -160,12 +254,20 @@ void vdu_mode_reset(void)
 {
     reset_windows(); reset_colours();
     memset(MEM + screen_base(), 0, screen_size()); cx = cy = px_ = py_ = 0;
+    vdu5 = 0;
 }
 
 static void do_vdu(int code)
 {
+    if (text_control(code)) return;
     switch (code) {
-    case 12: clear_rect(0, 0, scr_w() - 1, scr_h() - 1, colour_pixel(tbg_col, tint_tbg)); break;
+    case 4: vdu5 = 0; break;
+    case 5: vdu5 = 1; break;
+    case 12:                                     /* CLS: the text window (CLG with VDU 5) */
+        if (vdu5) { clear_rect(wl, wb, wr, wt, colour_pixel(gbg_col, tint_gbg)); text_control(30); }
+        else { clear_rect(twl * 8, twt * 8, twr * 8 + 7, twb * 8 + 7, colour_pixel(tbg_col, tint_tbg));
+               tcx = twl; tcy = twt; }
+        break;
     case 16: clear_rect(wl, wb, wr, wt, colour_pixel(gbg_col, tint_gbg)); break;
     case 17: { int c = qbuf[0]; if (c & 128) tbg_col = c & 63; else tfg_col = c & 63; break; }
     case 18: { int a = qbuf[0], c = qbuf[1];
@@ -174,6 +276,10 @@ static void do_vdu(int code)
     case 20: reset_colours(); break;
     case 22: break;                              /* MODE: video_set_mode(), from vdu_put() */
     case 23:
+        if (qbuf[0] >= 32) {                     /* define a character */
+            if (!chars_set) { memcpy(chars, roger_font, sizeof chars); chars_set = 1; }
+            memcpy(chars[qbuf[0]], qbuf + 1, 8);
+        }
         if (qbuf[0] == 17 && qbuf[1] <= 3) {     /* VDU 23,17,n,tint: set tint */
             int t = qbuf[2] >> 6;
             if (qbuf[1] == 0) tint_tfg = t; else if (qbuf[1] == 1) tint_tbg = t;
@@ -188,8 +294,15 @@ static void do_vdu(int code)
     }
     case 25: plot(qbuf[0], s16(1), s16(3)); break;
     case 26: reset_windows(); cx = cy = px_ = py_ = 0; break;   /* also homes the graphics cursor */
+    case 28: {                                   /* text window: left, bottom, right, top */
+        int l = qbuf[0], b = qbuf[1], r = qbuf[2], t = qbuf[3];
+        if (l <= r && t <= b && r < scr_w() / 8 && b < scr_h() / 8) {
+            twl = l; twb = b; twr = r; twt = t; tcx = l; tcy = t;
+        }
+        break;
+    }
     case 29: ox = s16(0); oy = s16(2); break;
-    default: break;                              /* 19 palette, 28 text window, cursor ops... */
+    default: break;                              /* 19 palette, ... */
     }
 }
 
@@ -205,7 +318,7 @@ void vdu_write(uint8_t c)
         else do_vdu(c);
         return;
     }
-    vdu_unhandled++;                             /* text output: not rendered */
+    put_char(c);
 }
 
 /* ------------------------------------------------------------------ sprites
@@ -258,13 +371,13 @@ static void put_sprite(uint32_t s, int x, int y, int action)
     }
 }
 
-/* OS_SpriteOp on user areas: 1 if handled */
+/* OS_SpriteOp 9/24/28/34 on a user area or the system area: 1 if handled */
 int sprite_op_full(void)
 {
-    uint32_t op = R[0] & 0xFF, area = R[1];
+    uint32_t op = R[0] & 0xFF, area = sprite_area();
     uint32_t spr = 0;
-    if ((R[0] & 0x300) == 0x100) spr = (op >= 24) ? find_sprite(area, R[2]) : 0;
-    else if ((R[0] & 0x300) == 0x200) spr = R[2];
+    if ((R[0] & 0x300) != 0x200) spr = (op >= 24) ? find_sprite(area, R[2]) : 0;
+    else spr = R[2];
     switch (op) {
     case 9:                                      /* initialise area */
         *(uint32_t *)(MEM + area + 4) = 0;

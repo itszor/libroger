@@ -56,7 +56,9 @@ void roger_log(const char *name, const char *fmt, ...)
 }
 
 /* ---------------------------------------------------------------- --script
- * --script=ms:action[:args],...  in time order. Actions: click:x:y (OS
+ * --script=ms:action[:args],...  in time order (ms of real time when
+ * interactive; of emulated time, 2000 instructions a millisecond, in
+ * headless runs, where shot saves screenshot-N.bmp all the same). Actions: click:x:y (OS
  * units), tap:px:py (a host click at screen pixel px,py, through the real
  * SDL event path), poke:addr:value (write a memory word), release,
  * buttons:mask, move:dx:dy, esc, key:inkey[:ms] (INKEY -inkey held ms,
@@ -85,7 +87,8 @@ int script_active(void) { return nscript > 0; }
 
 void script_run(void)
 {
-    uint64_t ms = (display_ticks_ns() - rg_t0_ns) / 1000000;
+    /* headless: emulated time (deterministic) */
+    uint64_t ms = rg_interactive ? (display_ticks_ns() - rg_t0_ns) / 1000000 : icount * 10 / TICK_STEPS;
     for (int k = 0; k < 129; k++)
         if (key_release_ms[k] && ms >= key_release_ms[k]) { key_down[k - 1] = 0; key_release_ms[k] = 0; }
     while (script_i < nscript && ms >= script[script_i].ms) {

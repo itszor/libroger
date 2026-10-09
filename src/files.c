@@ -339,22 +339,62 @@ static void os_args(void)
     }
 }
 
-/* ---------------------------------------------------------------- sprites */
+/* ---------------------------------------------------------------- sprites
+ * A sprite area: +0 its size, +4 the number of sprites, +8 the offset of the
+ * first, +12 the offset of the free space. A sprite file is an area without
+ * its size word. OS_SpriteOp with R0 < 256 works on the system sprite area
+ * (SYS_SPRITES; *SLoad fills it), and names its sprites. */
+uint32_t sys_sprites(void)
+{
+    if (!RD32(SYS_SPRITES)) {                    /* (empty until first used) */
+        WR32(SYS_SPRITES, SYS_SPRITES_MAX); WR32(SYS_SPRITES + 4, 0);
+        WR32(SYS_SPRITES + 8, 16); WR32(SYS_SPRITES + 12, 16);
+    }
+    return SYS_SPRITES;
+}
+uint32_t sprite_area(void) { return R[0] & 0x300 ? R[1] : sys_sprites(); }
+
+/* Load (replace the area's sprites) or merge (add to them) a sprite file */
+int sprite_file(uint32_t area, const char *name, int merge)
+{
+    char path[2048];
+    if (!hostpath(name, path)) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    static uint8_t buf[SYS_SPRITES_MAX];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    if (n < 12) return 1;
+    uint32_t count = buf[0] | buf[1] << 8 | buf[2] << 16 | (uint32_t)buf[3] << 24;
+    uint32_t first = buf[4] | buf[5] << 8 | buf[6] << 16 | (uint32_t)buf[7] << 24;
+    uint32_t free_ = buf[8] | buf[9] << 8 | buf[10] << 16 | (uint32_t)buf[11] << 24;
+    if (!merge) { WR32(area + 4, 0); WR32(area + 12, RD32(area + 8)); }
+    uint32_t at = RD32(area + 12), len = free_ - first;
+    if (first < 4 || free_ < first || free_ - 4 > n || at + len > RD32(area)) {
+        fprintf(stderr, "sprite file %s doesn't fit\n", name);
+        return 1;
+    }
+    memcpy(MEM + area + at, buf + first - 4, len);
+    WR32(area + 4, RD32(area + 4) + count);
+    WR32(area + 12, at + len);
+    return 1;
+}
+
 void sprite_op(void)
 {
-    uint32_t op = R[0] & 0xFF;
+    uint32_t op = R[0] & 0xFF, area = sprite_area();
     ev("OS_SpriteOp", "iii", R[0], R[1], R[2]);
-    if (op == 8 && (R[0] & 0x300) != 0) {         /* read area control block (user area) */
-        R[2] = RD32(R[1]); R[3] = RD32(R[1] + 4); R[4] = RD32(R[1] + 8); R[5] = RD32(R[1] + 12);
+    if (op == 8) {                                /* read area control block */
+        R[2] = RD32(area); R[3] = RD32(area + 4); R[4] = RD32(area + 8); R[5] = RD32(area + 12);
         return;
     }
-    if (sprite_op_full()) return;             /* (plotting only in full-OS runs) */
     if (op == 10 || op == 11) {                   /* load / merge sprite file */
-        char name[1100], path[2048];
+        char name[1100];
         cstr(R[2], name, 1);
-        if (!hostpath(name, path)) finish("sprite file not found");
-        if (op == 10) load_file(path, R[1] + 4);
+        if (!sprite_file(area, name, op == 11)) finish("sprite file not found");
+        return;
     }
+    sprite_op_full();                             /* (plotting only in full-OS runs) */
 }
 
 int files_swi(uint32_t b)
