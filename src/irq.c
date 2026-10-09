@@ -237,7 +237,8 @@ static void mouse_and_shots(void)
     if (screenshot_requested) {
         char fn[64];
         snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
-        display_screenshot(displayed(), fn);
+        if (desktop_visible()) desktop_screenshot(fn);
+        else display_screenshot(displayed(), fn);
         fprintf(stderr, "saved %s\n", fn);
         screenshot_requested = 0;
     }
@@ -260,7 +261,8 @@ void rt_service(int vsync_now)
         rg_last_service_ns = now;
         vsync();
         mouse_and_shots();
-        display_present(displayed());
+        if (desktop_visible()) desktop_present();
+        else display_present(displayed());
     }
 }
 

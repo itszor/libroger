@@ -156,6 +156,7 @@ int video_set_mode(uint32_t m)
     video_default_palette();
     reset_timing();                       /* the OS programs VIDC and MEMC for the mode */
     if (rg_full_os) vdu_mode_reset();
+    if (rg_desktop) desktop_mode_changed();
     return 1;
 }
 uint32_t mode_bytes(const struct rg_mode *m) { return (uint32_t)m->width * m->height * m->bpp / 8; }

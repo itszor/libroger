@@ -15,6 +15,7 @@
  * Also the memory calls a Wimp task makes: Wimp_SlotSize (the application
  * slot, which is the RAM limit), and the screen's dynamic area
  * (OS_ReadDynamicArea / OS_ChangeDynamicArea 2). */
+#include <stdlib.h>
 #include <string.h>
 #include "internal.h"
 
@@ -75,7 +76,6 @@ void roger_wimp_event(uint32_t reason, const uint32_t *block, int nwords)
     memcpy(queue[k].block, block, queue[k].n * 4);
 }
 
-static void wimp_auto_select(uint32_t window, int icon, uint32_t buttons);
 
 void roger_wimp_click(int32_t window, int32_t icon, uint32_t buttons)
 {
@@ -128,20 +128,6 @@ static void filer_message(uint32_t m)
         roger_wimp_event(17, b, 11);
         save_to[0] = 0;
     }
-}
-
-static void poll(void)                    /* Wimp_Poll: R0 mask, R1 block */
-{
-    if (qhead == qtail && rg->wimp_idle) rg->wimp_idle();
-    if (qhead == qtail) {
-        if (R[0] & 1) finish("Wimp_Poll with nothing to do");
-        R[0] = 0;                         /* Null_Reason_Code */
-        return;
-    }
-    unsigned k = qhead++ % QLEN;
-    memcpy(MEM + R[1], queue[k].block, queue[k].n * 4);
-    R[0] = queue[k].reason;
-    ev("Wimp_Poll", "i", R[0]);
 }
 
 /* ---------------------------------------------------------------- templates
@@ -210,27 +196,40 @@ static void load_template(void)
 }
 
 /* ---------------------------------------------------------------- windows
- * Windows and icons as the program defines them, so that what it reads
- * back (window state and information, icon state, extents) is what it
- * set; nothing is drawn. A window is its Wimp_CreateWindow block (88
- * bytes: visible area, scroll offsets, behind, flags, colours, work area
- * extent, title flags, ...) and its icons (32 bytes each: bounding box,
- * flags, data). The icon bar is window -2. */
-#define MAXWIN   64
-#define MAXICON  128
-#define WIN_OPEN 0x10000                  /* window flags bit 16: open */
-struct win { uint32_t handle; uint8_t blk[88]; uint8_t icon[MAXICON][32]; uint8_t used[MAXICON]; int nicons; };
-static struct win wins[MAXWIN], iconbar = {0xFFFFFFFE};
+ * Windows and icons as the program defines them (struct win, internal.h),
+ * so that what it reads back (window state and information, icon state,
+ * extents) is what it set, and so that the desktop (--desktop) can draw
+ * them; without it nothing is drawn. Open windows are kept in a stack,
+ * bottom to top. */
+static struct win wins[WIMP_MAXWIN];
+struct win wimp_iconbar = {0xFFFFFFFE};
+int8_t wimp_bar_side[WIMP_MAXICON];
 static uint32_t next_window = 0x10000;
+static struct win *stack[WIMP_MAXWIN];
+static int nstack;
 
-static struct win *win_of(uint32_t h)
+struct win *wimp_window(uint32_t h)
 {
-    if (h == 0xFFFFFFFE || h == 0xFFFFFFFF) return &iconbar;
-    for (int k = 0; k < MAXWIN; k++) if (wins[k].handle && wins[k].handle == h) return &wins[k];
+    if (h == 0xFFFFFFFE || h == 0xFFFFFFFF) return &wimp_iconbar;
+    for (int k = 0; k < WIMP_MAXWIN; k++) if (wins[k].handle && wins[k].handle == h) return &wins[k];
     return NULL;
 }
+#define win_of wimp_window
+#define iconbar wimp_iconbar
 static uint32_t w32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static void s32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+uint32_t wimp_rd(const uint8_t *p) { return w32(p); }
+
+int wimp_stack(struct win **out)
+{
+    memcpy(out, stack, nstack * sizeof *stack);
+    return nstack;
+}
+static void unstack(struct win *w)
+{
+    for (int k = 0; k < nstack; k++)
+        if (stack[k] == w) { memmove(stack + k, stack + k + 1, (--nstack - k) * sizeof *stack); return; }
+}
 
 /* a window's title, for the event log: text, or indirected (title flags
  * bit 8: +72 the buffer) */
@@ -244,8 +243,8 @@ static void title_of(const struct win *w, char *out)
 static int add_icon(struct win *w, const uint8_t *blk)
 {
     int i;
-    for (i = 0; i < MAXICON && w->used[i]; i++) ;
-    if (i == MAXICON) return -1;
+    for (i = 0; i < WIMP_MAXICON && w->used[i]; i++) ;
+    if (i == WIMP_MAXICON) return -1;
     memcpy(w->icon[i], blk, 32);
     w->used[i] = 1;
     if (i >= w->nicons) w->nicons = i + 1;
@@ -255,18 +254,54 @@ static int add_icon(struct win *w, const uint8_t *blk)
 static void create_window(void)           /* R1 block -> R0 handle */
 {
     int k;
-    for (k = 0; k < MAXWIN && wins[k].handle; k++) ;
-    if (k == MAXWIN) { VF = 1; return; }
+    for (k = 0; k < WIMP_MAXWIN && wins[k].handle; k++) ;
+    if (k == WIMP_MAXWIN) { VF = 1; return; }
     struct win *w = &wins[k];
+    free(w->back);
     memset(w, 0, sizeof *w);
     w->handle = next_window; next_window += 0x100;
     memcpy(w->blk, MEM + R[1], 88);
     s32(w->blk + 28, w32(w->blk + 28) & ~WIN_OPEN);
     uint32_t n = w32(w->blk + 84);
-    for (uint32_t i = 0; i < n && i < MAXICON; i++) add_icon(w, MEM + R[1] + 88 + 32 * i);
+    for (uint32_t i = 0; i < n && i < WIMP_MAXICON; i++) add_icon(w, MEM + R[1] + 88 + 32 * i);
     char t[1100]; title_of(w, t);
     ev("Wimp_CreateWindow", "is", w->handle, t, (int)strlen(t));
     R[0] = w->handle;
+}
+
+/* Open w at the visible area and scroll offsets given (24 bytes), behind
+ * the window `behind` (-1 on top, -2 at the bottom). On the desktop, a
+ * window the program draws itself (not auto-redraw: flags bit 4) is asked
+ * to redraw when its picture no longer fits. */
+void wimp_open(struct win *w, const uint8_t *open, uint32_t behind)
+{
+    int was = w32(w->blk + 28) & WIN_OPEN;
+    memcpy(w->blk, open, 24);
+    s32(w->blk + 24, behind);
+    s32(w->blk + 28, w32(w->blk + 28) | WIN_OPEN);
+    if (!was) { char t[1100]; title_of(w, t); ev("Wimp_OpenWindow", "is", w->handle, t, (int)strlen(t)); }
+    if (!rg_desktop) return;
+    if (!(w32(w->blk + 28) & 0x10) && memcmp(w->back_vis, w->blk, 24)) w->redraw = 1;
+    struct win *over = behind == 0xFFFFFFFE ? NULL : win_of(behind);
+    if (was && behind == 0xFFFFFFFD) return;                 /* -3: where it is (RISC OS 3.5) */
+    unstack(w);
+    int at = nstack;                                         /* -1 (or unknown): on top */
+    if (behind == 0xFFFFFFFE) at = 0;
+    else if (over && over != w)
+        for (int k = 0; k < nstack; k++) if (stack[k] == over) at = k;
+    memmove(stack + at + 1, stack + at, (nstack - at) * sizeof *stack);
+    stack[at] = w; nstack++;
+}
+
+void wimp_close(struct win *w)
+{
+    if (!(w32(w->blk + 28) & WIN_OPEN)) return;
+    s32(w->blk + 28, w32(w->blk + 28) & ~WIN_OPEN);
+    char t[1100]; title_of(w, t);
+    ev("Wimp_CloseWindow", "is", w->handle, t, (int)strlen(t));
+    unstack(w);
+    w->redraw = 0;
+    if (rg_desktop) desktop_window_gone(w);
 }
 
 /* Wimp_OpenWindow: R1 handle, visible area, scroll x/y, behind */
@@ -274,10 +309,7 @@ static void open_window(void)
 {
     struct win *w = win_of(RD32(R[1]));
     if (!w || w == &iconbar) { VF = 1; return; }
-    int was = w32(w->blk + 28) & WIN_OPEN;
-    memcpy(w->blk, MEM + R[1] + 4, 28);
-    s32(w->blk + 28, w32(w->blk + 28) | WIN_OPEN);
-    if (!was) { char t[1100]; title_of(w, t); ev("Wimp_OpenWindow", "is", w->handle, t, (int)strlen(t)); }
+    wimp_open(w, MEM + R[1] + 4, RD32(R[1] + 28));
 }
 
 /* Wimp_GetWindowState: R1 handle -> +4 visible area, scroll, behind, flags */
@@ -286,18 +318,33 @@ static void window_state(uint32_t blk, int outline)
     struct win *w = win_of(RD32(blk));
     if (!w || w == &iconbar) { VF = 1; return; }
     if (outline) {                        /* Wimp_GetWindowOutline: the visible area and its borders */
+        if (rg_desktop) {                 /* as the desktop draws it */
+            int32_t o[4];
+            desktop_outline(w, o);
+            for (int k = 0; k < 4; k++) WR32(blk + 4 + 4 * k, o[k]);
+            return;
+        }
         static const int border[4] = {-2, -42, 42, 42};       /* left/bottom: sides, scroll bars; top: title */
         for (int k = 0; k < 4; k++) WR32(blk + 4 + 4 * k, w32(w->blk + 4 * k) + border[k]);
         return;
     }
     memcpy(MEM + blk + 4, w->blk, 32);
+    if (rg_desktop) {                                 /* behind: the window above it, -1 on top */
+        uint32_t above = 0xFFFFFFFF;
+        for (int k = 0; k + 1 < nstack; k++) if (stack[k] == w) above = stack[k + 1]->handle;
+        WR32(blk + 28, above);
+        uint32_t f = w32(w->blk + 28) & ~(1u << 20);
+        if (wimp_caret[0] == w->handle) f |= 1u << 20;   /* has the input focus */
+        WR32(blk + 32, f);
+    }
 }
 
 /* The window last opened as a menu (Wimp_CreateMenu given a window
  * handle: a dialogue box such as a save box), 0 if none; an icon's
  * indirected text buffer (0 if it has none) - for game code standing in
  * for the user (wimp_idle) */
-static uint32_t menu_window;
+uint32_t wimp_menu_win;
+#define menu_window wimp_menu_win
 int32_t roger_wimp_menu_window(void) { return (int32_t)menu_window; }
 uint32_t roger_wimp_icon_buffer(int32_t window, int icon)
 {
@@ -311,7 +358,7 @@ uint32_t roger_wimp_icon_buffer(int32_t window, int icon)
 /* What the Wimp does itself when an icon is clicked: a radio icon (button
  * type 11) is selected by Select - the others in its exclusive selection
  * group deselected; in group 0 it toggles - and toggled by Adjust */
-static void wimp_auto_select(uint32_t window, int icon, uint32_t buttons)
+void wimp_auto_select(uint32_t window, int icon, uint32_t buttons)
 {
     struct win *w = win_of(window);
     if (!w || icon < 0 || icon >= w->nicons) return;
@@ -330,7 +377,7 @@ static void wimp_auto_select(uint32_t window, int icon, uint32_t buttons)
 static struct win *icon_of(uint32_t h, uint32_t i)
 {
     struct win *w = win_of(h);
-    return w && i < MAXICON && w->used[i] ? w : NULL;
+    return w && i < WIMP_MAXICON && w->used[i] ? w : NULL;
 }
 
 /* Wimp_WhichIcon: R0 window, R1 list, R2 mask, R3 settings -> the icons
@@ -344,8 +391,165 @@ static void which_icon(void)
     WR32(o, 0xFFFFFFFF);
 }
 
+/* ---------------------------------------------------------------- the caret
+ * On the desktop, the window losing the input focus is told (Lose_Caret)
+ * and the one gaining it (Gain_Caret) */
+uint32_t wimp_caret[6] = {0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF};
+#define caret wimp_caret
+
+void wimp_set_caret(const uint32_t c[6])
+{
+    uint32_t old[6];
+    memcpy(old, caret, sizeof old);
+    memcpy(caret, c, sizeof caret);
+    if (!rg_desktop || old[0] == c[0]) return;
+    if (old[0] != 0xFFFFFFFF && win_of(old[0])) roger_wimp_event(11, old, 6);
+    if (c[0] != 0xFFFFFFFF) roger_wimp_event(12, c, 6);
+}
+
+/* Wimp_SetCaretPosition: R0 window, R1 icon, R2/R3 offsets, R4 height
+ * (-1: from the icon), R5 index (-1: from the x offset). In an icon, the
+ * desktop places it at the index (text cells are 16 OS units). */
+static void set_caret(void)
+{
+    uint32_t c[6] = {R[0], R[1], R[2], R[3], R[4], R[5]};
+    struct win *w = rg_desktop && (int32_t)R[1] >= 0 ? icon_of(R[0], R[1]) : NULL;
+    if (w && (w32(w->icon[R[1]] + 16) & 0x101) == 0x101) {
+        uint32_t buf = w32(w->icon[R[1]] + 20), len = w32(w->icon[R[1]] + 28), n = 0;
+        while (n < len && MEM[buf + n] >= 32) n++;
+        if ((int32_t)c[5] < 0 || c[5] > n) c[5] = n;
+        if ((int32_t)c[4] < 0) c[4] = 40;
+    }
+    wimp_set_caret(c);
+}
+
+/* ---------------------------------------------------------------- polling
+ * Without the desktop, Wimp_Poll returns the events queued with
+ * roger_wimp_event(), calling the wimp_idle hook when there are none.
+ * On the desktop it returns, in order: redraw requests, queued events (the
+ * user's, from desktop.c, and the program's own messages), and a null
+ * event if it takes them (R0 bit 0 clear; Wimp_PollIdle: once the time in
+ * R2 has come) - and until then lets time pass with the desktop shown.
+ * Masked events are dropped, except that an Open_Window_Request the
+ * program doesn't take is carried out by the Wimp itself. */
+static int pop_event(uint32_t mask, uint32_t blk)
+{
+    for (int k = 0; k < WIMP_MAXWIN; k++) {
+        struct win *w = &wins[k];
+        if (w->handle && w->redraw && (w32(w->blk + 28) & WIN_OPEN)) {
+            w->redraw = 0;
+            WR32(blk, w->handle);
+            R[0] = 1;
+            return 1;
+        }
+    }
+    while (qhead != qtail) {
+        unsigned k = qhead++ % QLEN;
+        uint32_t r = queue[k].reason;
+        if (r < 32 && (mask >> r & 1)) {
+            struct win *w = win_of(queue[k].block[0]);
+            if (r == 2 && w && w != &iconbar) wimp_open(w, (uint8_t *)(queue[k].block + 1), queue[k].block[7]);
+            continue;
+        }
+        memcpy(MEM + blk, queue[k].block, queue[k].n * 4);
+        R[0] = r;
+        return 1;
+    }
+    return 0;
+}
+
+static void poll(uint32_t b)              /* Wimp_Poll: R0 mask, R1 block (Wimp_PollIdle: R2 time) */
+{
+    if (rg_desktop) {
+        uint32_t mask = R[0], blk = R[1], until = R[2];
+        desktop_enter();
+        for (;;) {
+            desktop_input();
+            if (pop_event(mask, blk)) break;
+            if (!(mask & 1) && (b != 0x400E1 || (int32_t)(monotonic - until) >= 0)) { R[0] = 0; return; }
+            desktop_wait();
+        }
+        ev("Wimp_Poll", "i", R[0]);
+        return;
+    }
+    if (qhead == qtail && rg->wimp_idle) rg->wimp_idle();
+    if (qhead == qtail) {
+        if (R[0] & 1) finish("Wimp_Poll with nothing to do");
+        R[0] = 0;                         /* Null_Reason_Code */
+        return;
+    }
+    unsigned k = qhead++ % QLEN;
+    memcpy(MEM + R[1], queue[k].block, queue[k].n * 4);
+    R[0] = queue[k].reason;
+    ev("Wimp_Poll", "i", R[0]);
+}
+
+/* ---------------------------------------------------------------- redrawing
+ * A window the program draws itself, on the desktop: Wimp_RedrawWindow
+ * (after a Redraw_Window_Request) and Wimp_UpdateWindow give it its
+ * visible area as one rectangle, as the graphics window - cleared to its
+ * background colour for a redraw, and holding what it drew before for an
+ * update - and it draws there, in screen memory, with the VDU drivers;
+ * Wimp_GetRectangle then keeps what it drew (struct win.back) for the
+ * desktop to show. Without the desktop there's nothing to draw. */
+static struct win *redrawing;
+
+static void vdu_window(int32_t x0, int32_t y0, int32_t x1, int32_t y1)   /* VDU 24, inclusive */
+{
+    int32_t v[4] = {x0, y0, x1, y1};
+    vdu_put(24);
+    for (int k = 0; k < 4; k++) { vdu_put(v[k] & 0xFF); vdu_put(v[k] >> 8 & 0xFF); }
+}
+
+static void redraw_start(uint32_t blk, int update)
+{
+    struct win *w = win_of(RD32(blk));
+    if (!rg_desktop || !w || w == &iconbar || !(w32(w->blk + 28) & WIN_OPEN)) { R[0] = 0; return; }
+    int32_t vx0 = (int32_t)w32(w->blk), vy0 = (int32_t)w32(w->blk + 4);
+    int32_t vx1 = (int32_t)w32(w->blk + 8), vy1 = (int32_t)w32(w->blk + 12);
+    int32_t r[4] = {vx0, vy0, vx1, vy1};
+    uint32_t size = screen_size(), base = screen_base();
+    if (update) {                                    /* +4 a work area box */
+        int32_t ox = vx0 - (int32_t)w32(w->blk + 16), oy = vy1 - (int32_t)w32(w->blk + 20);
+        int32_t u[4] = {(int32_t)RD32(blk + 4) + ox, (int32_t)RD32(blk + 8) + oy,
+                        (int32_t)RD32(blk + 12) + ox, (int32_t)RD32(blk + 16) + oy};
+        if (u[0] > r[0]) r[0] = u[0];
+        if (u[1] > r[1]) r[1] = u[1];
+        if (u[2] < r[2]) r[2] = u[2];
+        if (u[3] < r[3]) r[3] = u[3];
+        if (w->back && w->back_size == size && !memcmp(w->back_vis, w->blk, 24))
+            memcpy(MEM + base, w->back, size);       /* what it drew before */
+    }
+    if (r[0] < 0) r[0] = 0;
+    if (r[1] < 0) r[1] = 0;
+    if (r[2] > 1280) r[2] = 1280;
+    if (r[3] > 1024) r[3] = 1024;
+    memcpy(MEM + blk + 4, w->blk, 24);
+    if (r[0] >= r[2] || r[1] >= r[3]) { R[0] = 0; return; }
+    for (int k = 0; k < 4; k++) WR32(blk + 28 + 4 * k, r[k]);
+    vdu_window(r[0], r[1], r[2] - 1, r[3] - 1);
+    if (!update && w->blk[35] != 0xFF) {             /* the work area's background colour */
+        vdu_put(18); vdu_put(0); vdu_put(128 | (w->blk[35] & 15));
+        vdu_put(16);
+    }
+    redrawing = w;
+    R[0] = 1;
+}
+
+static void redraw_next(void)                       /* Wimp_GetRectangle: there's only the one */
+{
+    struct win *w = redrawing;
+    R[0] = 0;
+    if (!w) return;
+    redrawing = NULL;
+    uint32_t size = screen_size();
+    if (w->back_size != size) { free(w->back); w->back = malloc(size); w->back_size = size; }
+    if (w->back) memcpy(w->back, MEM + screen_base(), size);
+    memcpy(w->back_vis, w->blk, 24);
+    vdu_window(0, 0, 1279, 1023);
+}
+
 /* ---------------------------------------------------------------- SWIs */
-static uint32_t caret[6] = {0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF};
 
 int wimp_swi(uint32_t b)
 {
@@ -355,13 +559,20 @@ int wimp_swi(uint32_t b)
         struct win *w = win_of(RD32(R[1]));
         int i = w ? add_icon(w, MEM + R[1] + 4) : -1;
         if (i < 0) { VF = 1; return 1; }
-        if (w == &iconbar) ev("Wimp_CreateIcon", "ii", RD32(R[1]), i);   /* on the icon bar */
+        if (w == &iconbar) {                                /* on the icon bar: -2 left, -1 right */
+            ev("Wimp_CreateIcon", "ii", RD32(R[1]), i);
+            wimp_bar_side[i] = RD32(R[1]) == 0xFFFFFFFE ? -2 : -1;
+        }
         R[0] = i;
         return 1;
     }
     case 0x400C3: {                                         /* Wimp_DeleteWindow: R1 -> handle */
         struct win *w = win_of(RD32(R[1]));
-        if (w && w != &iconbar) w->handle = 0;
+        if (w && w != &iconbar) {
+            if (rg_desktop) wimp_close(w);
+            if (menu_window == w->handle) menu_window = 0;
+            w->handle = 0;
+        }
         return 1;
     }
     case 0x400C4: {                                         /* Wimp_DeleteIcon: R1 -> window, icon */
@@ -372,16 +583,12 @@ int wimp_swi(uint32_t b)
     case 0x400C5: open_window(); return 1;
     case 0x400C6: {                                         /* Wimp_CloseWindow: R1 -> handle */
         struct win *w = win_of(RD32(R[1]));
-        if (w && w != &iconbar && (w32(w->blk + 28) & WIN_OPEN)) {
-            s32(w->blk + 28, w32(w->blk + 28) & ~WIN_OPEN);
-            char t[1100]; title_of(w, t);
-            ev("Wimp_CloseWindow", "is", w->handle, t, (int)strlen(t));
-        }
+        if (w && w != &iconbar) wimp_close(w);
         return 1;
     }
-    case 0x400C8: case 0x400C9: case 0x400CA:              /* Redraw/UpdateWindow, GetRectangle: */
-        R[0] = 0;                                           /* nothing to draw */
-        return 1;
+    case 0x400C8: redraw_start(R[1], 0); return 1;         /* Wimp_RedrawWindow */
+    case 0x400C9: redraw_start(R[1], 1); return 1;         /* Wimp_UpdateWindow */
+    case 0x400CA: redraw_next(); return 1;                 /* Wimp_GetRectangle */
     case 0x400CB: window_state(R[1], 0); return 1;         /* Wimp_GetWindowState */
     case 0x400E0: window_state(R[1], 1); return 1;         /* Wimp_GetWindowOutline */
     case 0x400CC: {                                         /* Wimp_GetWindowInfo: R1 -> handle */
@@ -413,14 +620,26 @@ int wimp_swi(uint32_t b)
         memcpy(w->blk + 40, MEM + R[1], 16);
         return 1;
     }
-    case 0x400D2:                                           /* Wimp_SetCaretPosition: R0-R5 */
-        for (int k = 0; k < 6; k++) caret[k] = R[k];
-        return 1;
+    case 0x400D2: set_caret(); return 1;                    /* Wimp_SetCaretPosition: R0-R5 */
     case 0x400D3:                                           /* Wimp_GetCaretPosition: R1 block */
         for (int k = 0; k < 6; k++) WR32(R[1] + 4 * k, caret[k]);
         return 1;
-    case 0x400D1: case 0x400D0: case 0x400DC: case 0x400E6: /* ForceRedraw, DragBox, ProcessKey, SetColour, */
-    case 0x400F0: case 0x400E8: case 0x400D8:              /* TextColour, CreateSubMenu, SetPointerShape */
+    case 0x400D1:                                           /* Wimp_ForceRedraw: R0 window (-1 the */
+        if (rg_desktop)                                     /* screen), R1-R4 the area */
+            for (int k = 0; k < WIMP_MAXWIN; k++)
+                if (wins[k].handle && (R[0] == 0xFFFFFFFF || wins[k].handle == R[0]) &&
+                    !(w32(wins[k].blk + 28) & 0x10)) wins[k].redraw = 1;
+        return 1;
+    case 0x400D0: if (rg_desktop) desktop_drag_box(R[1]); return 1;          /* Wimp_DragBox */
+    case 0x400E8: if (rg_desktop) desktop_create_submenu(R[1], R[2], R[3]); return 1;   /* CreateSubMenu */
+    case 0x400E6: case 0x400F0:                             /* Wimp_SetColour, Wimp_TextColour: R0 */
+        if (rg_desktop) {                                   /* colour, bit 7 background (bits 4-6 */
+            if (b == 0x400E6) { vdu_put(18); vdu_put(R[0] >> 4 & 7); }   /* the GCOL action) */
+            else vdu_put(17);
+            vdu_put((R[0] & 15) | (R[0] & 0x80));
+        }
+        return 1;
+    case 0x400DC: case 0x400D8:                             /* ProcessKey, SetPointerShape */
         return 1;
     case 0x400E5:                                           /* Wimp_ReadPalette: R1 20 words (&BBGGRR00) */
         for (int k = 0; k < 20; k++) {
@@ -444,11 +663,13 @@ int wimp_swi(uint32_t b)
     case 0x400C0:                                            /* Wimp_Initialise */
         ev("Wimp_Initialise", "i", R[0]);
         R[0] = WIMP_VERSION; R[1] = TASK_HANDLE;
+        if (rg_desktop) desktop_enter();
         return 1;
-    case 0x400C7: case 0x400E1: poll(); return 1;           /* Wimp_Poll, Wimp_PollIdle */
+    case 0x400C7: case 0x400E1: poll(b); return 1;          /* Wimp_Poll, Wimp_PollIdle */
     case 0x400D4:                                            /* Wimp_CreateMenu */
     {
         ev("Wimp_CreateMenu", "iii", R[1], R[2], R[3]);
+        if (rg_desktop) { desktop_create_menu(R[1], R[2], R[3]); return 1; }
         struct win *old = menu_window ? win_of(menu_window) : NULL, *w = win_of(R[1]);
         if (old) s32(old->blk + 28, w32(old->blk + 28) & ~WIN_OPEN);   /* a new menu closes the old */
         menu_window = 0;
@@ -463,6 +684,13 @@ int wimp_swi(uint32_t b)
         return 1;
     }
     case 0x400CF:                                            /* Wimp_GetPointerInfo */
+        if (rg_desktop) {
+            int x, y; int32_t w, i;
+            uint32_t buttons = desktop_pointer(&x, &y, &w, &i);
+            WR32(R[1], x); WR32(R[1] + 4, y); WR32(R[1] + 8, buttons);
+            WR32(R[1] + 12, w); WR32(R[1] + 16, i);
+            return 1;
+        }
         WR32(R[1], 640); WR32(R[1] + 4, 512); WR32(R[1] + 8, 0);
         WR32(R[1] + 12, save_to[0] ? FILER_WINDOW : 0xFFFFFFFF);   /* over the Filer's window, */
         WR32(R[1] + 16, 0xFFFFFFFF);                         /* when a save is to be dropped there */

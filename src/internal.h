@@ -158,6 +158,7 @@ uint32_t sys_sprites(void);               /* the system sprite area */
 uint32_t wimp_sprites(void);              /* the Wimp's sprite pool */
 int  vdu_schoose(const char *name);       /* *SChoose */
 int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */
+int  sprite_file_host(uint32_t area, const char *path, int merge);   /* ...a host file */
 int  files_swi(uint32_t b);
 void sprite_op(void);
 
@@ -184,6 +185,59 @@ int  pressed(int inkey);
 uint32_t ram_limit(void);                 /* &8000 + the application slot */
 int  wimp_swi(uint32_t b);
 
+/* Windows and icons as the program defines them (wimp.c keeps them,
+ * desktop.c draws them): a window is its Wimp_CreateWindow block (88 bytes:
+ * +0 visible area, +16 scroll offsets, +24 behind, +28 flags, +32 colours,
+ * +40 work area extent, +56 title flags, +60 work area flags, +64 sprite
+ * area, +68 minimum size, +72 title data, +84 icon count) and its icons (32
+ * bytes each: +0 bounding box, +16 flags, +20 data). The icon bar is window
+ * -2 (its icons on the left) and -1 (on the right). */
+#define WIMP_MAXWIN  64
+#define WIMP_MAXICON 128
+#define WIN_OPEN     0x10000              /* window flags bit 16: open */
+struct win {
+    uint32_t handle;
+    uint8_t blk[88];
+    uint8_t icon[WIMP_MAXICON][32];
+    uint8_t used[WIMP_MAXICON];
+    int nicons;
+    /* the desktop's (--desktop) */
+    int redraw;                           /* a Redraw_Window_Request is due */
+    uint8_t *back;                        /* what the program last drew in it: screen memory */
+    uint32_t back_size;                   /* (valid within its visible area) */
+    int32_t back_vis[6];                  /* the visible area and scroll it was drawn for */
+    int32_t full_prev[4];                 /* toggle size: the visible area before */
+};
+extern struct win wimp_iconbar;
+extern int8_t wimp_bar_side[WIMP_MAXICON];   /* an icon bar icon's side: -2 left, -1 right */
+extern uint32_t wimp_caret[6];            /* window, icon, x, y, height+flags, index */
+extern uint32_t wimp_menu_win;            /* the dialogue box open as a menu, 0 if none */
+struct win *wimp_window(uint32_t handle); /* NULL if none; the icon bar for -1 and -2 */
+int  wimp_stack(struct win **out);        /* the open windows, bottom to top */
+void wimp_open(struct win *w, const uint8_t *open, uint32_t behind);   /* open: visible area, scroll */
+void wimp_close(struct win *w);
+void wimp_set_caret(const uint32_t c[6]); /* with Lose_Caret / Gain_Caret */
+void wimp_auto_select(uint32_t window, int icon, uint32_t buttons);   /* a radio icon clicked */
+uint32_t wimp_rd(const uint8_t *p);       /* a little-endian word of a block */
+
+/* desktop.c: the desktop drawn and used for real (--desktop), in place of
+ * the wimp_idle hook */
+extern int rg_desktop;
+int  desktop_visible(void);
+void desktop_init(void);
+void desktop_enter(void);                 /* the program is (back) in the desktop */
+void desktop_mode_changed(void);          /* ...and has left it for a screen of its own */
+void desktop_input(void);                 /* in Wimp_Poll: the user's actions, as events */
+void desktop_wait(void);                  /* ...nothing for the program yet: time passes */
+void desktop_present(void);
+void desktop_screenshot(const char *path);
+void desktop_create_menu(uint32_t menu, int x, int y);   /* Wimp_CreateMenu (-1 closes) */
+void desktop_create_submenu(uint32_t menu, int x, int y);
+void desktop_drag_box(uint32_t blk);      /* Wimp_DragBox (0: cancel) */
+int  desktop_pointer(int *x, int *y, int32_t *window, int32_t *icon);   /* -> buttons */
+void desktop_window_gone(struct win *w);  /* closed or deleted */
+void desktop_outline(const struct win *w, int32_t *o);   /* its visible area and furniture */
+
 /* host.c: the SDL front end */
 int  display_init(int scale, const char *fullscreen, const char *shader);   /* fullscreen: NULL, "" or "WxH[@Hz]" */
 
@@ -201,6 +255,8 @@ void display_toggle_fullscreen(void);
 void display_cycle_shader(int dir);       /* F10 / Shift+F10 */
 void display_list_modes(void);
 void display_present(const uint8_t *pixels);
+void display_present_rgb(const uint32_t *rgb, int w, int h, float aspect);   /* &RRGGBB pixels */
+void display_screenshot_rgb(const uint32_t *rgb, int w, int h, const char *path);
 void display_poll(void);
 uint64_t display_ticks_ns(void);
 void display_sleep_ns(uint64_t ns);

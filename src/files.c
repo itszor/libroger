@@ -567,6 +567,11 @@ int sprite_file(uint32_t area, const char *name, int merge)
 {
     char path[2048];
     if (!hostpath(name, path)) return 0;
+    return sprite_file_host(area, path, merge);
+}
+int sprite_file_host(uint32_t area, const char *path, int merge)
+{
+    const char *name = path;
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
     static uint8_t buf[SYS_SPRITES_MAX];

@@ -78,7 +78,7 @@ Command line (any game): `--limit=N` (headless, deterministic),
 `--script=...` (scripted input: keys, clicks, taps, screenshots - in
 headless runs too, timed in emulated milliseconds, so a scenario can be
 replayed and screenshotted deterministically),
-`--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
+`--desktop` (below), `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
 speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),
 `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
@@ -163,7 +163,7 @@ Implemented:
   RMRun, RMKill, FX, IconSprites, ChannelVoice, and loaded modules' commands, after GSTrans
   (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
   integers). Other commands are logged and ignored
-- the Wimp, without a desktop: Wimp_Initialise (version 3.16), Wimp_Poll
+- the Wimp, without a desktop (but see The desktop, below): Wimp_Initialise (version 3.16), Wimp_Poll
   (events queued by the game's code), templates (Wimp_OpenTemplate,
   LoadTemplate, CloseTemplate), windows and icons kept as the program
   defines them but not shown (create, open, close, state, information,
@@ -202,6 +202,65 @@ Implemented:
   and 1-3/18 set it), the save directory looked up ignoring suffixes;
   "HostFS:" followed by a host path names that host file
 
+The desktop
+-----------
+
+`--desktop` shows a Wimp program's desktop and lets the user work it, in
+place of the game's wimp_idle hook: the icon bar along the bottom with
+the program's icons on its right (or left, window -2), its menus,
+windows and dialogue boxes, and what it draws in its windows itself - in
+RISC OS 3.1's look, with libroger's backdrop. Once the program takes
+the screen for itself (a mode change) its screen is shown, and the desktop
+again when it next calls Wimp_Poll. src/desktop.c draws it all, from the
+windows and icons wimp.c keeps:
+
+- the screen: 640x512 square pixels (1280x1024 OS units), the backdrop
+  (desktop/backdrop.png, made by desktop/mkbackdrop.py from
+  desktop/backdrop-full.png and embedded), the Wimp's 16 colours and
+  palette, the system font (Acorn Mode 0 New, below)
+- the icon bar: the application's !Sprites (or !Sprites22) in the Wimp's
+  sprite pool as the Filer would put them there, icons laid out from the
+  ends, Mouse_Click on them
+- windows: the stack (opened behind a window, at the top or the bottom),
+  furniture as the flags ask (title bar, back, close, toggle size, scroll
+  bars, adjust size) with the window's colours and input focus, icons (text,
+  sprites from the window's area, the pool or the Wimp's own option,
+  radio, directory, application and file sprites drawn here; borders,
+  validation strings S, D, R and A; shaded and selected), user-drawn
+  windows (Redraw_Window_Request, Wimp_RedrawWindow / UpdateWindow /
+  GetRectangle: the program draws in screen memory with the VDU drivers,
+  and that picture is kept for its window), Wimp_ForceRedraw,
+  Wimp_GetWindowOutline as drawn
+- the user: clicks by button type (click, release, double click, drag,
+  menu, radio, writable icons taking the caret), dragging and resizing
+  windows, scroll arrows (auto-repeat), wells and sliders, Scroll_Request
+  for windows that scroll themselves, back, close and toggle size as
+  Open_Window_Request / Close_Window_Request (carried out by the Wimp if
+  the program masks them), Wimp_DragBox (User_Drag_Box), Wimp_GetPointerInfo
+- menus: menu trees (titles, ticks, dotted lines, shaded and sprite items,
+  submenus opened from the arrow - to the left when there's no room - or
+  through Message_MenuWarning and Wimp_CreateSubMenu, dialogue boxes as
+  submenus), kept on the screen; Select chooses and closes, Adjust keeps
+  the menu open; clicking elsewhere or Escape closes it
+- the keyboard: writable icons edited by the Wimp (A validation, Delete,
+  Copy, cursor left and right, Ctrl-U), the rest as Key_Pressed in the
+  Wimp's key codes, Lose_Caret / Gain_Caret
+
+Input is taken while the program is in Wimp_Poll, from the same mouse and
+keyboard state as everything else, so `--script` drives the desktop in
+headless runs too, and their screenshots show it. Without `--desktop`
+nothing changes: the program's Wimp calls behave as before, and headless
+runs give the same output.
+
+The system font is "Acorn Mode 0 New" by p1.mark
+(https://fontstruct.com/fontstructions/show/1281326), cloned from
+p1.mark's "Acorn Mode 0" (https://fontstruct.com/fontstructions/show/1271339),
+licensed under Creative Commons Attribution-ShareAlike 3.0
+(http://creativecommons.org/licenses/by-sa/3.0/). font/acorn-mode-0-new/
+holds the font as distributed (with its license.txt and readme.txt);
+src/desktop_font.c is a bitmap table made from it by
+font/mkdesktopfont.py, and is an adaptation under the same licence.
+
 Display shaders
 ---------------
 
@@ -224,7 +283,10 @@ MIT, GPL (2.0 or later; xBRZ's code GPL-3.0) or public domain - see
 shaders/README. With them included, a program linked with libroger is
 distributed under the GPL, version 3.
 
-Not implemented (yet): a visible desktop, VDU colours and
+Not implemented (yet): on the desktop, outline fonts (Font_Paint text
+isn't drawn), other tasks (the Filer, so no saving by dragging), pointer
+entering and leaving events, keyboard shortcuts for windows (hot keys);
+VDU colours and
 sprites at 16 and 32 bits per pixel, a 256-entry palette (8bpp modes keep
 VIDC1's), most OS_CLI commands, FIQs.
 
@@ -244,6 +306,10 @@ Files
     src/modules.c        relocatable modules, the RMA
     src/cli.c            OS_CLI (* commands) and system variables
     src/wimp.c           the Wimp, the application slot, the screen's dynamic area
+    src/desktop.c        the desktop (--desktop): drawing it, and the user's input
+    src/desktop_font.c   the desktop's system font (generated by
+                         font/mkdesktopfont.py; CC BY-SA 3.0, see The desktop)
+    src/backdrop.S       embeds desktop/backdrop.png
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse
     src/main.c           start-up, command line, event log, scripts, finish

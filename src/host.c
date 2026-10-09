@@ -30,7 +30,7 @@ static int fs_exclusive, fullscreen;
 static int lw = 1024;                           /* logical size: LH high, the mode's shape */
 /* The game's pointer hit point may sit some OS units below the host
  * pointer's (roger_config.pointer_y_offset). */
-#define POINTER_Y_OFFSET (rg->pointer_y_offset)
+#define POINTER_Y_OFFSET (desktop_visible() ? 0 : rg->pointer_y_offset)   /* (not the desktop's) */
 
 /* The host pointer maps absolutely onto the screen (OS units 1280x1024),
  * so a click or a touch lands exactly where the game's own software pointer
@@ -264,27 +264,28 @@ static void convert_line(const uint8_t *pix, int y, uint32_t *row)
         row[x] = pal[bpp == 8 ? src[x] : (src[x / per] >> ((x % per) * bpp)) & mask];
 }
 
-void display_present(const uint8_t *pix)
+/* Show a frame of host colours (&RRGGBB) at the shape given (display
+ * width / height): the game's screen, or the desktop */
+void display_present_rgb(const uint32_t *rgb, int width, int height, float aspect)
 {
     uint32_t *out;
-    int pitch, width = cur_mode()->width, height = cur_mode()->height;
-    update_palette();
-    int want = (int)(LH * mode_aspect(cur_mode()) + 0.5f);
-    if (want != lw) {                            /* the mode's shape changed */
+    int pitch;
+    int want = (int)(LH * aspect + 0.5f);
+    if (want != lw) {                            /* the shape changed */
         lw = want;
         SDL_SetRenderLogicalPresentation(ren, lw, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
         int ww, wh;
         if (!fullscreen && SDL_GetWindowSize(win, &ww, &wh))
             SDL_SetWindowSize(win, wh * lw / LH, wh);
     }
-    if (width != tex_w || height != tex_h) {     /* one texel per game pixel */
+    if (width != tex_w || height != tex_h) {     /* one texel per pixel */
         if (tex) SDL_DestroyTexture(tex);
         tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
         SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
         tex_w = width; tex_h = height;
     }
     if (!SDL_LockTexture(tex, NULL, (void **)&out, &pitch)) return;
-    for (int y = 0; y < height; y++) convert_line(pix, y, (uint32_t *)((uint8_t *)out + y * pitch));
+    for (int y = 0; y < height; y++) memcpy((uint8_t *)out + y * pitch, rgb + (size_t)y * width, (size_t)width * 4);
     SDL_UnlockTexture(tex);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
@@ -296,13 +297,9 @@ void display_present(const uint8_t *pix)
             SDL_free(shader_pix); shader_pix = SDL_malloc((size_t)width * height * 4);
             shader_w = width; shader_h = height;
         }
-        for (int y = 0; y < height && shader_pix; y++) {
-            uint32_t *row = shader_pix + (size_t)y * width;
-            convert_line(pix, y, row);
-            for (int x = 0; x < width; x++) {
-                uint32_t c = row[x];
-                row[x] = 0xFF000000u | (c & 0xFF00u) | (c >> 16 & 0xFFu) | (c & 0xFFu) << 16;
-            }
+        for (size_t k = 0; shader_pix && k < (size_t)width * height; k++) {
+            uint32_t c = rgb[k];
+            shader_pix[k] = 0xFF000000u | (c & 0xFF00u) | (c >> 16 & 0xFFu) | (c & 0xFFu) << 16;
         }
         SDL_FRect vp;
         SDL_GetRenderLogicalPresentationRect(ren, &vp);
@@ -316,6 +313,21 @@ void display_present(const uint8_t *pix)
         shader_capture[0] = 0;
     }
     SDL_RenderPresent(ren);
+}
+
+void display_present(const uint8_t *pix)
+{
+    static uint32_t *frame;
+    static size_t frame_n;
+    int width = cur_mode()->width, height = cur_mode()->height;
+    if ((size_t)width * height > frame_n) {
+        frame_n = (size_t)width * height;
+        SDL_free(frame); frame = SDL_malloc(frame_n * 4);
+        if (!frame) { frame_n = 0; return; }
+    }
+    update_palette();
+    for (int y = 0; y < height; y++) convert_line(pix, y, frame + (size_t)y * width);
+    display_present_rgb(frame, width, height, mode_aspect(cur_mode()));
 }
 
 static int ascii_for(SDL_Scancode s, int shift)
@@ -332,7 +344,7 @@ void display_poll(void)
 {
     SDL_Event e;
     if (rg->relative_mouse) {
-        int want = last_setpos_ns && SDL_GetTicksNS() - last_setpos_ns < 500000000ull;
+        int want = last_setpos_ns && SDL_GetTicksNS() - last_setpos_ns < 500000000ull && !desktop_visible();
         if (want != relative) {
             relative = want;
             SDL_SetWindowRelativeMouseMode(win, relative);
@@ -341,7 +353,7 @@ void display_poll(void)
     /* A game that turns the OS pointer on (OS_Byte 106) and doesn't draw its
      * own sees the host pointer in its place, except while captured. */
     static int cursor_shown;
-    int show = pointer_shape && !relative;
+    int show = (pointer_shape || desktop_visible()) && !relative;
     if (show != cursor_shown) {
         cursor_shown = show;
         if (show) SDL_ShowCursor(); else SDL_HideCursor();
@@ -434,6 +446,18 @@ void display_screenshot(const uint8_t *pix, const char *path)
                  shader_name(cur_shader));
 }
 int screenshot_requested;
+
+void display_screenshot_rgb(const uint32_t *rgb, int w, int h, const char *path)
+{
+    SDL_Surface *s = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_XRGB8888);
+    if (!s) return;
+    for (int y = 0; y < h; y++) memcpy((uint8_t *)s->pixels + y * s->pitch, rgb + (size_t)y * w, (size_t)w * 4);
+    SDL_SaveBMP(s, path);
+    SDL_DestroySurface(s);
+    if (cur_shader >= 0)
+        snprintf(shader_capture, sizeof shader_capture, "%.*s-%s.bmp", (int)strcspn(path, "."), path,
+                 shader_name(cur_shader));
+}
 
 uint64_t display_ticks_ns(void) { return SDL_GetTicksNS(); }
 void display_sleep_ns(uint64_t ns) { SDL_DelayNS(ns); }

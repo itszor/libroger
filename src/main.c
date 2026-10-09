@@ -207,6 +207,7 @@ static void usage(const char *prog)
            "  --mips=N          the CPU's speed, interactive (0: unthrottled; default: the game's)\n"
            "  --trace-gaps      interpret untranslated code, logging it to untranslated.log\n"
            "  --full-os         VDU and sprite drivers in headless runs too\n"
+           "  --desktop         a Wimp program's desktop, drawn and used for real\n"
            "  --no-title        skip loader programs\n"
            "  --scale=N --fullscreen[=WxH@Hz] --list-modes\n"
            "  --shader=NAME     display shader (F10 / Shift+F10 cycle; --crt = --shader=crt)\n"
@@ -233,6 +234,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         if (!strncmp(argv[k], "--limit=", 8)) rg_limit = (uint64_t)strtod(argv[k] + 8, 0);
         else if (!strcmp(argv[k], "--headless")) ;
         else if (!strcmp(argv[k], "--full-os")) rg_full_os = 1;
+        else if (!strcmp(argv[k], "--desktop")) rg_desktop = rg_full_os = 1;
         else if (!strncmp(argv[k], "--mips=", 7)) mips_opt = (float)atof(argv[k] + 7);
         else if (!strcmp(argv[k], "--trace-gaps")) rg_trace_gaps = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
@@ -270,6 +272,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         rg_t0_ns = display_ticks_ns();
         irq_start_clock(rg_t0_ns);
     }
+    if (rg_desktop) desktop_init();
     if (wavpath && !audio_init_wav(wavpath)) fprintf(stderr, "cannot write %s\n", wavpath);
     if (!video_set_mode(cfg->initial_mode ? cfg->initial_mode : 12)) video_set_mode(12);   /* what !Run selected */
     cli_init();
