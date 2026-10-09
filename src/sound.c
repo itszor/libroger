@@ -53,7 +53,8 @@ static int16_t snd_linear[128];
 #define SCCB_ACTIVE  0x08
 static uint32_t snd_voice[33];            /* installed voice generators, by slot */
 static uint8_t snd_attached[8];           /* voice slot per channel */
-static int snd_gate[8];                   /* 1 gate on pending, -1 gate off pending */
+static int snd_pend[8];                   /* pending voice calls, as SoundChannels' SCCB flags:
+                                             &80 gate off, &40 gate on, &20 update */
 #define DEFAULT_TUNING 0x6AB0                /* the master pitch: &4000 is middle C */
 static uint32_t snd_tuning = DEFAULT_TUNING;
 
@@ -115,8 +116,11 @@ static void channel_fill(uint32_t buf, uint32_t len)
 {
     for (uint32_t c = 0; c < snd_nchan; c++) {
         uint32_t v = snd_voice[snd_attached[c]], sccb = SCCB_AREA + c * 0x100;
-        if (v && snd_gate[c] > 0) { snd_gate[c] = 0; voice_call(c, v + 8, buf, len); continue; }
-        if (v && snd_gate[c] < 0) { snd_gate[c] = 0; voice_call(c, v + 12, buf, len); continue; }
+        /* one voice call a fill: gate off, then gate on (a new note at
+         * amplitude 0 is both, on two fills), then update, then fill */
+        if (v && (snd_pend[c] & 0x80)) { snd_pend[c] &= ~0x80; voice_call(c, v + 12, buf, len); continue; }
+        if (v && (snd_pend[c] & 0x40)) { snd_pend[c] &= ~0x40; voice_call(c, v + 8, buf, len); continue; }
+        if (v && (snd_pend[c] & 0x20)) { snd_pend[c] = 0; voice_call(c, v + 4, buf, len); continue; }
         if (v && (MEM[sccb + 3] & SCCB_ACTIVE)) { voice_call(c, v, buf, len); continue; }
         for (uint32_t k = c; k < len; k += snd_nchan) MEM[buf + k] = 0;
     }
@@ -254,32 +258,40 @@ static uint32_t pitch_step(uint32_t p)
     return (uint32_t)(hz * 256.0 * 48e-6 * 4294967296.0 / 256.0);
 }
 
-/* Sound_Control. Amplitude: &100-&17F logarithmic (with bit 7 set: change
- * the amplitude of the sound already playing, no new note), or -15..0 as
- * in BBC BASIC's SOUND; anything else changes nothing. Pitch: &100-&7FFF
- * (&4000 middle C, 4096 per octave) or 0-255 as BBC BASIC's (53 middle C,
- * 48 per octave). Duration in 5cs units, &FF forever; stored in the SCCB
- * as buffer fills. */
+/* Sound_Control, as SoundChannels 1.27 does it. Amplitude: &100-&1FF
+ * logarithmic (bit 7 set: change the sound already playing, no new note),
+ * or -15..0 as BBC BASIC's SOUND (log &7F down to &43: 0 isn't silent);
+ * anything else changes nothing. A new note (bit 7 clear) gates the voice
+ * on; at log amplitude 0 it's gated off first; bit 7 set calls the voice's
+ * update entry instead. Pitch: &8000 and up the
+ * phase increment itself, &100-&7FFF (&4000 middle C, 4096 per octave) or
+ * 0-255 as BBC BASIC's (53 middle C, 48 per octave). Duration in 5cs units,
+ * &FF forever, stored in the SCCB as buffer fills; 0 leaves the duration
+ * as it was (a game re-pitching a running engine note every frame:
+ * Stunt Racer 2000). */
 static void control(int chan, int32_t amp, uint32_t pitch, uint32_t dur)
 {
     if (chan < 1 || chan > 8) return;
     int c = chan - 1;
     uint32_t sccb = SCCB_AREA + c * 0x100;
     int logamp;
-    if (amp >= 0x100 && amp <= 0x1FF) logamp = amp & 0x7F;
-    else if (amp <= 0 && amp >= -15) logamp = amp == 0 ? 0 : 0x7F - (15 + amp) * 4;
+    if (amp >= 0x100 && amp <= 0x1FF) logamp = amp & 0xFF;
+    else if (amp <= 0 && amp >= -15) logamp = 0x7F ^ (((amp - 1) & 15) << 2);
     else return;
-    MEM[sccb] = (uint8_t)logamp;
-    if (amp >= 0x100 && (amp & 0x80)) return;        /* smooth amplitude change */
+    MEM[sccb] = (uint8_t)(logamp & 0x7F);
     MEM[sccb + 1] = snd_attached[c];
-    uint32_t p = pitch >= 0x100 ? pitch & 0x7FFF : (uint32_t)(0x4000 + ((int)pitch - 53) * 4096 / 48);
-    WR32(sccb + 4, pitch_step(p) >> 16);           /* the 16-bit phase increment */
+    if (pitch >= 0x8000) WR32(sccb + 4, pitch & 0xFFFF);
+    else {
+        uint32_t p = pitch >= 0x100 ? pitch : (uint32_t)(0x4000 + ((int)pitch - 53) * 4096 / 48);
+        WR32(sccb + 4, pitch_step(p) >> 16);       /* the 16-bit phase increment */
+    }
     if (dur == 0xFF) WR32(sccb + 12, 0x7FFFFFFF);
     else if (dur) {
         uint64_t fills = (uint64_t)dur * 50000 / ((uint64_t)snd_samples * snd_period);
         WR32(sccb + 12, fills > 0x7FFFFFFF ? 0x7FFFFFFF : (uint32_t)fills);
     }
-    snd_gate[c] = dur ? 1 : -1;                    /* the voice applies the amplitude */
+    /* (replacing any call still pending: the voice applies the amplitude) */
+    snd_pend[c] = ((logamp & 0x7F) == 0 ? 0x80 : 0) | (logamp & 0x80 ? 0x20 : 0x40);
 }
 
 static int sound_impl(uint32_t b)

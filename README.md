@@ -109,8 +109,9 @@ Implemented:
   ARM2 interpreter (gaps, self-modified instructions); self-modified code
   at run time: a compiled word the program stores to is interpreted as it
   now is until it holds its original value again
-- interrupts: TickerV, EventV (vsync, mouse; a claimant can intercept with
-  the return address on the stack), OS_ClaimDeviceVector (vsync,
+- interrupts: TickerV, EventV (vsync, mouse, keys; run in IRQ mode on the
+  IRQ stack, as RISC OS does, so the interrupted code's R13 is left alone;
+  a claimant can intercept with the return address on the stack), OS_ClaimDeviceVector (vsync,
   IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100;
   OS_IntOff/IntOn (the I bit; interrupts wait); module SWIs run with
   interrupts enabled, as on RISC OS (one may wait for a handler); palette changes part way down the
@@ -149,8 +150,10 @@ Implemented:
   the device 9 interrupt, the OS's buffers at &1F06000/&1F07000 as RISC
   OS 3.1 maps them); a program's own Level 1 handler, or the OS's channel handler
   running voice generators (install, attach by number or name, Instantiate/
-  Free, GateOn/Fill/GateOff, durations, Sound_Pitch, BBC-style amplitudes
-  and pitches); to SDL or a WAV file
+  Free, GateOn/Fill/Update/GateOff as SoundChannels 1.27 sequences them,
+  durations - 0 leaves a playing note's alone, so a note can be re-pitched
+  each frame - Sound_Pitch, BBC-style amplitudes and pitches); to SDL or a
+  WAV file
 - the command line: Set, SetEval, Unset, If ... Then ... Else, Load, Save,
   RMLoad, RMRun, RMKill, FX, and loaded modules' commands, after GSTrans
   (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte

@@ -36,28 +36,25 @@ void call_vector(unsigned vec, int nregs, const uint32_t *regs)
      * doesn't check the event number would otherwise see every one). */
     if (vec == 0x10 && !(events_enabled & (1u << (regs[0] & 31)))) return;
     if (vec >= 0x20 || !vectors[vec].set) return;
-    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
+    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc, sr13 = bank_r13[2];
     memcpy(saved, R, sizeof R);
     for (int k = 0; k < nregs; k++) R[k] = regs[k];
     R[12] = vectors[vec].ws;
-    /* R14 passes the call on; a claimant that intercepts it instead pulls
-     * the kernel's return address off the stack (ldmfd sp!, {pc}). The
-     * handler runs on the interrupted code's stack, which may be ascending
-     * (Galactic Dan), so the word under it is put back afterwards. */
-    R[14] = HANDLER_RET;
-    R[13] -= 4;
-    uint32_t under_sp = R[13], under = RD32(under_sp);
-    WR32(under_sp, HANDLER_RET);
-    npc = vectors[vec].code;
-    in_handler = 1;
-    COV_ASYNC_ENTER();
-    run_until(HANDLER_RET);
-    COV_ASYNC_EXIT();
-    in_handler = 0;
-    WR32(under_sp, under);
+    /* These are the vectors RISC OS calls from its interrupt handler
+     * (TickerV, EventV for vsync, key and mouse events): in IRQ mode, on
+     * the IRQ stack. The interrupted code's R13 is left alone - it may not
+     * be a stack at all (Stunt Racer 2000's text plotter walks its text
+     * with SP). R14 passes the call on; a claimant that intercepts it
+     * instead pulls the return address off the stack (ldmfd sp!, {pc}). */
+    int irq = (MODEBITS & 3) == 2;
+    uint32_t sp = (irq ? R[13] : IRQ_STACK) - 4;
+    WR32(sp, HANDLER_RET | MODE_IRQ);
+    if (irq) R[13] = sp; else bank_r13[2] = sp;
+    call_code(vectors[vec].code, MODE_IRQ, HANDLER_RET | MODE_IRQ);
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
     npc = snpc;
+    bank_r13[2] = sr13;
 }
 
 /* ---------------------------------------------------------------- device vectors
