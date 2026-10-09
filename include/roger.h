@@ -96,6 +96,8 @@ struct roger_config {
     uint32_t screen_base;                 /* where screen memory starts (default: so that it
                                              ends at &2000000, as RISC OS maps it) */
     uint32_t stack;                       /* initial R13 (default: the RAM limit) */
+    uint32_t ramfs_size;                  /* a RAM disc of this many bytes (RAM:, empty at
+                                             start, as !Run would have sized it); 0: none */
     float mips;                           /* interactive runs: the CPU's speed, millions of
                                              instructions a second (0: as fast as the host
                                              runs it). For games that don't wait for the

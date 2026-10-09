@@ -214,7 +214,7 @@ static void swi_number_from_string(void)
         {"OS_Exit", 0x11, 0}, {"OS_Module", 0x1E, 0}, {"OS_Mouse", 0x1C, 0}, {"OS_ReadUnsigned", 0x21, 0},
         {"OS_ReadVarVal", 0x23, 0}, {"OS_SetVarVal", 0x24, 0}, {"OS_GSTrans", 0x27, 0},
         {"OS_ReadPalette", 0x2F, 0}, {"OS_ValidateAddress", 0x3A, 0}, {"OS_ReadMonotonicTime", 0x42, 0},
-        {"OS_ReadMemMapInfo", 0x51, 0}, {"OS_ReadRAMFsLimits", 0x55, 0}, {"OS_SerialOp", 0x57, 0},
+        {"OS_ReadMemMapInfo", 0x51, 0}, {"OS_ReadRAMFsLimits", 0x55, 0}, {"RamFS_FreeSpace", 0x40783, 0}, {"OS_SerialOp", 0x57, 0},
         {"OS_ConvertStandardDateAndTime", 0xC0, 0}, {"OS_ConvertDateAndTime", 0xC1, 0},
         {"Sound_Configure", 0x40140, 0}, {"Sound_Enable", 0x40141, 0}, {"Sound_Volume", 0x40180, 0},
         {"Sound_SoundLog", 0x40181, 0}, {"Sound_AttachVoice", 0x40185, 0}, {"Sound_Control", 0x40189, 0},
@@ -339,7 +339,8 @@ void swi(uint32_t n, uint32_t nextpc)
         if (!mode_info(R[0]) || (R[0] > 127 && R[0] < 0x100)) { R[0] = 0xFFFFFFFF; CF = 1; } else CF = 0;
         return;
     case 0x39: swi_number_from_string(); return;
-    case 0x55: R[0] = R[1] = 0x01000000; return;   /* OS_ReadRAMFsLimits: no RAM disc (start = end) */
+    case 0x55:                                   /* OS_ReadRAMFsLimits: start, end (equal: none) */
+        R[0] = 0x01000000; R[1] = R[0] + rg->ramfs_size; return;
     case 0x57:                                   /* OS_SerialOp: no serial port - nothing arrives, */
         if (R[0] == 4) CF = 1;                   /* nothing is sent, settings read back as 0 */
         else if (R[0] != 3) R[1] = 0;
@@ -385,6 +386,11 @@ void swi(uint32_t n, uint32_t nextpc)
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
     if (b == 0xC0 || b == 0xC1) { convert_time(b); return; }
+    if (b == 0x40783 && rg->ramfs_size) {        /* RamFS_FreeSpace: R0 free, R1 the largest object */
+        uint32_t used = ramfs_used();
+        R[0] = R[1] = used < rg->ramfs_size ? rg->ramfs_size - used : 0;
+        return;
+    }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
     if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;

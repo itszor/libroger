@@ -237,12 +237,14 @@ int modules_swi(uint32_t b, int x)
 int modules_swi_number(const char *name, uint32_t *n)
 {
     for (int k = 0; k < MAXMOD; k++) {
-        if (!mods[k].m || !RD32(mods[k].base + 0x24) || !RD32(mods[k].base + 0x1C)) continue;
-        const char *t = (const char *)MEM + mods[k].base + RD32(mods[k].base + 0x24);
-        size_t pl = strlen(t);
+        uint32_t off = mods[k].m ? RD32(mods[k].base + 0x24) : 0;
+        if (!off || off >= mods[k].size || !RD32(mods[k].base + 0x1C)) continue;   /* (none, or not a table) */
+        const char *t = (const char *)MEM + mods[k].base + off;
+        size_t pl = strnlen(t, mods[k].size - off);
         if (strncmp(name, t, pl) || name[pl] != '_') continue;
         const char *p = t + pl + 1;
-        for (uint32_t i = 0; *p && i < 64; i++, p += strlen(p) + 1)
+        const char *end = (const char *)MEM + mods[k].base + mods[k].size;
+        for (uint32_t i = 0; p < end && *p && i < 64; i++, p += strnlen(p, end - p) + 1)
             if (!strcmp(name + pl + 1, p)) { *n = RD32(mods[k].base + 0x1C) + i; return 1; }
     }
     return 0;

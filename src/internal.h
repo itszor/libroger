@@ -137,6 +137,11 @@ void file_info(const char *path, uint32_t *load, uint32_t *exec);
 int  save_file(const char *name, uint32_t addr, uint32_t len);
 long load_file(const char *path, uint32_t addr);
 uint32_t sprite_area(void);               /* the area OS_SpriteOp R0/R1 name */
+const char *ramfs_dir(void);              /* the RAM disc's host directory (NULL: none) */
+uint32_t ramfs_used(void);                /* bytes of files on it */
+void ramfs_remove(void);                  /* at exit: the RAM disc goes */
+int  copy_object(const char *from, const char *to, int recurse);   /* *Copy: 0 if it failed */
+int  delete_object(const char *name);    /* *Delete: 0 if there was nothing */
 uint32_t sys_sprites(void);               /* the system sprite area */
 int  vdu_schoose(const char *name);       /* *SChoose */
 int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */

@@ -10,9 +10,13 @@
  * dir_prefixes are stripped). Files the program writes (open for output or
  * update, OS_File save, *Save) go to savedir, mirroring their path, so the
  * extracted originals stay untouched; reads prefer a saved copy when there
- * is one. */
+ * is one. A RAM disc (roger_config.ramfs_size), RAM:$ or RAM::0.$, is a
+ * temporary host directory: empty at start, gone at exit. */
+#define _GNU_SOURCE                       /* nftw, mkdtemp */
 #include <ctype.h>
 #include <dirent.h>
+#include <ftw.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -34,6 +38,53 @@ int cstr(uint32_t a, char *out, int term_ctrl)
     return n;
 }
 
+/* ---------------------------------------------------------------- the RAM disc */
+static char ramdir[256];
+const char *ramfs_dir(void)
+{
+    if (!rg->ramfs_size) return NULL;
+    if (!ramdir[0]) {
+        const char *t = getenv("TMPDIR");
+        snprintf(ramdir, sizeof ramdir, "%s/roger-ramfs-XXXXXX", t && *t ? t : "/tmp");
+        if (!mkdtemp(ramdir)) { ramdir[0] = 0; return NULL; }
+    }
+    return ramdir;
+}
+
+static uint64_t ram_bytes;
+static int add_size(const char *p, const struct stat *st, int type, struct FTW *f)
+{
+    (void)p; (void)f;
+    if (type == FTW_F) ram_bytes += ((uint64_t)st->st_size + 1023) & ~1023ull;   /* (in 1K units) */
+    return 0;
+}
+uint32_t ramfs_used(void)
+{
+    ram_bytes = 0;
+    if (ramdir[0]) nftw(ramdir, add_size, 16, FTW_PHYS);
+    return (uint32_t)ram_bytes;
+}
+
+static int remove_one(const char *p, const struct stat *st, int type, struct FTW *f)
+{
+    (void)st; (void)type; (void)f;
+    return remove(p);
+}
+void ramfs_remove(void)
+{
+    if (ramdir[0]) nftw(ramdir, remove_one, 16, FTW_DEPTH | FTW_PHYS);
+}
+
+/* a RAM disc name (RAM:$.a.b, RAM::0.$.a.b, RAM:a.b): the rest, or NULL */
+static const char *ram_name(const char *n)
+{
+    if (!ramfs_dir() || strncasecmp(n, "RAM:", 4)) return NULL;
+    n += 4;
+    if (*n == ':') { n++; while (*n && *n != '.') n++; if (*n == '.') n++; }   /* :0. */
+    if (*n == '$') { n++; if (*n == '.') n++; }
+    return n;
+}
+
 static const char *strip_prefixes(const char *n)
 {
     while (*n == ' ') n++;
@@ -50,8 +101,9 @@ int hostpath(const char *name, char *out)
 {
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
-    const char *n = x;
+    const char *n = x, *r = ram_name(x);
     strcpy(out, rg_appdir);
+    if (r) { strcpy(out, ramdir); n = r; }
     char part[256];
     while (*n) {
         int l = 0;
@@ -184,6 +236,76 @@ static void os_file(void)
     finish("OS_File op unsupported");
 }
 
+/* ---------------------------------------------------------------- *Copy, *Delete */
+static int copy_host(const char *from, const char *to, int recurse)
+{
+    struct stat st;
+    if (stat(from, &st)) return 0;
+    if (S_ISDIR(st.st_mode)) {
+        if (!recurse) return 0;
+        mkdir(to, 0777);
+        DIR *d = opendir(from);
+        if (!d) return 0;
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char a[2300], b[2300];
+            snprintf(a, sizeof a, "%s/%s", from, e->d_name);
+            snprintf(b, sizeof b, "%s/%s", to, e->d_name);
+            copy_host(a, b, recurse);
+        }
+        closedir(d);
+        return 1;
+    }
+    FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
+    if (out) { char buf[65536]; size_t m; while ((m = fread(buf, 1, sizeof buf, in))) fwrite(buf, 1, m, out); fclose(out); }
+    if (in) fclose(in);
+    return out != NULL;
+}
+
+/* *Copy: a file, or (recurse) a directory, to the destination's name -
+ * keeping the host name's catalogue suffix (,xxx) */
+int copy_object(const char *from, const char *to, int recurse)
+{
+    char src[2048], dst[2048];
+    if (!hostpath_read(from, src)) return 0;
+    save_path(to, dst, 1);
+    char *slash = strrchr(dst, '/'); *slash = 0;             /* make its directories */
+    char dir[2048]; snprintf(dir, sizeof dir, "%s", dst);
+    for (char *p = dir + 1; *p; p++) if (*p == '/') { *p = 0; mkdir(dir, 0777); *p = '/'; }
+    mkdir(dir, 0777);
+    *slash = '/';
+    const char *comma = strrchr(src, ',');
+    if (comma && !strchr(comma, '/')) strncat(dst, comma, sizeof dst - strlen(dst) - 1);
+    return copy_host(src, dst, recurse);
+}
+
+/* *Delete: the program's own copy (savedir, or the RAM disc) */
+int delete_object(const char *name)
+{
+    char p[2048];
+    save_path(name, p, 0);
+    if (!remove(p)) return 1;
+    struct stat st;                                  /* (a host name with a ,xxx suffix) */
+    char *slash = strrchr(p, '/');
+    if (!slash) return 0;
+    *slash = 0;
+    DIR *d = opendir(p);
+    if (!d) return 0;
+    struct dirent *e;
+    int done = 0;
+    while (!done && (e = readdir(d))) {
+        char base[256]; snprintf(base, sizeof base, "%s", e->d_name);
+        char *c = strchr(base, ','); if (c) *c = 0;
+        if (!strcasecmp(base, slash + 1)) {
+            char f[2400]; snprintf(f, sizeof f, "%s/%s", p, e->d_name);
+            done = stat(f, &st) == 0 && !remove(f);
+        }
+    }
+    closedir(d);
+    return done;
+}
+
 /* ---------------------------------------------------------------- open files */
 #define NHANDLES 32
 static FILE *handles[NHANDLES];           /* RISC OS handle k+1 */
@@ -193,9 +315,10 @@ static void save_path(const char *name, char *out, int create)
 {
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
-    const char *n = x;
-    snprintf(out, 2048, "%s/", rg_savedir);
-    if (create) mkdir(rg_savedir, 0777);
+    const char *n = x, *r = ram_name(x);
+    snprintf(out, 2048, "%s/", r ? ramdir : rg_savedir);
+    if (r) n = r;
+    else if (create) mkdir(rg_savedir, 0777);
     size_t o = strlen(out);
     for (; *n && o < 2040; n++) {
         if (*n == '.') { out[o] = 0; if (create) mkdir(out, 0777); out[o++] = '/'; }

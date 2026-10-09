@@ -291,6 +291,25 @@ int cli_command(const char *line, int x)
         R[0] = saved[0]; R[1] = saved[1]; R[2] = saved[2];
         return 1;
     }
+    if ((p = word_at(s, "Copy"))) {             /* *Copy from to [options]: R recurses */
+        char to[1100], opts[256] = "";
+        arg(&p, name, sizeof name);
+        arg(&p, to, sizeof to);
+        while (*skip(p)) { arg(&p, word, sizeof word); strncat(opts, word, sizeof opts - strlen(opts) - 1); }
+        int recurse = 0;
+        for (const char *o = opts; *o; o++)
+            if ((*o == 'R' || *o == 'r') && (o == opts || o[-1] != '~')) recurse = 1;
+        if (!copy_object(name, to, recurse)) {
+            fprintf(stderr, "*Copy: can't copy %s to %s\n", name, to);
+            return cli_error(x) || 1;
+        }
+        return 1;
+    }
+    if ((p = word_at(s, "Delete")) || (p = word_at(s, "Remove"))) {
+        arg(&p, name, sizeof name);
+        if (!delete_object(name) && !strncasecmp(s, "Delete", 6)) return cli_error(x) || 1;
+        return 1;
+    }
     if ((p = word_at(s, "Print"))) {             /* a file's bytes, to the VDU drivers */
         char path[2048];
         arg(&p, name, sizeof name);

@@ -145,6 +145,9 @@ Implemented:
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
   `,load-exec` name suffixes, writes redirected to a save directory (and
   read back from there)
+- a RAM disc (roger_config.ramfs_size): RAM:$ as a temporary host
+  directory, empty at start and removed at exit; OS_ReadRAMFsLimits,
+  RamFS_FreeSpace
 - sound: DMA at the configured rate with VIDC log samples and stereo
   positions; a program that drives the DMA itself (MEMC Sstart/SendN,
   the device 9 interrupt, the OS's buffers at &1F06000/&1F07000 as RISC
@@ -155,7 +158,7 @@ Implemented:
   each frame - Sound_Pitch, BBC-style amplitudes and pitches); to SDL or a
   WAV file
 - the command line: Set, SetEval, Unset, If ... Then ... Else, Load, Save,
-  RMLoad, RMRun, RMKill, FX, and loaded modules' commands, after GSTrans
+  Copy (R: recursively), Delete, RMLoad, RMRun, RMKill, FX, and loaded modules' commands, after GSTrans
   (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
   integers). Other commands are logged and ignored
 - the Wimp, without a desktop: Wimp_Initialise (version 3.16), Wimp_Poll

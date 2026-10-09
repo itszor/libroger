@@ -120,6 +120,7 @@ void finish(const char *why)
         rg->exited();
     }
     if (rg->finish) rg->finish();
+    ramfs_remove();
     fclose(evlog);
     snprintf(fn, sizeof fn, "%s.vdu", outprefix);
     FILE *f = fopen(fn, "wb"); video_save_vdu(f); fclose(f);
