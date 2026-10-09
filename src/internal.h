@@ -9,25 +9,29 @@
  *   &0000000  page zero (hardware vectors; &100 see irq1v)
  *   &0008000  the application (to the RAM limit, &8000 + WimpSlot)
  *   &17F0000  runtime workspace: sound DMA buffers, sound channel control
- *             blocks, a scratch buffer, the mode selector, OS_GetEnv's
- *             strings, SVC and IRQ stacks, module
- *             private words (&17FFFFC down)
+ *             blocks and tables, the mode selector, OS_GetEnv's strings,
+ *             SVC and IRQ stacks, a scratch buffer, the error block, the
+ *             built-in voice, module private words (&17FFFFC down)
  *   &1800000  RMA: RMLoaded modules, then OS_Module claims (&1810000 on)
  *   ........  screen memory, ending at &2000000 (configurable)
  *   &3200000  IOC, &3400000 VIDC, &3600000 MEMC (writes are emulated) */
 #define MEMSIZE      0x4000000u
 #define SYS_SPRITES  0x3000000u           /* the system sprite area (*SLoad, OS_SpriteOp < 256) */
 #define SYS_SPRITES_MAX 0x100000u
+#define WIMP_SPRITES 0x3100000u           /* the Wimp's sprite pool (*IconSprites, Wimp_SpriteOp) */
 #define RETURN_TO_OS 0x3FFFFF0u           /* R14 the program starts with */
 #define HANDLER_RET  ROGER_HANDLER_RET
 #define LOAD         ROGER_LOAD
 #define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
 #define SCCB_AREA    0x017F4000u          /* 8 sound channel control blocks, &100 each */
-#define SCRATCH      0x017F6400u          /* 1K for strings game code passes to SWIs */
 #define MODE_SEL     0x017F6C00u          /* the current mode's selector (OS_ScreenMode 1) */
 #define ENV_AREA     0x017F7000u          /* OS_GetEnv's command line and start time */
 #define SVC_STACK    0x017F8000u          /* R13_svc / R13_irq stack tops */
 #define IRQ_STACK    0x017FC000u
+#define SCRATCH      0x017FC000u          /* 1K for strings game code passes to SWIs (above the
+                                             IRQ stack: the sound tables run to &17F6A00) */
+#define ERROR_BUF    0x017FC400u          /* the error block a failing SWI returns (os_error) */
+#define BEEP_VOICE   0x017FC500u          /* WaveSynth-Beep's voice header (sound.c) */
 #define MOD_PRIVATE  0x017FFFFCu          /* module k's private word: MOD_PRIVATE - 4k */
 #define RMA_BASE     0x01800000u
 #define RMA_HEAP     0x01810000u
@@ -48,6 +52,7 @@ extern float rg_mips;                     /* interactive CPU speed (MIPS), 0 unt
 extern uint64_t rg_limit, rg_t0_ns;
 extern const char *rg_appdir, *rg_savedir;
 void ev(const char *name, const char *fmt, ...);
+void os_error(uint32_t num, const char *msg);   /* a SWI fails: R0 -> error block, V set */
 void finish(const char *why) __attribute__((noreturn));
 void script_run(void);
 int  script_active(void);
@@ -70,6 +75,13 @@ void cpu_report_interp(void);
 int  cpu_seen_gap(uint32_t a);
 void cpu_log_gap(uint32_t a);
 void cpu_programs_loaded(const char *leaf, uint32_t addr);   /* OS_File loaded a file */
+
+/* clib.c: the Shared C Library */
+int  clib_swi(uint32_t b);                 /* SharedCLibrary_LibInit... */
+int  clib_dispatch(uint32_t a);           /* an entry in a client's library vector */
+
+/* sound.c */
+int  sound_channel_voice(int chan, const char *voice);   /* *ChannelVoice */
 
 /* irq.c */
 extern uint32_t monotonic, events_enabled;
@@ -143,6 +155,7 @@ void ramfs_remove(void);                  /* at exit: the RAM disc goes */
 int  copy_object(const char *from, const char *to, int recurse);   /* *Copy: 0 if it failed */
 int  delete_object(const char *name);    /* *Delete: 0 if there was nothing */
 uint32_t sys_sprites(void);               /* the system sprite area */
+uint32_t wimp_sprites(void);              /* the Wimp's sprite pool */
 int  vdu_schoose(const char *name);       /* *SChoose */
 int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */
 int  files_swi(uint32_t b);
@@ -194,6 +207,8 @@ void display_sleep_ns(uint64_t ns);
 void display_set_mouse(int x, int y);
 void display_inject_tap(int px, int py);
 void display_screenshot(const uint8_t *pix, const char *path);
+extern uint8_t kbd_status;                /* OS_Byte 202: bit 4 clear Caps Lock on, bit 5
+                                             clear Shift Lock on; 3 Shift, 6 Ctrl down (live) */
 extern uint8_t key_down[128];             /* by RISC OS internal key number */
 extern int mouse_x, mouse_y, mouse_buttons;   /* OS units; 4 select, 2 menu, 1 adjust */
 extern int quit_requested, escape_pressed, screenshot_requested;

@@ -75,8 +75,11 @@ void roger_wimp_event(uint32_t reason, const uint32_t *block, int nwords)
     memcpy(queue[k].block, block, queue[k].n * 4);
 }
 
+static void wimp_auto_select(uint32_t window, int icon, uint32_t buttons);
+
 void roger_wimp_click(int32_t window, int32_t icon, uint32_t buttons)
 {
+    wimp_auto_select((uint32_t)window, icon, buttons);
     roger_wimp_event(6, (const uint32_t[]){640, 512, buttons, (uint32_t)window, (uint32_t)icon}, 5);
 }
 
@@ -91,6 +94,40 @@ void roger_wimp_menu(const int *items)
 void roger_wimp_quit(void)                /* Message_Quit, as the Task Manager sends it */
 {
     roger_wimp_event(17, (const uint32_t[]){20, 0, 0, 0, 0}, 5);
+}
+
+/* The data transfer protocol's other end, for saving: a Filer window
+ * stands under the pointer while game code has armed it with a destination
+ * (roger_wimp_save_to()), as if the user had dragged the save box's icon
+ * to a directory. Message_DataSave to it is answered with DataSaveAck
+ * giving the full pathname, the program saves there and says so with
+ * Message_DataLoad, answered with DataLoadAck. */
+#define FILER_WINDOW 0x46494C45u
+#define FILER_TASK   0x52454C46u
+static char save_to[1024];
+static uint32_t msg_ref = 0x100;
+
+void roger_wimp_save_to(const char *path) { snprintf(save_to, sizeof save_to, "%s", path ? path : ""); }
+
+static void filer_message(uint32_t m)
+{
+    uint32_t action = RD32(m + 16), b[64] = {0};
+    if (action == 1 && save_to[0]) {                         /* Message_DataSave */
+        memcpy(b, MEM + m, 44);                             /* window, icon, x, y, size, type */
+        size_t l = strlen(save_to);
+        memcpy((char *)b + 44, save_to, l + 1);
+        b[0] = (uint32_t)((44 + l + 1 + 3) & ~3u);
+        b[1] = FILER_TASK; b[3] = RD32(m + 8); b[2] = ++msg_ref; b[4] = 2;   /* DataSaveAck */
+        roger_wimp_event(17, b, (int)(b[0] / 4));
+    } else if (action == 3) {                                /* Message_DataLoad: saved */
+        char name[1024];
+        cstr(m + 44, name, 0);
+        ev("Filer_saved", "s", name, (int)strlen(name));
+        memcpy(b, MEM + m, 44);
+        b[0] = 44; b[1] = FILER_TASK; b[3] = RD32(m + 8); b[2] = ++msg_ref; b[4] = 4;   /* DataLoadAck */
+        roger_wimp_event(17, b, 11);
+        save_to[0] = 0;
+    }
 }
 
 static void poll(void)                    /* Wimp_Poll: R0 mask, R1 block */
@@ -256,6 +293,40 @@ static void window_state(uint32_t blk, int outline)
     memcpy(MEM + blk + 4, w->blk, 32);
 }
 
+/* The window last opened as a menu (Wimp_CreateMenu given a window
+ * handle: a dialogue box such as a save box), 0 if none; an icon's
+ * indirected text buffer (0 if it has none) - for game code standing in
+ * for the user (wimp_idle) */
+static uint32_t menu_window;
+int32_t roger_wimp_menu_window(void) { return (int32_t)menu_window; }
+uint32_t roger_wimp_icon_buffer(int32_t window, int icon)
+{
+    struct win *w = win_of((uint32_t)window);
+    if (!w || icon < 0 || icon >= w->nicons) return 0;
+    uint32_t flags = w->icon[icon][16] | w->icon[icon][17] << 8 | w->icon[icon][18] << 16 | (uint32_t)w->icon[icon][19] << 24;
+    if (!(flags & 0x100)) return 0;
+    return w->icon[icon][20] | w->icon[icon][21] << 8 | w->icon[icon][22] << 16 | (uint32_t)w->icon[icon][23] << 24;
+}
+
+/* What the Wimp does itself when an icon is clicked: a radio icon (button
+ * type 11) is selected by Select - the others in its exclusive selection
+ * group deselected; in group 0 it toggles - and toggled by Adjust */
+static void wimp_auto_select(uint32_t window, int icon, uint32_t buttons)
+{
+    struct win *w = win_of(window);
+    if (!w || icon < 0 || icon >= w->nicons) return;
+    uint32_t f = w32(w->icon[icon] + 16);
+    if (((f >> 12) & 15) != 11) return;
+    uint32_t esg = (f >> 16) & 31, sel = 1u << 21;
+    if ((buttons & 4) && esg) {
+        for (int k = 0; k < w->nicons; k++) {
+            uint32_t g = w32(w->icon[k] + 16);
+            if (k != icon && ((g >> 16) & 31) == esg) s32(w->icon[k] + 16, g & ~sel);
+        }
+        s32(w->icon[icon] + 16, f | sel);
+    } else if (buttons & 5) s32(w->icon[icon] + 16, f ^ sel);
+}
+
 static struct win *icon_of(uint32_t h, uint32_t i)
 {
     struct win *w = win_of(h);
@@ -359,8 +430,10 @@ int wimp_swi(uint32_t b)
         return 1;
     case 0x400E7: {                                         /* Wimp_SendMessage: R0 reason, R1 block, R2 task */
         ev("Wimp_SendMessage", "iii", R[0], RD32(R[1] + 16), R[2]);
-        if (R[2] == TASK_HANDLE) roger_wimp_event(R[0], (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);
         WR32(R[1] + 4, TASK_HANDLE);
+        if (R[0] >= 17 && R[0] <= 19) WR32(R[1] + 8, ++msg_ref);
+        if (R[2] == TASK_HANDLE) roger_wimp_event(R[0], (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);
+        else if (R[2] == FILER_WINDOW || R[2] == FILER_TASK) filer_message(R[1]);
         return 1;
     }
     case 0x400F1:                                           /* Wimp_TransferBlock: within this task */
@@ -374,11 +447,25 @@ int wimp_swi(uint32_t b)
         return 1;
     case 0x400C7: case 0x400E1: poll(); return 1;           /* Wimp_Poll, Wimp_PollIdle */
     case 0x400D4:                                            /* Wimp_CreateMenu */
+    {
         ev("Wimp_CreateMenu", "iii", R[1], R[2], R[3]);
+        struct win *old = menu_window ? win_of(menu_window) : NULL, *w = win_of(R[1]);
+        if (old) s32(old->blk + 28, w32(old->blk + 28) & ~WIN_OPEN);   /* a new menu closes the old */
+        menu_window = 0;
+        if (w && w != &iconbar) {                            /* a dialogue box, opened as a menu */
+            int32_t x0 = (int32_t)w32(w->blk), y1 = (int32_t)w32(w->blk + 12);
+            int32_t wd = (int32_t)w32(w->blk + 8) - x0, ht = y1 - (int32_t)w32(w->blk + 4);
+            s32(w->blk, R[2]); s32(w->blk + 12, R[3]);         /* top left at R2, R3 */
+            s32(w->blk + 8, R[2] + wd); s32(w->blk + 4, R[3] - ht);
+            s32(w->blk + 28, w32(w->blk + 28) | WIN_OPEN);
+            menu_window = R[1];
+        }
         return 1;
+    }
     case 0x400CF:                                            /* Wimp_GetPointerInfo */
         WR32(R[1], 640); WR32(R[1] + 4, 512); WR32(R[1] + 8, 0);
-        WR32(R[1] + 12, 0xFFFFFFFF); WR32(R[1] + 16, 0xFFFFFFFF);
+        WR32(R[1] + 12, save_to[0] ? FILER_WINDOW : 0xFFFFFFFF);   /* over the Filer's window, */
+        WR32(R[1] + 16, 0xFFFFFFFF);                         /* when a save is to be dropped there */
         return 1;
     case 0x400D9: {                                          /* Wimp_OpenTemplate */
         char name[1100]; cstr(R[1], name, 1);
@@ -388,6 +475,24 @@ int wimp_swi(uint32_t b)
     case 0x400DA: template_path[0] = 0; return 1;           /* Wimp_CloseTemplate */
     case 0x400DB: load_template(); return 1;
     case 0x400DD: ev("Wimp_CloseDown", ""); return 1;
+    case 0x400E9:                                            /* Wimp_SpriteOp: by name, on its pool */
+        R[0] = (R[0] & 0xFF) | 0x100;
+        R[1] = wimp_sprites();
+        sprite_op();
+        return 1;
+    case 0x400F2:                                            /* Wimp_ReadSysInfo */
+        switch (R[0]) {
+        case 0: R[0] = 1; break;                             /* tasks active */
+        case 1: R[0] = screen_mode; break;                   /* the Wimp's mode */
+        case 2: {                                            /* the sprite suffix for the mode */
+            const struct rg_mode *m = cur_mode();
+            R[0] = roger_scratch(m->yeig == 1 ? (m->bpp == 1 ? "23" : "22") : "");
+            break;
+        }
+        case 7: R[0] = WIMP_VERSION; break;
+        default: ev("Wimp_ReadSysInfo", "i", R[0]); R[0] = 0; break;
+        }
+        return 1;
     case 0x400DF: {                                          /* Wimp_ReportError: R0 error, R1 flags */
         char msg[1100]; cstr(R[0] + 4, msg, 0);
         ev("Wimp_ReportError", "is", RD32(R[0]), msg, (int)strlen(msg));

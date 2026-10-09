@@ -8,6 +8,7 @@
  * interactive runs (and with --full-os); headless runs only record the VDU
  * stream. */
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <strings.h>
 #include "internal.h"
@@ -128,6 +129,60 @@ static void triangle(int x0, int y0, int x1, int y1, int x2, int y2, int fg)
     }
 }
 
+/* An ellipse (OS units): centre, horizontal and vertical semi-axes, shear
+ * (x offset per unit of y), outline or filled - one pixel row at a time.
+ * An outline joins each row's ends to the previous row's; its pixels are
+ * collected first and each plotted once (EOR plotting would cancel any
+ * plotted twice). */
+static void mark_line(uint8_t *bm, int w, int x0, int y0, int x1, int y1)
+{
+    int dx = abs(x1 - x0), dy = -abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+    for (;;) {
+        bm[y0 * w + x0] = 1;
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+static void ellipse(int xc, int yc, int a, int b, double shear, int fill, int fg)
+{
+    int ye = md()->yeig, top = toy(yc + b), bot = toy(yc - b);
+    if (b == 0) { hline(tox(xc - a), tox(xc + a), toy(yc), fg); return; }
+    int rows = bot - top + 1, n = 0;
+    int *L = malloc(rows * sizeof *L), *Rr = malloc(rows * sizeof *Rr);
+    int xmin = 1 << 30, xmax = -(1 << 30);
+    for (int py = top; py <= bot; py++, n++) {
+        int dy = ((scr_h() - 1 - py) << ye) + (1 << ye) / 2 - yc;
+        if (dy > b) dy = b;
+        if (dy < -b) dy = -b;
+        double w = a * sqrt(1.0 - (double)dy * dy / ((double)b * b)), m = xc + shear * dy;
+        L[n] = tox((int)lround(m - w)); Rr[n] = tox((int)lround(m + w));
+        if (L[n] < xmin) xmin = L[n];
+        if (Rr[n] > xmax) xmax = Rr[n];
+    }
+    if (fill) for (int k = 0; k < rows; k++) hline(L[k], Rr[k], top + k, fg);
+    else {
+        int w = xmax - xmin + 1;
+        uint8_t *bm = calloc((size_t)w * rows, 1);
+        for (int k = 0; k < rows; k++) {
+            if (k == 0 || k == rows - 1) for (int x = L[k]; x <= Rr[k]; x++) bm[k * w + x - xmin] = 1;
+            else {
+                mark_line(bm, w, L[k - 1] - xmin, k - 1, L[k] - xmin, k);
+                mark_line(bm, w, Rr[k - 1] - xmin, k - 1, Rr[k] - xmin, k);
+            }
+        }
+        if (rows > 1) {                          /* the last row joined to the one above */
+            mark_line(bm, w, L[rows - 2] - xmin, rows - 2, L[rows - 1] - xmin, rows - 1);
+            mark_line(bm, w, Rr[rows - 2] - xmin, rows - 2, Rr[rows - 1] - xmin, rows - 1);
+        }
+        for (int k = 0; k < rows; k++)
+            for (int x = 0; x < w; x++) if (bm[k * w + x]) pset(xmin + x, top + k, fg);
+        free(bm);
+    }
+    free(L); free(Rr);
+}
+
 static void plot(int k, int x, int y)
 {
     if (!(k & 4)) { x += cx; y += cy; }          /* relative */
@@ -147,6 +202,13 @@ static void plot(int k, int x, int y)
         } else if (grp == 96) {
             int ya = Y0 < Y1 ? Y0 : Y1, yb = Y0 < Y1 ? Y1 : Y0;
             for (int yy = ya; yy <= yb; yy++) hline(X0, X1, yy, fg);
+        } else if (grp == 144 || grp == 152) {     /* circle: centre the current point */
+            int r = (int)lround(hypot(x - cx, y - cy));
+            ellipse(cx, cy, r, r, 0, grp == 152, fg);
+        } else if (grp == 192 || grp == 200) {     /* ellipse: centre the previous point, */
+            int b = y - py_;                       /* the current one level with it (the */
+            ellipse(px_, py_, abs(cx - px_), abs(b),   /* width), this one the top (height, */
+                    b ? (double)(x - px_) / b : 0, grp == 200, fg);   /* shear) */
         } else vdu_unhandled++;
     }
     gfg_act = saved;
@@ -392,7 +454,18 @@ int sprite_op_full(void)
     uint32_t spr = 0;
     if ((R[0] & 0x300) != 0x200) spr = (op >= 24) ? find_sprite(area, R[2]) : 0;
     else spr = R[2];
+    if (op >= 24 && !spr) { os_error(0x86, "Sprite doesn't exist"); return 1; }
     switch (op) {
+    case 40: {                                   /* read sprite information */
+        const struct rg_mode *m = mode_info(rd32(spr + 40));
+        int bpp = m ? m->bpp : 1;
+        uint32_t bits = (rd32(spr + 16) + 1) * 32 - rd32(spr + 24) - (31 - rd32(spr + 28));
+        R[3] = bits / bpp;
+        R[4] = rd32(spr + 20) + 1;
+        R[5] = rd32(spr + 36) != rd32(spr + 32);
+        R[6] = rd32(spr + 40);
+        return 1;
+    }
     case 9:                                      /* initialise area */
         *(uint32_t *)(MEM + area + 4) = 0;
         *(uint32_t *)(MEM + area + 8) = 16;

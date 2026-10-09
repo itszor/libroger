@@ -3,6 +3,7 @@
  * their own files. Every call worth knowing about is written to the event
  * log (roger_log()). */
 #include <string.h>
+#include <stdlib.h>
 #include <strings.h>
 #include <time.h>
 #include "internal.h"
@@ -50,11 +51,17 @@ static void os_byte(void)
         }
         return;
     }
-    if (op == 121) {                                   /* keyboard scan: R1 key ^ &80 (that key), */
-        if (R[1] & 0x80) { R[1] = pressed((R[1] ^ 0x80) + 1) ? 0xFF : 0; return; }
-        uint32_t k = R[1];                             /* or the first key from R1 up pressed */
+    if (op == 121 || op == 122) {                      /* keyboard scan: R1 key ^ &80 (that key), */
+        if (op == 121 && (R[1] & 0x80)) { R[1] = pressed((R[1] ^ 0x80) + 1) ? 0xFF : 0; return; }
+        uint32_t k = op == 122 ? 16 : R[1];            /* or the first key from R1 (122: 16) up pressed */
         while (k < 128 && !pressed(k + 1)) k++;
         R[1] = k < 128 ? k : 0xFF;
+        return;
+    }
+    if (op == 202) {                                   /* keyboard status: (old AND R2) EOR R1 */
+        uint8_t old = (kbd_status & ~0x48) | (key_down[0] ? 0x08 : 0) | (key_down[1] ? 0x40 : 0);
+        kbd_status = ((old & R[2]) ^ R[1]) & ~0x48;
+        R[1] = old;
         return;
     }
     if (op == 112 || op == 113) {                      /* screen bank for VDU drivers / display: */
@@ -101,6 +108,8 @@ static uint64_t rtc_cs(void)
     if (rg_interactive) return ((uint64_t)time(NULL) + 2208988800ull) * 100;   /* 1900 -> 1970 */
     return 2934878400ull * 100 + icount / TICK_STEPS;
 }
+
+uint8_t kbd_status = 0x30;                   /* Caps Lock and Shift Lock off */
 
 static void os_word(void)
 {
@@ -254,6 +263,19 @@ static int os_memory(void)
     return 1;
 }
 
+/* A SWI's error: an error block (number, message) for R0, V set. (The non-X
+ * form's behaviour - the error handler - is the caller's to decide.) */
+void os_error(uint32_t num, const char *msg)
+{
+    WR32(ERROR_BUF, num);
+    size_t l = strlen(msg);
+    if (l > 250) l = 250;
+    memcpy(MEM + ERROR_BUF + 4, msg, l);
+    MEM[ERROR_BUF + 4 + l] = 0;
+    R[0] = ERROR_BUF;
+    VF = 1;
+}
+
 void swi(uint32_t n, uint32_t nextpc)
 {
     uint32_t x = n & 0x20000, b = n & ~0x20000u;
@@ -393,7 +415,7 @@ void swi(uint32_t n, uint32_t nextpc)
     }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
-    if (cli_swi(b, x != 0) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
+    if (cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");

@@ -123,7 +123,7 @@ Implemented:
   with wrap-around, VIDC palette including 256-colour modes, VDU and mode
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, VDU 19 palette,
   tints, windows, origin, PLOT lines/points/triangles/rectangles; VDU
-  21/6; text: VDU 4 in a text window, VDU 5 at the graphics cursor, VDU
+  21/6; circles and ellipses, outline and filled; text: VDU 4 in a text window, VDU 5 at the graphics cursor, VDU
   23 characters, cursor control), OS_SpriteOp on user areas and the
   system sprite area (*SLoad/*SMerge; load, merge, read area information,
   select, plot; *SChoose and PLOT &E8-&EF), *Print and BBC font files
@@ -155,10 +155,12 @@ Implemented:
   running voice generators (install, attach by number or name, Instantiate/
   Free, GateOn/Fill/Update/GateOff as SoundChannels 1.27 sequences them,
   durations - 0 leaves a playing note's alone, so a note can be re-pitched
-  each frame - Sound_Pitch, BBC-style amplitudes and pitches); to SDL or a
-  WAV file
-- the command line: Set, SetEval, Unset, If ... Then ... Else, Load, Save,
-  Copy (R: recursively), Delete, RMLoad, RMRun, RMKill, FX, and loaded modules' commands, after GSTrans
+  each frame - Sound_Pitch, BBC-style amplitudes and pitches); WaveSynth-
+  Beep (voice 1, every channel's to start with) made natively; the
+  scheduler (Sound_QSchedule, QTempo); to SDL or a WAV file
+- the command line: Set, SetEval (integer and string expressions), Unset,
+  If ... Then ... Else, Load, Save, Copy (R: recursively), Delete, RMLoad,
+  RMRun, RMKill, FX, IconSprites, ChannelVoice, and loaded modules' commands, after GSTrans
   (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
   integers). Other commands are logged and ignored
 - the Wimp, without a desktop: Wimp_Initialise (version 3.16), Wimp_Poll
@@ -166,12 +168,24 @@ Implemented:
   LoadTemplate, CloseTemplate), windows and icons kept as the program
   defines them but not shown (create, open, close, state, information,
   outline, extent, icon state, WhichIcon, the icon bar; redraws find
-  nothing to draw), menus accepted, the caret, messages to itself,
-  Wimp_GetPointerInfo, Wimp_ReportError (to stderr),
+  nothing to draw), menus accepted, dialogue boxes opened as menus,
+  option icons selected and toggled by clicks as the Wimp does, the caret,
+  messages to itself, a Filer for saving (game code names where the next
+  save dragged out goes: the data transfer protocol's DataSave/Ack,
+  DataLoad/Ack), Wimp_GetPointerInfo, Wimp_ReportError (to stderr),
+  Wimp_SpriteOp on the Wimp's sprite pool (*IconSprites), Wimp_ReadSysInfo,
   Wimp_SetMode, Wimp_CloseDown; Wimp_SlotSize (the application slot is
   the RAM limit) and the screen's dynamic area (OS_ReadDynamicArea,
   OS_ChangeDynamicArea 2)
-- the kernel: OS_Byte (keyboard scans, single key or first key pressed;
+- the Shared C Library (src/clib.c): SharedCLibrary_LibInitAPCS_A/R, and
+  the kernel's and the C library's functions on the host's C library -
+  C89's behaviour as the library had it (long 32 bits, doubles in FPA
+  order), its static data as clients' macros read it (errno, __iob,
+  __ctype), stdio on the OS's files, the console through the VDU, the
+  library's rand(); no floating point arithmetic in the client (no FP
+  emulator), no stack extension (a 64K root stack instead)
+- the kernel: OS_Byte (keyboard scans, single key or first key pressed, or
+  from 16; the keyboard status (Caps Lock as the host's);
   INKEY, the OS version, events, Escape, banks, mode, the vsync counter), OS_Word (palette, pointer, display
   start, the real-time clock: the host's, or fixed in headless runs),
   OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ServiceCall,
@@ -181,14 +195,19 @@ Implemented:
   modules' SWI chunks, OS_Module claims, OS_CheckModeValid,
   OS_SWINumberFromString (a few names programs probe for); key transition
   events (event 11, low-level key numbers, once a frame); Hourglass
-  (nothing shown); OS_SpriteOp select and area operations in headless
-  runs too (only plotting needs the VDU drivers)
+  (nothing shown); OS_SpriteOp select, read sprite information and area
+  operations in headless runs too (only plotting needs the VDU drivers);
+  errors as error blocks (os_error)
+- files: saves keep their type in the host name's suffix (OS_File 0/10,
+  and 1-3/18 set it), the save directory looked up ignoring suffixes;
+  "HostFS:" followed by a host path names that host file
 
 Display shaders
 ---------------
 
 Keys in the window: F10 / Shift+F10 cycle through the display shaders, F11
-fullscreen, F12 screenshot (with a shader on, the shaded frame is saved too,
+fullscreen, F12 screenshot (Ctrl+F10/F11/F12 for a game that sets
+roger_config.ctrl_meta_keys because it uses those keys itself) (with a shader on, the shaded frame is saved too,
 as screenshot-N-NAME.bmp). The shaders are RetroArch slang presets run on
 SDL_GPU (src/shader.c), with SDL 3.4's GPU renderer and a device that takes
 SPIR-V (Vulkan); without one there's only the plain view.
@@ -228,6 +247,7 @@ Files
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse
     src/main.c           start-up, command line, event log, scripts, finish
+    src/clib.c           the Shared C Library
     src/shader.c         display shader chains on SDL_GPU
     shaders/             the display shaders: build.py, own/, slang/ (from
                          libretro's slang-shaders), generated/chains.c; see

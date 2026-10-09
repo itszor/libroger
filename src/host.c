@@ -194,6 +194,7 @@ int display_init(int scale, const char *fs, const char *shader)
     }
     win = SDL_CreateWindow(rg->title ? rg->title : "libroger", 256 * scale, 192 * scale, SDL_WINDOW_RESIZABLE);
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 0; }
+    if (SDL_GetModState() & SDL_KMOD_CAPS) kbd_status &= ~0x10;   /* Caps Lock as the host has it */
     ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
     if (ren && !shader_init(ren)) SDL_Log("display shaders unavailable (no SPIR-V)");
     if (!ren) ren = SDL_CreateRenderer(win, NULL);
@@ -353,24 +354,32 @@ void display_poll(void)
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP: {
             int down = e.type == SDL_EVENT_KEY_DOWN;
+            /* the runtime's own keys - F10 / Shift+F10 shaders, F11 (or
+             * Alt+Return) fullscreen, F12 screenshot - Ctrl+ those with
+             * roger_config.ctrl_meta_keys, for games that use F10-F12 */
+            SDL_Scancode sc = e.key.scancode;
+            int meta_mod = rg->ctrl_meta_keys ? (e.key.mod & SDL_KMOD_CTRL) != 0 : 1;
+            if (meta_mod && (sc == SDL_SCANCODE_F10 || sc == SDL_SCANCODE_F11 || sc == SDL_SCANCODE_F12)) {
+                if (down && !e.key.repeat) {
+                    if (sc == SDL_SCANCODE_F10) display_cycle_shader((e.key.mod & SDL_KMOD_SHIFT) ? -1 : 1);
+                    else if (sc == SDL_SCANCODE_F11) display_toggle_fullscreen();
+                    else screenshot_requested = 1;
+                }
+                break;                                      /* not passed to the game */
+            }
+            if (sc == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
+                if (down && !e.key.repeat) display_toggle_fullscreen();
+                break;
+            }
             int k = internal_key(e.key.scancode);
             if (k >= 0) key_down[k] = down;
+            if (down && !e.key.repeat && e.key.scancode == SDL_SCANCODE_CAPSLOCK) kbd_status ^= 0x10;
             if (e.key.scancode == SDL_SCANCODE_LSHIFT || e.key.scancode == SDL_SCANCODE_RSHIFT)
                 key_down[0] = down;
             if (e.key.scancode == SDL_SCANCODE_LCTRL || e.key.scancode == SDL_SCANCODE_RCTRL)
                 key_down[1] = down;
             if (e.key.scancode == SDL_SCANCODE_LALT || e.key.scancode == SDL_SCANCODE_RALT)
                 key_down[2] = down;
-            if (down && e.key.scancode == SDL_SCANCODE_F12) { screenshot_requested = 1; break; }
-            if (e.key.scancode == SDL_SCANCODE_F10) {           /* next / previous display shader */
-                if (down && !e.key.repeat) display_cycle_shader((e.key.mod & SDL_KMOD_SHIFT) ? -1 : 1);
-                break;                                      /* not passed to the game */
-            }
-            if (e.key.scancode == SDL_SCANCODE_F11 ||
-                (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT))) {
-                if (down && !e.key.repeat) display_toggle_fullscreen();
-                break;                                      /* not passed to the game */
-            }
             if (e.key.scancode == SDL_SCANCODE_ESCAPE) {
                 if (down && !e.key.repeat) escape_pressed = 1;   /* one condition per press */
             }

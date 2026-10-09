@@ -58,6 +58,9 @@ static int snd_pend[8];                   /* pending voice calls, as SoundChanne
 #define DEFAULT_TUNING 0x6AB0                /* the master pitch: &4000 is middle C */
 static uint32_t snd_tuning = DEFAULT_TUNING;
 
+static void control(int chan, int32_t amp, uint32_t pitch, uint32_t dur);
+static void attach(int c, uint32_t slot);
+
 static void voice_call(int c, uint32_t entry, uint32_t buf, uint32_t len)
 {
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
@@ -93,9 +96,60 @@ static void voice_admin(int c, uint32_t entry)
 static void attach(int c, uint32_t slot)
 {
     uint32_t old = snd_voice[snd_attached[c]];
-    if (old && snd_attached[c] != slot) voice_admin(c, old + 20);
+    if (old && old != BEEP_VOICE && snd_attached[c] != slot) voice_admin(c, old + 20);
     snd_attached[c] = (uint8_t)slot;
-    if (snd_voice[slot]) voice_admin(c, snd_voice[slot] + 16);
+    if (snd_voice[slot] && snd_voice[slot] != BEEP_VOICE) voice_admin(c, snd_voice[slot] + 16);
+}
+
+/* WaveSynth-Beep, the ROM's voice 1 and every channel's voice to begin
+ * with, made here: a sine at the channel's pitch and amplitude, a short
+ * attack, the duration counted in buffer fills, a short release. Its
+ * header (BEEP_VOICE) is only there for its name. */
+static struct { uint32_t phase; float env; int gate; } beep[8];
+static float beep_sine[256];
+
+static void beep_install(void)
+{
+    static int done;
+    if (done) return;
+    done = 1;
+    for (int k = 0; k < 256; k++) beep_sine[k] = (float)sin(k * 2 * M_PI / 256);
+    if (!snd_voice[1]) {
+        memset(MEM + BEEP_VOICE, 0, 64);
+        WR32(BEEP_VOICE + 28, 32);
+        strcpy((char *)MEM + BEEP_VOICE + 32, "WaveSynth-Beep");
+        snd_voice[1] = BEEP_VOICE;
+    }
+    for (int c = 0; c < 8; c++) if (!snd_attached[c]) snd_attached[c] = 1;
+}
+
+static void beep_fill(int c, uint32_t buf, uint32_t len)
+{
+    uint32_t sccb = SCCB_AREA + c * 0x100;
+    if (snd_pend[c] & 0x80) beep[c].gate = 0;                       /* gate off */
+    if (snd_pend[c] & 0x40) { beep[c].gate = 1; beep[c].phase = 0; beep[c].env = 0; }   /* gate on */
+    snd_pend[c] = 0;
+    if (beep[c].gate) {                                            /* the duration, in fills */
+        uint32_t d = RD32(sccb + 12);
+        if (d == 0) beep[c].gate = 0;
+        else if (d != 0x7FFFFFFF) WR32(sccb + 12, d - 1);
+    }
+    if (!beep[c].gate && beep[c].env <= 0) {
+        MEM[sccb + 3] = 0;
+        for (uint32_t k = c; k < len; k += snd_nchan) MEM[buf + k] = 0;
+        return;
+    }
+    MEM[sccb + 3] = SCCB_ACTIVE;
+    float amp = powf(2.0f, ((MEM[sccb] & 0x7F) - 127) / 16.0f) * 4095.0f;
+    uint32_t inc = RD32(sccb + 4) << 16;
+    float attack = 1.0f / (2000.0f / snd_period), release = 1.0f / (20000.0f / snd_period);
+    for (uint32_t k = c; k < len; k += snd_nchan) {
+        if (beep[c].gate) { beep[c].env += attack; if (beep[c].env > 1) beep[c].env = 1; }
+        else { beep[c].env -= release; if (beep[c].env < 0) beep[c].env = 0; }
+        int v = (int)lroundf(beep_sine[beep[c].phase >> 24] * amp * beep[c].env);
+        beep[c].phase += inc;
+        MEM[buf + k] = MEM[LIN_TO_LOG + (v & 0x1FFF)];
+    }
 }
 
 static void tables_init(void)
@@ -114,8 +168,11 @@ static void tables_init(void)
 
 static void channel_fill(uint32_t buf, uint32_t len)
 {
+    beep_install();
+    if (!MEM[LOG_SCALE + 255]) tables_init();
     for (uint32_t c = 0; c < snd_nchan; c++) {
         uint32_t v = snd_voice[snd_attached[c]], sccb = SCCB_AREA + c * 0x100;
+        if (v == BEEP_VOICE) { beep_fill((int)c, buf, len); continue; }
         /* one voice call a fill: gate off, then gate on (a new note at
          * amplitude 0 is both, on two fills), then update, then fill */
         if (v && (snd_pend[c] & 0x80)) { snd_pend[c] &= ~0x80; voice_call(c, v + 12, buf, len); continue; }
@@ -126,9 +183,60 @@ static void channel_fill(uint32_t buf, uint32_t len)
     }
 }
 
+/* The scheduler (Sound_QSchedule): calls to make after a number of beats,
+ * at Sound_QTempo's tempo (&1000: a beat a centisecond) - a scheduled
+ * Sound_ControlPacked (R1 0), or another sound SWI given by number, with
+ * R2/R3 as its R0/R1 */
+#define QMAX 64
+static struct { uint64_t at; uint32_t swi, r0, r1; } q[QMAX];
+static int nq;
+static uint32_t q_tempo = 0x1000;
+static uint64_t q_now;                    /* centiseconds */
+static int sound_impl(uint32_t b);
+
+static void q_call(uint32_t swi, uint32_t r0, uint32_t r1)
+{
+    uint32_t saved[4] = {R[0], R[1], R[2], R[3]};
+    R[0] = r0; R[1] = r1;
+    if (!swi) control((int)(r0 & 0xFFFF), (int16_t)(r0 >> 16), r1 & 0xFFFF, r1 >> 16);
+    else { roger_log_sound_swi(swi); sound_impl(swi); }
+    memcpy(R, saved, sizeof saved);
+}
+
 /* every centisecond (durations are the voices' business: see above) */
 void sound_tick(void)
 {
+    q_now++;
+    for (int k = 0; k < nq; )
+        if (q[k].at <= q_now) {
+            uint32_t s = q[k].swi, a = q[k].r0, b = q[k].r1;
+            q[k] = q[--nq];
+            q_call(s, a, b);
+        } else k++;
+}
+
+/* *ChannelVoice: attach a voice (a slot number or a name) to a channel */
+int sound_channel_voice(int chan, const char *voice)
+{
+    beep_install();
+    if (chan < 1 || chan > 8) return 0;
+    char *e;
+    long slot = strtol(voice, &e, 10);
+    if (*voice && !*e) {
+        if (slot < 1 || slot > 32 || !snd_voice[slot]) return 0;
+        attach(chan - 1, (uint32_t)slot);
+        return 1;
+    }
+    for (int s = 1; s <= 32; s++) {
+        if (!snd_voice[s]) continue;
+        uint32_t name = snd_voice[s] + RD32(snd_voice[s] + 28);
+        char have[32];
+        int k;
+        for (k = 0; k < 31 && MEM[name + k] > 32; k++) have[k] = MEM[name + k];
+        have[k] = 0;
+        if (!strcasecmp(have, voice)) { attach(chan - 1, (uint32_t)s); return 1; }
+    }
+    return 0;
 }
 
 /* VIDC log bytes (snd_nchan interleaved channels) at buf to the host:
@@ -333,7 +441,28 @@ static int sound_impl(uint32_t b)
         if (!MEM[LOG_SCALE + 255]) tables_init();
         R[0] = (R[0] & ~0xFEu) | MEM[LOG_SCALE + (R[0] & 0xFE)];
         return 1;
-    case 0x401C0: return 1;                /* Sound_QInit */
+    case 0x401C0: nq = 0; return 1;        /* Sound_QInit */
+    case 0x401C1: {                        /* Sound_QSchedule: R0 beats from now, R1 0 or a SWI, R2/R3 */
+        uint32_t swi = R[1] & 0x20000 ? R[1] & ~0x20000u : R[1];
+        if (swi && (swi & ~0x3Fu) != 0x40140 && (swi & ~0x3Fu) != 0x40180) { R[0] = (uint32_t)-1; return 1; }
+        int32_t beats = (int32_t)R[0];
+        if (beats <= 0) { q_call(swi, R[2], R[3]); R[0] = 0; return 1; }
+        if (nq == QMAX) { R[0] = (uint32_t)-1; return 1; }
+        q[nq].at = q_now + (uint64_t)beats * 0x1000 / (q_tempo ? q_tempo : 0x1000);
+        q[nq].swi = swi; q[nq].r0 = R[2]; q[nq].r1 = R[3];
+        nq++;
+        R[0] = 0;
+        return 1;
+    }
+    case 0x401C2: nq = 0; return 1;        /* Sound_QRemove (all, here) */
+    case 0x401C3: R[0] = (uint32_t)(QMAX - nq); return 1;   /* Sound_QFree */
+    case 0x401C5: {                        /* Sound_QTempo: R0 0 read, else the new tempo */
+        uint32_t old = q_tempo;
+        if (R[0]) q_tempo = R[0];
+        R[0] = old;
+        return 1;
+    }
+    case 0x401C6: R[0] = 0; return 1;      /* Sound_QBeat: no bar counting */
     case 0x40183: {                        /* Sound_InstallVoice: R0 header, R1 slot (0: any free) */
         uint32_t slot = R[1];
         if (!slot) for (slot = 1; slot < 32 && snd_voice[slot]; slot++) ;
@@ -395,6 +524,7 @@ int sound_swi(uint32_t b)
 {
     uint32_t grp = b & ~0x3Fu;
     if (grp != 0x40140 && grp != 0x40180 && grp != 0x401C0) return 0;
+    beep_install();
     roger_log_sound_swi(b);
     sound_impl(b);
     return 1;

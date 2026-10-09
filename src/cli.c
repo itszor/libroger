@@ -4,7 +4,7 @@
  * set and test variables, load and save files, load and kill modules. The
  * line is GSTrans'd first (<name> expands to a variable's value, <nn> to a
  * character; an unset variable expands to nothing). Implemented: Set,
- * SetEval (string values only), Unset, If ... Then ... [Else ...], Load,
+ * SetEval (integer and string expressions), Unset, If ... Then ... [Else ...], Load,
  * Save, RMLoad, RMRun, RMKill, FX, Tuning, and the commands of loaded
  * modules. Anything else is only logged (the OS_CLI event every command
  * writes). */
@@ -104,6 +104,115 @@ static const char *operand(const char *s, char *str, long *num, int *isnum)
     return s;
 }
 
+/* Expressions (OS_EvaluateExpression's, for SetEval): integers (decimal,
+ * &hex) and "strings"; ( ), unary + - NOT, * / MOD, + - (+ joins strings),
+ * << >>, comparisons = <> < > <= >= (TRUE is -1), AND OR EOR - in rising
+ * order of looseness. Bare words are strings. */
+struct xv { int num; long n; char s[256]; };
+static const char *xp_or(const char *e, struct xv *v, int *ok);
+static int xp_word(const char **e, const char *w)
+{
+    size_t l = strlen(w);
+    if (strncasecmp(skip(*e), w, l)) return 0;
+    *e = skip(*e) + l;
+    return 1;
+}
+static const char *xp_prim(const char *e, struct xv *v, int *ok)
+{
+    e = skip(e);
+    if (*e == '(') {
+        e = xp_or(e + 1, v, ok);
+        e = skip(e);
+        if (*e == ')') e++; else *ok = 0;
+        return e;
+    }
+    if (*e == '-' || *e == '+') {
+        int neg = *e == '-';
+        e = xp_prim(e + 1, v, ok);
+        if (!v->num) *ok = 0; else if (neg) v->n = -v->n;
+        return e;
+    }
+    if (xp_word(&e, "NOT")) { e = xp_prim(e, v, ok); if (!v->num) *ok = 0; v->n = ~v->n; return e; }
+    v->n = 0; v->s[0] = 0;
+    e = operand(e, v->s, &v->n, &v->num);
+    if (!v->num) {                                      /* a bare word: no operators in it */
+        char *o = strpbrk(v->s, "+-*/()");
+        if (o && o != v->s) { e -= strlen(o); *o = 0; }
+    }
+    return e;
+}
+static const char *xp_mul(const char *e, struct xv *v, int *ok)
+{
+    e = xp_prim(e, v, ok);
+    for (;;) {
+        const char *f = skip(e);
+        int op = *f == '*' ? '*' : *f == '/' ? '/' : !strncasecmp(f, "MOD", 3) ? 'M' : 0;
+        if (!op) return e;
+        struct xv w;
+        e = xp_prim(f + (op == 'M' ? 3 : 1), &w, ok);
+        if (!v->num || !w.num || (op != '*' && !w.n)) { *ok = 0; return e; }
+        v->n = op == '*' ? v->n * w.n : op == '/' ? v->n / w.n : v->n % w.n;
+    }
+}
+static const char *xp_add(const char *e, struct xv *v, int *ok)
+{
+    e = xp_mul(e, v, ok);
+    for (;;) {
+        const char *f = skip(e);
+        if (*f != '+' && *f != '-') return e;
+        struct xv w;
+        e = xp_mul(f + 1, &w, ok);
+        if (v->num && w.num) v->n = *f == '+' ? v->n + w.n : v->n - w.n;
+        else if (!v->num && !w.num && *f == '+') {
+            size_t l = strlen(v->s), m = strlen(w.s);
+            if (l + m > sizeof v->s - 1) m = sizeof v->s - 1 - l;
+            memcpy(v->s + l, w.s, m); v->s[l + m] = 0;
+        }
+        else { *ok = 0; return e; }
+    }
+}
+static const char *xp_shift(const char *e, struct xv *v, int *ok)
+{
+    e = xp_add(e, v, ok);
+    for (;;) {
+        const char *f = skip(e);
+        if (strncmp(f, "<<", 2) && strncmp(f, ">>", 2)) return e;
+        struct xv w;
+        e = xp_add(f + 2, &w, ok);
+        if (!v->num || !w.num) { *ok = 0; return e; }
+        v->n = f[0] == '<' ? (long)((uint32_t)v->n << (w.n & 31)) : (long)((int32_t)v->n >> (w.n & 31));
+    }
+}
+static const char *xp_cmp(const char *e, struct xv *v, int *ok)
+{
+    e = xp_shift(e, v, ok);
+    const char *f = skip(e);
+    char op[3] = {0};
+    int l = 0;
+    while (l < 2 && (f[l] == '=' || f[l] == '<' || f[l] == '>')) { op[l] = f[l]; l++; }
+    if (!l || !strcmp(op, "<<") || !strcmp(op, ">>")) return e;
+    struct xv w;
+    e = xp_shift(f + l, &w, ok);
+    if (v->num != w.num) { *ok = 0; return e; }
+    int c = v->num ? (v->n > w.n) - (v->n < w.n) : strcmp(v->s, w.s);
+    int r = !strcmp(op, "=") ? c == 0 : !strcmp(op, "<>") ? c != 0 : !strcmp(op, "<") ? c < 0
+          : !strcmp(op, ">") ? c > 0 : !strcmp(op, "<=") ? c <= 0 : !strcmp(op, ">=") ? c >= 0 : (*ok = 0);
+    v->num = 1; v->n = r ? -1 : 0;
+    return e;
+}
+static const char *xp_or(const char *e, struct xv *v, int *ok)
+{
+    e = xp_cmp(e, v, ok);
+    for (;;) {
+        int op = xp_word(&e, "AND") ? 'A' : xp_word(&e, "OR") ? 'O' : xp_word(&e, "EOR") ? 'E' : 0;
+        if (!op) return e;
+        struct xv w;
+        e = xp_cmp(e, &w, ok);
+        if (!v->num || !w.num) { *ok = 0; return e; }
+        v->n = op == 'A' ? (v->n & w.n) : op == 'O' ? (v->n | w.n) : (v->n ^ w.n);
+    }
+}
+
 static int if_condition(const char *e)
 {
     char a[256], b[256], op[3] = {0};
@@ -186,7 +295,17 @@ int cli_command(const char *line, int x)
     if ((p = word_at(s, "SetEval")) && (p = skip(p))) {
         arg(&p, name, sizeof name);
         p = skip(p);
-        if (*p == '"') { char v[256]; long n; int isn; operand(p, v, &n, &isn); roger_setvar(name, v); }
+        struct xv v = {0};
+        int ok = 1;
+        const char *end = skip(xp_or(p, &v, &ok));
+        if (!ok || *end) { ev("SetEval_bad_expression", "s", p, (int)strlen(p)); return cli_error(x) || 1; }
+        if (v.num) {
+            char t[24];
+            snprintf(t, sizeof t, "%ld", (long)(int32_t)v.n);
+            roger_setvar(name, t);
+            for (int k = 0; k < MAXVAR; k++)
+                if (vars[k].val && !strcasecmp(vars[k].name, name)) vars[k].number = 1;
+        } else roger_setvar(name, v.s);
         return 1;
     }
     if ((p = word_at(s, "Unset"))) { arg(&p, name, sizeof name); roger_setvar(name, NULL); return 1; }
@@ -226,6 +345,23 @@ int cli_command(const char *line, int x)
             fprintf(stderr, "*%s: file not found %s\n", merge ? "SMerge" : "SLoad", name);
             if (cli_error(x)) return 1;
             finish("file not found");
+        }
+        return 1;
+    }
+    if ((p = word_at(s, "ChannelVoice"))) {    /* SoundChannels: a voice for a channel */
+        arg(&p, word, sizeof word);
+        arg(&p, name, sizeof name);
+        if (!sound_channel_voice(atoi(word), name)) {
+            ev("ChannelVoice_unknown", "s", name, (int)strlen(name));
+            if (cli_error(x)) return 1;
+        }
+        return 1;
+    }
+    if ((p = word_at(s, "IconSprites"))) {     /* sprites for the Wimp's pool */
+        arg(&p, name, sizeof name);
+        if (!sprite_file(wimp_sprites(), name, 1)) {
+            ev("IconSprites_missing", "s", name, (int)strlen(name));
+            if (cli_error(x)) return 1;
         }
         return 1;
     }

@@ -97,13 +97,10 @@ static const char *strip_prefixes(const char *n)
     return n;
 }
 
-int hostpath(const char *name, char *out)
+/* the RISC OS name n under the host directory already in out, each part
+ * matched ignoring case and any ",xxx" catalogue suffix: 1 if it exists */
+static int lookup_in(const char *n, char *out)
 {
-    char x[1100];
-    gstrans(strip_prefixes(name), x, sizeof x);
-    const char *n = x, *r = ram_name(x);
-    strcpy(out, rg_appdir);
-    if (r) { strcpy(out, ramdir); n = r; }
     char part[256];
     while (*n) {
         int l = 0;
@@ -126,6 +123,24 @@ int hostpath(const char *name, char *out)
         if (!hit) return 0;
     }
     return 1;
+}
+
+/* A RISC OS filename -> the host file: under the application directory
+ * (or the RAM disc); "HostFS:" followed by a host path names that host
+ * file (e.g. a file given on the command line) */
+int hostpath(const char *name, char *out)
+{
+    char x[1100];
+    gstrans(strip_prefixes(name), x, sizeof x);
+    if (!strncasecmp(x, "HostFS:", 7)) {
+        struct stat st;
+        snprintf(out, 2048, "%s", x + 7);
+        return stat(out, &st) == 0;
+    }
+    const char *n = x, *r = ram_name(x);
+    strcpy(out, rg_appdir);
+    if (r) { strcpy(out, ramdir); n = r; }
+    return lookup_in(n, out);
 }
 int roger_hostpath(const char *name, char *out) { return hostpath(name, out); }
 
@@ -152,13 +167,63 @@ void file_info(const char *path, uint32_t *load, uint32_t *exec)
 
 static void save_path(const char *name, char *out, int create);
 
+/* the program's own copy of a file (in savedir, or the RAM disc), whatever
+ * its catalogue suffix: 1 if there is one */
+static int saved_path(const char *name, char *out)
+{
+    char x[1100];
+    gstrans(strip_prefixes(name), x, sizeof x);
+    if (!strncasecmp(x, "HostFS:", 7)) return 0;
+    const char *n = x, *r = ram_name(x);
+    snprintf(out, 2048, "%s", r ? ramdir : rg_savedir);
+    return lookup_in(r ? r : n, out);
+}
+
 /* a file to read: the saved copy if the program has written one */
 int hostpath_read(const char *name, char *out)
 {
-    struct stat st;
-    save_path(name, out, 0);
-    if (stat(out, &st) == 0) return 1;
+    if (saved_path(name, out)) return 1;
     return hostpath(name, out);
+}
+
+/* the ",xxx" (filetype) or ",llllllll-eeeeeeee" suffix for catalogue
+ * information, as the extracted files have */
+static void type_suffix(char *path, uint32_t load, uint32_t exec)
+{
+    size_t l = strlen(path);
+    if ((load & 0xFFF00000u) == 0xFFF00000u) snprintf(path + l, 2048 - l, ",%03x", (load >> 8) & 0xFFF);
+    else snprintf(path + l, 2048 - l, ",%08x-%08x", load, exec);
+}
+
+/* write memory to a file (in savedir), replacing the program's copy */
+int save_file_typed(const char *name, uint32_t addr, uint32_t len, uint32_t load, uint32_t exec)
+{
+    char spath[2048];
+    delete_object(name);
+    save_path(name, spath, 1);
+    type_suffix(spath, load, exec);
+    FILE *f = fopen(spath, "wb");
+    if (!f) return 0;
+    fwrite(MEM + addr, 1, len, f);
+    fclose(f);
+    return 1;
+}
+
+/* set a file's catalogue information: the program's copy renamed, or the
+ * original copied there under the new suffix */
+static int set_info(const char *name, uint32_t load, uint32_t exec)
+{
+    char old[2048], spath[2048];
+    int saved = saved_path(name, old);
+    if (!saved && !hostpath(name, old)) return 0;
+    save_path(name, spath, 1);
+    type_suffix(spath, load, exec);
+    if (!strcmp(old, spath)) return 1;
+    if (saved) return rename(old, spath) == 0;
+    FILE *in = fopen(old, "rb"), *out = in ? fopen(spath, "wb") : NULL;
+    if (out) { char buf[65536]; size_t m; while ((m = fread(buf, 1, sizeof buf, in))) fwrite(buf, 1, m, out); fclose(out); }
+    if (in) fclose(in);
+    return out != NULL;
 }
 
 /* write memory to a file (in savedir) */
@@ -196,7 +261,19 @@ static void os_file(void)
     int n = cstr(R[1], name, 1);
     ev("OS_File", "is", op, name, n);
     if (op == 0 || op == 10) {                                    /* save (with load/exec, filetype) */
-        if (!save_file(name, R[4], R[5] - R[4]) && swi_x) VF = 1;   /* R4 start, R5 end */
+        uint32_t load = op == 10 ? 0xFFF00000u | (R[2] & 0xFFF) << 8 : R[2], exec = op == 10 ? 0 : R[3];
+        if (!save_file_typed(name, R[4], R[5] - R[4], load, exec) && swi_x) VF = 1;   /* R4 start, R5 end */
+        return;
+    }
+    if ((op >= 1 && op <= 4) || op == 18) {                      /* write catalogue information */
+        char p[2048];
+        uint32_t load, exec;
+        if (!hostpath_read(name, p)) { if (swi_x) VF = 1; return; }
+        file_info(p, &load, &exec);
+        if (op == 18) load = 0xFFF00000u | (R[2] & 0xFFF) << 8;
+        if (op == 1 || op == 2) load = R[2];
+        if (op == 1 || op == 3) exec = R[3];
+        if (op != 4 && !set_info(name, load, exec) && swi_x) VF = 1;   /* (4: attributes, ignored) */
         return;
     }
     int ok;
@@ -333,10 +410,9 @@ static uint32_t open_handle(uint32_t reason, const char *name)
     int k;
     for (k = 0; k < NHANDLES && handles[k]; k++) ;
     if (k == NHANDLES) return 0;
-    save_path(name, spath, (reason & 0xC0) != 0x40);
+    int saved = saved_path(name, spath);
+    if (!saved) save_path(name, spath, (reason & 0xC0) != 0x40);
     FILE *f = NULL;
-    struct stat st;
-    int saved = stat(spath, &st) == 0;
     if ((reason & 0xC0) == 0x40) {                         /* open for input */
         if (saved) f = fopen(spath, "rb");
         else if (hostpath(name, path)) f = fopen(path, "rb");
@@ -474,6 +550,15 @@ uint32_t sys_sprites(void)
         WR32(SYS_SPRITES + 8, 16); WR32(SYS_SPRITES + 12, 16);
     }
     return SYS_SPRITES;
+}
+/* The Wimp's sprite pool (*IconSprites fills it; Wimp_SpriteOp reads it) */
+uint32_t wimp_sprites(void)
+{
+    if (!RD32(WIMP_SPRITES)) {
+        WR32(WIMP_SPRITES, SYS_SPRITES_MAX); WR32(WIMP_SPRITES + 4, 0);
+        WR32(WIMP_SPRITES + 8, 16); WR32(WIMP_SPRITES + 12, 16);
+    }
+    return WIMP_SPRITES;
 }
 uint32_t sprite_area(void) { return R[0] & 0x300 ? R[1] : sys_sprites(); }
 

@@ -123,6 +123,8 @@ struct roger_config {
                                              pointer hit point */
     int relative_mouse;                   /* capture the host mouse (relative motion) while the
                                              program keeps re-centring the pointer */
+    int ctrl_meta_keys;                   /* the runtime's keys are Ctrl+F10/F11/F12 (shaders,
+                                             fullscreen, screenshot), leaving F10-F12 to the game */
     const struct roger_click *clicks;     /* headless scenario */
     unsigned nclicks;
     const struct roger_key *keys;
@@ -189,6 +191,10 @@ void roger_wimp_click(int32_t window, int32_t icon, uint32_t buttons);   /* Mous
                                                           is the icon bar; buttons 4 select, 2 menu */
 void roger_wimp_menu(const int *items);                /* Menu_Selection: item indices, ending -1 */
 void roger_wimp_quit(void);                            /* Message_Quit */
+int32_t roger_wimp_menu_window(void);                  /* the dialogue box open as a menu, or 0 */
+void roger_wimp_save_to(const char *path);             /* the next save dragged out goes to path
+                                                          (a Filer under the pointer; "" none) */
+uint32_t roger_wimp_icon_buffer(int32_t window, int icon);   /* an icon's indirected text (0: none) */
 void roger_audio_out(const int16_t *lr, int frames, int rate);   /* host audio (stereo) */
 extern uint32_t vidc_palette[16];                      /* live VIDC palette (0x0BGR) */
 extern uint32_t vidc_palette_top[16];                  /* palette above palette_split */

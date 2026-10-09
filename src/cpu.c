@@ -154,6 +154,7 @@ void call_addr(uint32_t a)
 {
     if (a == RETURN_TO_OS) finish("returned to OS");
     if (rg->call_addr && rg->call_addr(a)) return;
+    if (clib_dispatch(a)) return;             /* the Shared C Library (clib.c) */
     if (rg->relocations)
         for (const struct roger_relocation *r = rg->relocations; r->image; r++)
             if (prog.img == r->image && a >= r->to && a < r->to + r->len) {
