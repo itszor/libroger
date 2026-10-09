@@ -15,7 +15,7 @@ libroger.a: $(OBJS)
 build/%.o: src/%.c src/internal.h include/roger.h include/roger_cpu.h | build
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -Iinclude -c -o $@ $<
 
-# the desktop's backdrop (desktop/mkbackdrop.py makes desktop/backdrop.png)
+# the desktop's backdrop
 build/backdrop.o: src/backdrop.S desktop/backdrop.png | build
 	$(CC) -c -o $@ $<
 

@@ -501,12 +501,31 @@ static void vdu_window(int32_t x0, int32_t y0, int32_t x1, int32_t y1)   /* VDU 
     for (int k = 0; k < 4; k++) { vdu_put(v[k] & 0xFF); vdu_put(v[k] >> 8 & 0xFF); }
 }
 
+/* Where the program draws a window: where it is, or (on a desktop larger
+ * than the program's screen) moved as little as will put it on the screen
+ * - the redraw block gives it there, and the desktop shows it where it is */
+static void canvas_shift(const struct win *w, int32_t *dx, int32_t *dy)
+{
+    const struct rg_mode *m = cur_mode();
+    int32_t sw = m->width << m->xeig, sh = m->height << m->yeig;
+    int32_t vx0 = (int32_t)w32(w->blk), vy0 = (int32_t)w32(w->blk + 4);
+    int32_t vx1 = (int32_t)w32(w->blk + 8), vy1 = (int32_t)w32(w->blk + 12);
+    *dx = vx1 > sw ? sw - vx1 : 0;
+    if (vx0 + *dx < 0) *dx = -vx0;
+    *dy = vy1 > sh ? sh - vy1 : 0;
+    if (vy0 + *dy < 0) *dy = -vy0;
+}
+
 static void redraw_start(uint32_t blk, int update)
 {
     struct win *w = win_of(RD32(blk));
     if (!rg_desktop || !w || w == &iconbar || !(w32(w->blk + 28) & WIN_OPEN)) { R[0] = 0; return; }
-    int32_t vx0 = (int32_t)w32(w->blk), vy0 = (int32_t)w32(w->blk + 4);
-    int32_t vx1 = (int32_t)w32(w->blk + 8), vy1 = (int32_t)w32(w->blk + 12);
+    int32_t dx, dy;
+    canvas_shift(w, &dx, &dy);
+    const struct rg_mode *m = cur_mode();
+    int32_t sw = m->width << m->xeig, sh = m->height << m->yeig;
+    int32_t vx0 = (int32_t)w32(w->blk) + dx, vy0 = (int32_t)w32(w->blk + 4) + dy;
+    int32_t vx1 = (int32_t)w32(w->blk + 8) + dx, vy1 = (int32_t)w32(w->blk + 12) + dy;
     int32_t r[4] = {vx0, vy0, vx1, vy1};
     uint32_t size = screen_size(), base = screen_base();
     if (update) {                                    /* +4 a work area box */
@@ -522,9 +541,11 @@ static void redraw_start(uint32_t blk, int update)
     }
     if (r[0] < 0) r[0] = 0;
     if (r[1] < 0) r[1] = 0;
-    if (r[2] > 1280) r[2] = 1280;
-    if (r[3] > 1024) r[3] = 1024;
-    memcpy(MEM + blk + 4, w->blk, 24);
+    if (r[2] > sw) r[2] = sw;
+    if (r[3] > sh) r[3] = sh;
+    int32_t v[4] = {vx0, vy0, vx1, vy1};
+    memcpy(MEM + blk + 4, v, 16);
+    memcpy(MEM + blk + 20, w->blk + 16, 8);
     if (r[0] >= r[2] || r[1] >= r[3]) { R[0] = 0; return; }
     for (int k = 0; k < 4; k++) WR32(blk + 28 + 4 * k, r[k]);
     vdu_window(r[0], r[1], r[2] - 1, r[3] - 1);
@@ -533,6 +554,7 @@ static void redraw_start(uint32_t blk, int update)
         vdu_put(16);
     }
     redrawing = w;
+    w->back_dx = dx; w->back_dy = dy;
     R[0] = 1;
 }
 
@@ -546,7 +568,8 @@ static void redraw_next(void)                       /* Wimp_GetRectangle: there'
     if (w->back_size != size) { free(w->back); w->back = malloc(size); w->back_size = size; }
     if (w->back) memcpy(w->back, MEM + screen_base(), size);
     memcpy(w->back_vis, w->blk, 24);
-    vdu_window(0, 0, 1279, 1023);
+    const struct rg_mode *m = cur_mode();
+    vdu_window(0, 0, (m->width << m->xeig) - 1, (m->height << m->yeig) - 1);
 }
 
 /* ---------------------------------------------------------------- SWIs */

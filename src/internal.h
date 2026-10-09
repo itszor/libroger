@@ -206,6 +206,7 @@ struct win {
     uint8_t *back;                        /* what the program last drew in it: screen memory */
     uint32_t back_size;                   /* (valid within its visible area) */
     int32_t back_vis[6];                  /* the visible area and scroll it was drawn for */
+    int32_t back_dx, back_dy;             /* ...moved by this to lie on the program's screen */
     int32_t full_prev[4];                 /* toggle size: the visible area before */
 };
 extern struct win wimp_iconbar;
@@ -222,8 +223,9 @@ uint32_t wimp_rd(const uint8_t *p);       /* a little-endian word of a block */
 
 /* desktop.c: the desktop drawn and used for real (--desktop), in place of
  * the wimp_idle hook */
-extern int rg_desktop;
+extern int rg_desktop, rg_desktop_w, rg_desktop_h, rg_windowed_games;
 int  desktop_visible(void);
+int  desktop_size(int *w, int *h);        /* in OS units */
 void desktop_init(void);
 void desktop_enter(void);                 /* the program is (back) in the desktop */
 void desktop_mode_changed(void);          /* ...and has left it for a screen of its own */
@@ -256,6 +258,10 @@ void display_cycle_shader(int dir);       /* F10 / Shift+F10 */
 void display_list_modes(void);
 void display_present(const uint8_t *pixels);
 void display_present_rgb(const uint32_t *rgb, int w, int h, float aspect);   /* &RRGGBB pixels */
+void display_present_desktop(const uint32_t *rgb, int w, int h);   /* ...pixel for pixel */
+void display_output_size(int *w, int *h); /* the window's size in pixels */
+int  display_fullscreen(void);
+void display_set_fullscreen(int on);
 void display_screenshot_rgb(const uint32_t *rgb, int w, int h, const char *path);
 void display_poll(void);
 uint64_t display_ticks_ns(void);

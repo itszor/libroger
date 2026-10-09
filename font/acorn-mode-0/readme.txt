@@ -1,15 +1,9 @@
 ﻿The font file in this archive was created using Fontstruct the free, online
 font-building tool.
-This font was created by “p1.mark”*.
+This font was created by “p1.mark”.
 This font has a homepage where this archive and other versions may be found:
-https://fontstruct.com/fontstructions/show/1281326
-
-*NOTE: “Acorn Mode 0 New” was originally cloned (copied) from the
-FontStruction “Acorn Mode 0”
-(https://fontstruct.com/fontstructions/show/1271339) by “p1.mark”, which is
-licensed under a Creative Commons Attribution Share Alike license
-(http://creativecommons.org/licenses/by-sa/3.0/).
-
+https://fontstruct.com/fontstructions/show/1271339
+[ancestry]
 Try Fontstruct at https://fontstruct.com
 It’s easy and it’s fun.
 

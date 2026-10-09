@@ -1,4 +1,4 @@
-/* The desktop's backdrop (desktop/backdrop.png, from desktop/mkbackdrop.py),
+/* The desktop's backdrop (desktop/backdrop.png, scaled by desktop.c),
  * embedded for desktop.c */
     .section .rodata
     .global roger_backdrop_png

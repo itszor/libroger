@@ -2,8 +2,9 @@
  * real, for a program that is a Wimp task - in place of the wimp_idle
  * hook, the user works its icon bar icon, menus and windows.
  *
- * A 640x512 screen of square pixels (2 OS units each, so 1280x1024 OS
- * units as a program expects) in RISC OS 3.1's look: the backdrop
+ * A screen the size of the window, pixel for pixel (each 2x2 OS units, so
+ * a 640x512 window is the 1280x1024 OS units a program expects; a larger
+ * one, more desktop - never scaled), in RISC OS 3.1's look: the backdrop
  * (desktop/backdrop.png, embedded), the icon bar along the bottom - the
  * program's icons on its right (window -1) or left (-2) - the program's
  * windows with their furniture (title bar, back, close and toggle-size
@@ -16,7 +17,8 @@
  *
  * The desktop shows from Wimp_Initialise and whenever the program is in
  * Wimp_Poll; a mode change after that (the program taking the screen for
- * itself) shows the program's screen instead, until it polls again.
+ * itself) shows the program's screen instead - fullscreen, unless
+ * --windowed-games - until it polls again.
  * Input is taken only while the program is in Wimp_Poll, as the Wimp
  * does: mouse_x/mouse_y/mouse_buttons and the keyboard, so --script drives
  * it too, in headless runs as well (screenshots show the desktop). */
@@ -30,8 +32,9 @@ int rg_desktop;
 static int visible;
 int desktop_visible(void) { return visible; }
 
-#define DW 640
-#define DH 512
+static int dw, dh;                                /* the desktop's size in pixels: the window's */
+#define SW (2 * dw)                               /* ...in OS units */
+#define SH (2 * dh)
 #define BAR_H      96                     /* the icon bar's height (OS units) */
 #define BAR_ORG    16                     /* its icons' y origin */
 #define BAR_GAP    24                     /* between its icons, and at the ends */
@@ -44,7 +47,7 @@ int desktop_visible(void) { return visible; }
 #define CHAR_W     16                     /* the system font: 16x32 OS units */
 #define CHAR_H     32
 
-static uint32_t fb[DW * DH];
+static uint32_t *fb;
 
 /* The Wimp's 16 colours */
 static const uint32_t wimp_rgb[16] = {
@@ -63,12 +66,12 @@ static int imax(int a, int b) { return a > b ? a : b; }
 /* ---------------------------------------------------------------- drawing
  * Pixels (x right, y down) and OS units (x right, y up: a pixel covers 2x2) */
 #define PX(x) ((x) >> 1)
-#define PY(y) ((1024 - (y)) >> 1)
-static int cl_x0, cl_y0, cl_x1 = DW, cl_y1 = DH;
+#define PY(y) ((SH - (y)) >> 1)
+static int cl_x0, cl_y0, cl_x1, cl_y1;
 
 static void clip_px(int x0, int y0, int x1, int y1)
 {
-    cl_x0 = imax(x0, 0); cl_y0 = imax(y0, 0); cl_x1 = imin(x1, DW); cl_y1 = imin(y1, DH);
+    cl_x0 = imax(x0, 0); cl_y0 = imax(y0, 0); cl_x1 = imin(x1, dw); cl_y1 = imin(y1, dh);
 }
 static void clip_os(int x0, int y0, int x1, int y1) { clip_px(PX(x0), PY(y1), PX(x1), PY(y0)); }
 static void clip_and_os(int x0, int y0, int x1, int y1)   /* narrow the clip */
@@ -76,19 +79,19 @@ static void clip_and_os(int x0, int y0, int x1, int y1)   /* narrow the clip */
     cl_x0 = imax(cl_x0, PX(x0)); cl_y0 = imax(cl_y0, PY(y1));
     cl_x1 = imin(cl_x1, PX(x1)); cl_y1 = imin(cl_y1, PY(y0));
 }
-static void clip_all(void) { clip_px(0, 0, DW, DH); }
+static void clip_all(void) { clip_px(0, 0, dw, dh); }
 static void clip_save(int *c) { c[0] = cl_x0; c[1] = cl_y0; c[2] = cl_x1; c[3] = cl_y1; }
 static void clip_restore(const int *c) { cl_x0 = c[0]; cl_y0 = c[1]; cl_x1 = c[2]; cl_y1 = c[3]; }
 
 static void dot(int x, int y, uint32_t c)
 {
-    if (x >= cl_x0 && x < cl_x1 && y >= cl_y0 && y < cl_y1) fb[y * DW + x] = c;
+    if (x >= cl_x0 && x < cl_x1 && y >= cl_y0 && y < cl_y1) fb[y * dw + x] = c;
 }
 static void fill_px(int x0, int y0, int x1, int y1, uint32_t c)
 {
     x0 = imax(x0, cl_x0); y0 = imax(y0, cl_y0); x1 = imin(x1, cl_x1); y1 = imin(y1, cl_y1);
     for (int y = y0; y < y1; y++)
-        for (int x = x0; x < x1; x++) fb[y * DW + x] = c;
+        for (int x = x0; x < x1; x++) fb[y * dw + x] = c;
 }
 static void frame_px(int x0, int y0, int x1, int y1, uint32_t c)   /* 1 pixel inside the rectangle */
 {
@@ -107,39 +110,83 @@ static uint32_t blend(uint32_t a, uint32_t b)              /* halfway */
     return ((a >> 1) & 0x7F7F7F) + ((b >> 1) & 0x7F7F7F);
 }
 
-/* Text in the system font, 8x16 pixels (16x32 OS units): Acorn Mode 0 New
- * (desktop_font.c), or for a character it hasn't, the VDU drivers' 8x8
- * one drawn double height. x, y the top left in pixels. */
-extern const uint8_t roger_desktop_font[256][16], roger_desktop_font_has[256], roger_font[256][8];
+/* Text in the system font: the 8x8 character set (font.c, Acorn Mode 0)
+ * drawn double height, 8x16 pixels (16x32 OS units). x, y the top left in
+ * pixels. */
+extern const uint8_t roger_font[256][8];
 static void text_px(int x, int y, const char *s, int n, uint32_t c)
 {
-    for (int k = 0; k < n; k++, x += 8) {
-        uint8_t ch = (uint8_t)s[k];
-        for (int r = 0; r < 16; r++) {
-            uint8_t bits = roger_desktop_font_has[ch] ? roger_desktop_font[ch][r] : roger_font[ch][r >> 1];
+    for (int k = 0; k < n; k++, x += 8)
+        for (int r = 0; r < 8; r++) {
+            uint8_t bits = roger_font[(uint8_t)s[k]][r];
             for (int b = 0; bits && b < 8; b++)
-                if (bits & (0x80 >> b)) dot(x + b, y + r, c);
+                if (bits & (0x80 >> b)) { dot(x + b, y + 2 * r, c); dot(x + b, y + 2 * r + 1, c); }
         }
-    }
 }
 static void text_os(int x, int ytop, const char *s, int n, uint32_t c) { text_px(PX(x), PY(ytop), s, n, c); }
 
-/* ---------------------------------------------------------------- the backdrop */
+/* ---------------------------------------------------------------- the backdrop
+ * desktop/backdrop.png, embedded (src/backdrop.S), scaled to cover the
+ * screen above the icon bar - cropped more at the left than the right -
+ * whenever the desktop's size changes */
 extern const uint8_t roger_backdrop_png[], roger_backdrop_png_end[];
-static uint32_t *backdrop;
-static int bd_w, bd_h;
+static uint32_t *picture, *backdrop;              /* as loaded; as shown (dw x the height above the bar) */
+static int pic_w, pic_h;
 
 void desktop_init(void)
 {
     SDL_IOStream *io = SDL_IOFromConstMem(roger_backdrop_png, (size_t)(roger_backdrop_png_end - roger_backdrop_png));
     SDL_Surface *s = io ? SDL_LoadPNG_IO(io, true) : NULL;
     SDL_Surface *c = s ? SDL_ConvertSurface(s, SDL_PIXELFORMAT_XRGB8888) : NULL;
-    if (c && (backdrop = SDL_malloc((size_t)c->w * c->h * 4))) {
-        bd_w = c->w; bd_h = c->h;
-        for (int y = 0; y < bd_h; y++) memcpy(backdrop + (size_t)y * bd_w, (uint8_t *)c->pixels + y * c->pitch, (size_t)bd_w * 4);
+    if (c && (picture = SDL_malloc((size_t)c->w * c->h * 4))) {
+        pic_w = c->w; pic_h = c->h;
+        for (int y = 0; y < pic_h; y++) memcpy(picture + (size_t)y * pic_w, (uint8_t *)c->pixels + y * c->pitch, (size_t)pic_w * 4);
     } else fprintf(stderr, "desktop: no backdrop (%s)\n", SDL_GetError());
     SDL_DestroySurface(c);
     SDL_DestroySurface(s);
+}
+
+/* the picture scaled by area (each pixel the average of what it covers) */
+static void scale_backdrop(int w, int h)
+{
+    SDL_free(backdrop);
+    backdrop = NULL;
+    if (!picture || w <= 0 || h <= 0 || !(backdrop = SDL_malloc((size_t)w * h * 4))) return;
+    double sc = (double)w / pic_w > (double)h / pic_h ? (double)w / pic_w : (double)h / pic_h;
+    double ox = (pic_w * sc - w) * 0.8, oy = (pic_h * sc - h) / 2;   /* the crop */
+    for (int y = 0; y < h; y++) {
+        double sy0 = (y + oy) / sc, sy1 = (y + 1 + oy) / sc;
+        for (int x = 0; x < w; x++) {
+            double sx0 = (x + ox) / sc, sx1 = (x + 1 + ox) / sc, acc[3] = {0, 0, 0}, area = 0;
+            for (int py = (int)sy0; py < sy1 && py < pic_h; py++) {
+                double fy = (py + 1 < sy1 ? py + 1 : sy1) - (py > sy0 ? py : sy0);
+                for (int px = (int)sx0; px < sx1 && px < pic_w; px++) {
+                    double f = fy * ((px + 1 < sx1 ? px + 1 : sx1) - (px > sx0 ? px : sx0));
+                    uint32_t c = picture[(size_t)py * pic_w + px];
+                    acc[0] += f * (c >> 16 & 0xFF); acc[1] += f * (c >> 8 & 0xFF); acc[2] += f * (c & 0xFF);
+                    area += f;
+                }
+            }
+            if (area <= 0) area = 1;
+            backdrop[(size_t)y * w + x] = (uint32_t)(acc[0] / area + 0.5) << 16 | (uint32_t)(acc[1] / area + 0.5) << 8 |
+                                          (uint32_t)(acc[2] / area + 0.5);
+        }
+    }
+}
+
+/* The desktop's size: the window's in pixels (interactive), or as
+ * --desktop=WxH gave it */
+int rg_desktop_w = 1024, rg_desktop_h = 768;
+static void fit_window(void)
+{
+    int w = rg_desktop_w, h = rg_desktop_h;
+    if (rg_interactive) display_output_size(&w, &h);
+    w = imax(320, imin(w, 4096)); h = imax(240, imin(h, 4096));
+    if (w == dw && h == dh && fb) return;
+    uint32_t *n = SDL_realloc(fb, (size_t)w * h * 4);
+    if (!n) return;
+    fb = n; dw = w; dh = h;
+    scale_backdrop(dw, PY(BAR_H));
 }
 
 /* ---------------------------------------------------------------- sprites
@@ -340,7 +387,7 @@ static void draw_sprite(const struct spr *p, int x, int y, int half, int effect)
             if (!solid) continue;
             if (effect == 1) c = blend(c, COL(1));
             else if (effect == 2) c = (c >> 1) & 0x7F7F7F;
-            fb[py * DW + px] = c;
+            fb[py * dw + px] = c;
         }
     }
 }
@@ -662,13 +709,15 @@ static void draw_user_picture(const struct win *w, const struct geom *g)
     int c[4];
     clip_save(c);
     clip_and_os(g->vx0, g->vy0, g->vx1, g->vy1);
-    for (int py = cl_y0; py < cl_y1; py++) {
-        int my = m->height - 1 - ((1023 - 2 * py) >> m->yeig);
-        if (my < 0 || my >= m->height) continue;
+    for (int py = cl_y0; py < cl_y1; py++) {          /* (where the program drew it: back_dx/dy) */
+        int cy = SH - 1 - 2 * py + w->back_dy;
+        int my = m->height - 1 - (cy >> m->yeig);
+        if (cy < 0 || my < 0 || my >= m->height) continue;
         const uint8_t *row = w->back + off + my * lb;
         for (int px = cl_x0; px < cl_x1; px++) {
-            int mx = (2 * px) >> m->xeig;
-            if (mx >= m->width) continue;
+            int cx = 2 * px + w->back_dx;
+            int mx = cx >> m->xeig;
+            if (cx < 0 || mx >= m->width) continue;
             uint32_t col;
             if (m->bpp == 32) col = (uint32_t)row[mx * 4] << 16 | (uint32_t)row[mx * 4 + 1] << 8 | row[mx * 4 + 2];
             else if (m->bpp == 16) {
@@ -678,7 +727,7 @@ static void draw_user_picture(const struct win *w, const struct geom *g)
                 int per = 8 / m->bpp, bit = (mx % per) * m->bpp;
                 col = pal[row[mx / per] >> bit & ((1 << m->bpp) - 1)];
             }
-            fb[py * DW + px] = col;
+            fb[py * dw + px] = col;
         }
     }
     clip_restore(c);
@@ -772,7 +821,7 @@ static int bar_dx[WIMP_MAXICON];                  /* each icon's x origin */
 static void layout_bar(void)
 {
     struct win *w = &wimp_iconbar;
-    int left = BAR_GAP, right = 1280 - BAR_GAP;
+    int left = BAR_GAP, right = SW - BAR_GAP;
     for (int i = 0; i < w->nicons; i++) {
         if (!w->used[i]) continue;
         char t[256];
@@ -788,9 +837,9 @@ static void draw_bar(void)
 {
     struct win *w = &wimp_iconbar;
     clip_all();
-    fill_os(0, 0, 1280, BAR_H, COL(1));
-    fill_os(0, BAR_H - B, 1280, BAR_H, COL(7));
-    clip_os(0, 0, 1280, BAR_H - B);
+    fill_os(0, 0, SW, BAR_H, COL(1));
+    fill_os(0, BAR_H - B, SW, BAR_H, COL(7));
+    clip_os(0, 0, SW, BAR_H - B);
     layout_bar();
     bar_icons = 1;
     for (int i = 0; i < w->nicons; i++)
@@ -888,10 +937,10 @@ static void open_level(uint32_t menu, int x, int y, int left)
         struct geom g;
         geom_of(w, &g);
         int r = g.o[2] - g.vx1, t = g.o[3] - g.vy1, lft = g.vx0 - g.o[0], bot = g.vy0 - g.o[1];
-        if (x + wd + r > 1280 && left > 0) x = left - r - wd;
-        if (x + wd + r > 1280) x = 1280 - r - wd;               /* kept on the screen */
+        if (x + wd + r > SW && left > 0) x = left - r - wd;
+        if (x + wd + r > SW) x = SW - r - wd;               /* kept on the screen */
         if (x - lft < 0) x = lft;
-        if (y + t > 1024) y = 1024 - t;
+        if (y + t > SH) y = SH - t;
         if (y - ht - bot < 0) y = ht + bot;
         uint32_t v[4] = {(uint32_t)x, (uint32_t)(y - ht), (uint32_t)(x + wd), (uint32_t)y};
         memcpy(o, v, 16);
@@ -918,11 +967,11 @@ static void open_level(uint32_t menu, int x, int y, int left)
         if (rd(menu + 28 + 24 * i) & 0x80) break;
     }
     l->w = wd + MENU_TICK + MENU_ARROW;
-    if (l->x + l->w + B > 1280 && left > 0) l->x = left - B - l->w;
-    if (l->x + l->w + B > 1280) l->x = 1280 - B - l->w;          /* kept on the screen */
+    if (l->x + l->w + B > SW && left > 0) l->x = left - B - l->w;
+    if (l->x + l->w + B > SW) l->x = SW - B - l->w;          /* kept on the screen */
     if (l->x < B) l->x = B;
     if (menu_bottom(l) - B < 0) l->y -= menu_bottom(l) - B;
-    if (l->y + TB > 1024) l->y = 1024 - TB;
+    if (l->y + TB > SH) l->y = SH - TB;
     nlv++;
 }
 
@@ -1015,12 +1064,11 @@ static struct {                                   /* Wimp_DragBox (or 0) */
 
 static void render(void)
 {
+    fit_window();
     clip_all();
-    fill_px(0, 0, DW, DH, COL(4));
-    if (backdrop) {
-        int h = imin(bd_h, PY(BAR_H)), w = imin(bd_w, DW);
-        for (int y = 0; y < h; y++) memcpy(fb + y * DW, backdrop + (size_t)y * bd_w, (size_t)w * 4);
-    }
+    fill_px(0, 0, dw, dh, COL(4));
+    if (backdrop)
+        memcpy(fb, backdrop, (size_t)dw * PY(BAR_H) * 4);
     draw_bar();
     struct win *st[WIMP_MAXWIN];
     int n = wimp_stack(st);
@@ -1040,20 +1088,29 @@ static void render(void)
     }
 }
 
+/* shown pixel for pixel, never through a display shader */
 void desktop_present(void)
 {
     render();
-    display_present_rgb(fb, DW, DH, 1.25f);
+    display_present_desktop(fb, dw, dh);
 }
 
 void desktop_screenshot(const char *path)
 {
     render();
-    display_screenshot_rgb(fb, DW, DH, path);
+    display_screenshot_rgb(fb, dw, dh, path);
+}
+
+int desktop_size(int *w, int *h)
+{
+    if (!fb) fit_window();
+    *w = SW; *h = SH;
+    return fb != NULL;
 }
 
 /* ---------------------------------------------------------------- entering and leaving */
-static int sprites_merged;
+static int sprites_merged, auto_fullscreen;
+int rg_windowed_games;
 void desktop_enter(void)
 {
     if (!sprites_merged) {                        /* the application's icons, as the Filer loads */
@@ -1073,12 +1130,25 @@ void desktop_enter(void)
     }
     if (visible) return;
     visible = 1;
+    if (auto_fullscreen) { auto_fullscreen = 0; display_set_fullscreen(0); }
     if (cur_mode()->bpp <= 4)                     /* the Wimp's palette */
         for (int k = 0; k < 16; k++) vidc_palette[k] = vidc_palette_top[k] = wimp_vidc[k];
     vdu_put(5);                                   /* text at the graphics cursor, as in the desktop */
 }
 
-void desktop_mode_changed(void) { visible = 0; close_levels(0); }
+/* The program takes the screen for itself: fullscreen, unless the window
+ * was already (or --windowed-games) - and back in the window when it
+ * returns to the desktop */
+void desktop_mode_changed(void)
+{
+    if (!visible) return;
+    visible = 0;
+    close_levels(0);
+    if (rg_interactive && !rg_windowed_games && !display_fullscreen()) {
+        auto_fullscreen = 1;
+        display_set_fullscreen(1);
+    }
+}
 
 /* ---------------------------------------------------------------- input */
 static int prev_buttons;
@@ -1150,11 +1220,11 @@ static void toggle_size(struct win *w)
     struct geom g;
     geom_of(w, &g);
     int32_t full[4] = {g.vx0, g.vy1 - (g.ey1 - g.ey0), g.vx0 + (g.ex1 - g.ex0), g.vy1};
-    if (full[2] > 1280 - (g.o[2] - g.vx1)) { full[0] -= full[2] - (1280 - (g.o[2] - g.vx1)); full[2] = 1280 - (g.o[2] - g.vx1); }
+    if (full[2] > SW - (g.o[2] - g.vx1)) { full[0] -= full[2] - (SW - (g.o[2] - g.vx1)); full[2] = SW - (g.o[2] - g.vx1); }
     if (full[0] < g.vx0 - g.o[0]) full[0] = g.vx0 - g.o[0];
     if (full[1] < BAR_H + (g.vy0 - g.o[1])) {
         full[1] = BAR_H + (g.vy0 - g.o[1]);
-        full[3] = imin(full[1] + (g.ey1 - g.ey0), 1024 - (g.o[3] - g.vy1));
+        full[3] = imin(full[1] + (g.ey1 - g.ey0), SH - (g.o[3] - g.vy1));
     }
     int is_full = g.vx0 == full[0] && g.vy0 == full[1] && g.vx1 == full[2] && g.vy1 == full[3];
     int32_t vis[4];
@@ -1389,8 +1459,8 @@ static void held(int x, int y)
     case P_TITLE: {
         if (!(g.f & 0x40)) {                      /* kept on the screen */
             if (g.o[0] + dx < 0) dx = -g.o[0];
-            if (g.o[2] + dx > 1280) dx = 1280 - g.o[2];
-            if (g.o[3] + dy > 1024) dy = 1024 - g.o[3];
+            if (g.o[2] + dx > SW) dx = SW - g.o[2];
+            if (g.o[3] + dy > SH) dy = SH - g.o[3];
             if (g.o[1] + dy < 0) dy = -g.o[1];
         }
         vis[0] += dx; vis[2] += dx; vis[1] += dy; vis[3] += dy;
@@ -1555,6 +1625,7 @@ static void keys(void)
 /* ---------------------------------------------------------------- the user */
 void desktop_input(void)
 {
+    fit_window();
     int x = mouse_x, y = mouse_y, b = mouse_buttons;
     keys();
     if (ubox.type) { drag_box_input(x, y, b); prev_buttons = b; return; }

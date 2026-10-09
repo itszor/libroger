@@ -192,7 +192,8 @@ int display_init(int scale, const char *fs, const char *shader)
         SDL_Log("SDL_Init: %s", SDL_GetError());
         return 0;
     }
-    win = SDL_CreateWindow(rg->title ? rg->title : "libroger", 256 * scale, 192 * scale, SDL_WINDOW_RESIZABLE);
+    win = rg_desktop ? SDL_CreateWindow(rg->title ? rg->title : "libroger", rg_desktop_w, rg_desktop_h, SDL_WINDOW_RESIZABLE)
+                     : SDL_CreateWindow(rg->title ? rg->title : "libroger", 256 * scale, 192 * scale, SDL_WINDOW_RESIZABLE);
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 0; }
     if (SDL_GetModState() & SDL_KMOD_CAPS) kbd_status &= ~0x10;   /* Caps Lock as the host has it */
     ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
@@ -264,13 +265,59 @@ static void convert_line(const uint8_t *pix, int y, uint32_t *row)
         row[x] = pal[bpp == 8 ? src[x] : (src[x / per] >> ((x % per) * bpp)) & mask];
 }
 
-/* Show a frame of host colours (&RRGGBB) at the shape given (display
- * width / height): the game's screen, or the desktop */
-void display_present_rgb(const uint32_t *rgb, int width, int height, float aspect)
+/* a frame into the texture, which is made its size */
+static int upload(const uint32_t *rgb, int width, int height)
 {
     uint32_t *out;
     int pitch;
+    if (width != tex_w || height != tex_h) {     /* one texel per pixel */
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+        tex_w = width; tex_h = height;
+    }
+    if (!SDL_LockTexture(tex, NULL, (void **)&out, &pitch)) return 0;
+    for (int y = 0; y < height; y++) memcpy((uint8_t *)out + y * pitch, rgb + (size_t)y * width, (size_t)width * 4);
+    SDL_UnlockTexture(tex);
+    return 1;
+}
+
+/* The desktop is shown as it is, pixel for pixel at the top left of the
+ * window (it's made the window's size: display_output_size()), never
+ * scaled or through a shader */
+static int desk;                                  /* the desktop is showing */
+void display_output_size(int *w, int *h)
+{
+    if (!SDL_GetRenderOutputSize(ren, w, h)) SDL_GetWindowSizeInPixels(win, w, h);
+}
+void display_present_desktop(const uint32_t *rgb, int width, int height)
+{
+    if (!desk) {
+        desk = 1;
+        SDL_SetRenderLogicalPresentation(ren, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    }
+    if (!upload(rgb, width, height)) return;
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderClear(ren);
+    SDL_FRect d = {0, 0, (float)width, (float)height};
+    SDL_RenderTexture(ren, tex, NULL, &d);
+    SDL_RenderPresent(ren);
+}
+
+int display_fullscreen(void) { return fullscreen; }
+void display_set_fullscreen(int on)
+{
+    if (!win || !on == !fullscreen) return;
+    fullscreen = on;
+    apply_fullscreen();
+}
+
+/* Show a frame of host colours (&RRGGBB) at the shape given (display
+ * width / height), letterboxed: the game's screen */
+void display_present_rgb(const uint32_t *rgb, int width, int height, float aspect)
+{
     int want = (int)(LH * aspect + 0.5f);
+    if (desk) { desk = 0; lw = 0; }              /* back from the desktop */
     if (want != lw) {                            /* the shape changed */
         lw = want;
         SDL_SetRenderLogicalPresentation(ren, lw, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -278,15 +325,7 @@ void display_present_rgb(const uint32_t *rgb, int width, int height, float aspec
         if (!fullscreen && SDL_GetWindowSize(win, &ww, &wh))
             SDL_SetWindowSize(win, wh * lw / LH, wh);
     }
-    if (width != tex_w || height != tex_h) {     /* one texel per pixel */
-        if (tex) SDL_DestroyTexture(tex);
-        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
-        tex_w = width; tex_h = height;
-    }
-    if (!SDL_LockTexture(tex, NULL, (void **)&out, &pitch)) return;
-    for (int y = 0; y < height; y++) memcpy((uint8_t *)out + y * pitch, rgb + (size_t)y * width, (size_t)width * 4);
-    SDL_UnlockTexture(tex);
+    if (!upload(rgb, width, height)) return;
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
     SDL_Texture *shaded = NULL;
@@ -413,11 +452,17 @@ void display_poll(void)
                 SDL_ConvertEventToRenderCoordinates(ren, &e);
                 float x = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x;
                 float y = e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y;
-                mouse_x = (int)(x * 1280 / lw);
-                mouse_y = 1023 + POINTER_Y_OFFSET - (int)(y * 1024 / LH);
+                if (desk) {                             /* the desktop: a pixel is 2x2 OS units */
+                    mouse_x = (int)x * 2;
+                    mouse_y = (tex_h - 1 - (int)y) * 2;
+                } else {
+                    mouse_x = (int)(x * 1280 / lw);
+                    mouse_y = 1023 + POINTER_Y_OFFSET - (int)(y * 1024 / LH);
+                }
             }
-            mouse_x = mouse_x < 0 ? 0 : mouse_x > 1279 ? 1279 : mouse_x;
-            mouse_y = mouse_y < 0 ? 0 : mouse_y > 1023 ? 1023 : mouse_y;
+            int mw = desk ? tex_w * 2 : 1280, mh = desk ? tex_h * 2 : 1024;
+            mouse_x = mouse_x < 0 ? 0 : mouse_x > mw - 1 ? mw - 1 : mouse_x;
+            mouse_y = mouse_y < 0 ? 0 : mouse_y > mh - 1 ? mh - 1 : mouse_y;
             if (e.type != SDL_EVENT_MOUSE_MOTION) {
                 int bit = e.button.button == SDL_BUTTON_LEFT ? 4 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : 1;
                 int kn = bit == 4 ? 9 : bit == 2 ? 10 : 11;

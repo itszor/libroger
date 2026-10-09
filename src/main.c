@@ -207,7 +207,9 @@ static void usage(const char *prog)
            "  --mips=N          the CPU's speed, interactive (0: unthrottled; default: the game's)\n"
            "  --trace-gaps      interpret untranslated code, logging it to untranslated.log\n"
            "  --full-os         VDU and sprite drivers in headless runs too\n"
-           "  --desktop         a Wimp program's desktop, drawn and used for real\n"
+           "  --desktop[=WxH]   a Wimp program's desktop, drawn and used for real (WxH:\n"
+           "                    its size in pixels, the window's to start with; 1024x768)\n"
+           "  --windowed-games  ...the program's own screen in the window, not fullscreen\n"
            "  --no-title        skip loader programs\n"
            "  --scale=N --fullscreen[=WxH@Hz] --list-modes\n"
            "  --shader=NAME     display shader (F10 / Shift+F10 cycle; --crt = --shader=crt)\n"
@@ -235,6 +237,11 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (!strcmp(argv[k], "--headless")) ;
         else if (!strcmp(argv[k], "--full-os")) rg_full_os = 1;
         else if (!strcmp(argv[k], "--desktop")) rg_desktop = rg_full_os = 1;
+        else if (!strncmp(argv[k], "--desktop=", 10)) {
+            rg_desktop = rg_full_os = 1;
+            if (sscanf(argv[k] + 10, "%dx%d", &rg_desktop_w, &rg_desktop_h) != 2) { usage(argv[0]); exit(1); }
+        }
+        else if (!strcmp(argv[k], "--windowed-games")) rg_windowed_games = 1;
         else if (!strncmp(argv[k], "--mips=", 7)) mips_opt = (float)atof(argv[k] + 7);
         else if (!strcmp(argv[k], "--trace-gaps")) rg_trace_gaps = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;

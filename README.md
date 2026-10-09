@@ -78,7 +78,7 @@ Command line (any game): `--limit=N` (headless, deterministic),
 `--script=...` (scripted input: keys, clicks, taps, screenshots - in
 headless runs too, timed in emulated milliseconds, so a scenario can be
 replayed and screenshotted deterministically),
-`--desktop` (below), `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
+`--desktop[=WxH]` and `--windowed-games` (below), `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
 speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),
 `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
@@ -130,8 +130,8 @@ Implemented:
   (&FF7) run by name. OS_Byte 113 and OS_Word 22 set the same display
   start (the last one counts). A mode
   change resets the VIDC/MEMC display timing a program set itself.
-  The character set is font/mkfont.py's, from the X11 misc-fixed 5x8
-  font (public domain) - not the ROM's
+  The character set is Acorn Mode 0's (see The character set, below) -
+  not the ROM's
 - a Risc PC (`vidc20`): VIDC20's modes - the multisync numbered ones
   (18-21, 25-28) and RISC OS 3.5 mode selectors, any size up to 2MB of
   VRAM at 1 to 32 bits per pixel, shown as they are (no MEMC or VIDC1
@@ -210,14 +210,19 @@ place of the game's wimp_idle hook: the icon bar along the bottom with
 the program's icons on its right (or left, window -2), its menus,
 windows and dialogue boxes, and what it draws in its windows itself - in
 RISC OS 3.1's look, with libroger's backdrop. Once the program takes
-the screen for itself (a mode change) its screen is shown, and the desktop
-again when it next calls Wimp_Poll. src/desktop.c draws it all, from the
-windows and icons wimp.c keeps:
+the screen for itself (a mode change) its screen is shown - fullscreen,
+unless the window already was or `--windowed-games` - and the desktop
+again, in the window, when it next calls Wimp_Poll. src/desktop.c draws it
+all, from the windows and icons wimp.c keeps:
 
-- the screen: 640x512 square pixels (1280x1024 OS units), the backdrop
-  (desktop/backdrop.png, made by desktop/mkbackdrop.py from
-  desktop/backdrop-full.png and embedded), the Wimp's 16 colours and
-  palette, the system font (Acorn Mode 0 New, below)
+- the screen: the window's size, pixel for pixel - resizing the window
+  resizes the desktop, never scales it, and display shaders aren't used
+  on it - each pixel 2x2 OS units (so 640x512 is the 1280x1024 OS units a
+  program expects, and a larger window more desktop); `--desktop=WxH` sets
+  the size to start with (1024x768), and a headless run's. The backdrop
+  (desktop/backdrop.png, embedded) is scaled to cover the screen above the
+  icon bar; the Wimp's 16 colours and palette; the system font (the
+  character set, below, drawn double height)
 - the icon bar: the application's !Sprites (or !Sprites22) in the Wimp's
   sprite pool as the Filer would put them there, icons laid out from the
   ends, Mouse_Click on them
@@ -229,7 +234,9 @@ windows and icons wimp.c keeps:
   validation strings S, D, R and A; shaded and selected), user-drawn
   windows (Redraw_Window_Request, Wimp_RedrawWindow / UpdateWindow /
   GetRectangle: the program draws in screen memory with the VDU drivers,
-  and that picture is kept for its window), Wimp_ForceRedraw,
+  and that picture is kept for its window - a window off the program's
+  screen, on a larger desktop, is moved onto it to be drawn),
+  Wimp_ForceRedraw,
   Wimp_GetWindowOutline as drawn
 - the user: clicks by button type (click, release, double click, drag,
   menu, radio, writable icons taking the caret), dragging and resizing
@@ -252,14 +259,18 @@ headless runs too, and their screenshots show it. Without `--desktop`
 nothing changes: the program's Wimp calls behave as before, and headless
 runs give the same output.
 
-The system font is "Acorn Mode 0 New" by p1.mark
-(https://fontstruct.com/fontstructions/show/1281326), cloned from
-p1.mark's "Acorn Mode 0" (https://fontstruct.com/fontstructions/show/1271339),
-licensed under Creative Commons Attribution-ShareAlike 3.0
-(http://creativecommons.org/licenses/by-sa/3.0/). font/acorn-mode-0-new/
-holds the font as distributed (with its license.txt and readme.txt);
-src/desktop_font.c is a bitmap table made from it by
-font/mkdesktopfont.py, and is an adaptation under the same licence.
+The character set
+-----------------
+
+The 8x8 character set - the VDU drivers', and the desktop's system font
+drawn double height - is "Acorn Mode 0" by p1.mark
+(https://fontstruct.com/fontstructions/show/1271339), licensed under
+Creative Commons Attribution-ShareAlike 3.0
+(http://creativecommons.org/licenses/by-sa/3.0/). font/acorn-mode-0/ holds
+the font as distributed (with its license.txt and readme.txt); src/font.c
+is a bitmap table made from it by font/mkfont.py, and is an adaptation
+under the same licence. The Latin-1 characters the font hasn't come from
+the X11 misc-fixed 5x8 font (public domain).
 
 Display shaders
 ---------------
@@ -299,7 +310,8 @@ Files
     src/irq.c            time, interrupts, vectors, device vectors
     src/video.c          modes, screen memory, MEMC, VIDC, the displayed frame
     src/vdu.c            VDU drivers (graphics, text) and sprite plotting
-    src/font.c           the character set (generated by font/mkfont.py)
+    src/font.c           the character set (generated by font/mkfont.py; CC BY-SA
+                         3.0, see The character set)
     src/sound.c          the sound system
     src/audio.c          host audio (SDL stream, WAV)
     src/files.c          files and sprite files
@@ -307,8 +319,6 @@ Files
     src/cli.c            OS_CLI (* commands) and system variables
     src/wimp.c           the Wimp, the application slot, the screen's dynamic area
     src/desktop.c        the desktop (--desktop): drawing it, and the user's input
-    src/desktop_font.c   the desktop's system font (generated by
-                         font/mkdesktopfont.py; CC BY-SA 3.0, see The desktop)
     src/backdrop.S       embeds desktop/backdrop.png
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse
