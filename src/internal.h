@@ -19,6 +19,7 @@
 #define SYS_SPRITES  0x3000000u           /* the system sprite area (*SLoad, OS_SpriteOp < 256) */
 #define SYS_SPRITES_MAX 0x100000u
 #define WIMP_SPRITES 0x3100000u           /* the Wimp's sprite pool (*IconSprites, Wimp_SpriteOp) */
+#define FILER_DATA   0x2F00000u           /* the Filer's windows' indirected data (filer.c) */
 #define RETURN_TO_OS 0x3FFFFF0u           /* R14 the program starts with */
 #define HANDLER_RET  ROGER_HANDLER_RET
 #define LOAD         ROGER_LOAD
@@ -48,6 +49,7 @@ extern const struct roger_config *rg;     /* the game's configuration */
 
 /* main.c */
 extern int rg_interactive, rg_full_os, rg_trace_gaps;
+extern float rg_mouse_sens;               /* captured mouse: OS units per host pixel */
 extern float rg_mips;                     /* interactive CPU speed (MIPS), 0 unthrottled */
 extern uint64_t rg_limit, rg_t0_ns;
 extern const char *rg_appdir, *rg_savedir;
@@ -127,6 +129,7 @@ extern int pointer_shape;                 /* OS_Byte 106: the OS pointer shown (
 extern unsigned vdu_unhandled;
 void vdu_write(uint8_t c);
 void vdu_mode_reset(void);                /* after a mode change: windows, colours, CLS */
+void vdu_char_def(int c, uint8_t *def);   /* OS_Word 10: a character's 8 rows */
 int  sprite_op_full(void);
 
 /* sound.c */
@@ -157,9 +160,17 @@ int  delete_object(const char *name);    /* *Delete: 0 if there was nothing */
 uint32_t sys_sprites(void);               /* the system sprite area */
 uint32_t wimp_sprites(void);              /* the Wimp's sprite pool */
 int  vdu_schoose(const char *name);       /* *SChoose */
+int  vdu_screenload(const uint8_t *f, size_t n);   /* *ScreenLoad: a sprite file's first sprite */
+int  screen_load(const char *name);        /* ...from a file: 0 if it isn't there */
 int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */
 int  sprite_file_host(uint32_t area, const char *path, int merge);   /* ...a host file */
 int  files_swi(uint32_t b);
+struct dir_entry {                        /* a directory entry (dir_entries) */
+    char leaf[64];                        /* its RISC OS name ("/" for a host ".") */
+    uint32_t load, exec, size;            /* catalogue information */
+    int isdir;
+};
+int  dir_entries(const char *name, struct dir_entry *e, int max);   /* -> count, -1: no directory */
 void sprite_op(void);
 
 /* modules.c */
@@ -208,6 +219,7 @@ struct win {
     int32_t back_vis[6];                  /* the visible area and scroll it was drawn for */
     int32_t back_dx, back_dy;             /* ...moved by this to lie on the program's screen */
     int32_t full_prev[4];                 /* toggle size: the visible area before */
+    int filer;                            /* the Filer's (a directory viewer), not the program's */
 };
 extern struct win wimp_iconbar;
 extern int8_t wimp_bar_side[WIMP_MAXICON];   /* an icon bar icon's side: -2 left, -1 right */
@@ -220,6 +232,26 @@ void wimp_close(struct win *w);
 void wimp_set_caret(const uint32_t c[6]); /* with Lose_Caret / Gain_Caret */
 void wimp_auto_select(uint32_t window, int icon, uint32_t buttons);   /* a radio icon clicked */
 uint32_t wimp_rd(const uint8_t *p);       /* a little-endian word of a block */
+struct win *wimp_new_window(const uint8_t *blk);   /* Wimp_CreateWindow's block (no icons); NULL: too many */
+void wimp_delete(struct win *w);
+uint32_t wimp_new_ref(void);              /* a message's my_ref */
+
+/* filer.c: the Filer - directory viewers on the desktop, and its end of
+ * the data transfer protocol */
+#define FILER_WINDOW 0x46494C45u          /* without the desktop: the viewer a save is dropped on */
+#define FILER_TASK   0x52454C46u
+int  filer_open(const char *dir);         /* *Filer_OpenDir: 0 if not (no desktop, no directory) */
+void filer_close(const char *dir);        /* *Filer_CloseDir */
+int  filer_owns(uint32_t handle);         /* a viewer's window */
+void filer_event(uint32_t reason, const uint32_t *blk);   /* the user's, on a viewer */
+void filer_drag_end(void);                /* a drag from a viewer ended (at the pointer) */
+void filer_message(uint32_t m, uint32_t to);   /* Wimp_SendMessage to it (a window, or FILER_TASK) */
+void filer_delivered(uint32_t reason, const uint32_t *blk);   /* Wimp_Poll returned an event */
+void filer_polled(void);                  /* the program polls again */
+int  filer_armed(void);                   /* roger_wimp_save_to() is waiting for a save */
+void filer_refresh(void);                 /* reread the viewers' directories */
+void filer_tick(void);                    /* ...now and then */
+void filer_app_sprites(const char *hostdir);   /* an application's !Sprites into the Wimp's pool */
 
 /* desktop.c: the desktop drawn and used for real (--desktop), in place of
  * the wimp_idle hook */
@@ -236,6 +268,7 @@ void desktop_screenshot(const char *path);
 void desktop_create_menu(uint32_t menu, int x, int y);   /* Wimp_CreateMenu (-1 closes) */
 void desktop_create_submenu(uint32_t menu, int x, int y);
 void desktop_drag_box(uint32_t blk);      /* Wimp_DragBox (0: cancel) */
+void desktop_drag_filer(const int32_t *box);   /* the Filer drags an icon: filer_drag_end() */
 int  desktop_pointer(int *x, int *y, int32_t *window, int32_t *icon);   /* -> buttons */
 void desktop_window_gone(struct win *w);  /* closed or deleted */
 void desktop_outline(const struct win *w, int32_t *o);   /* its visible area and furniture */

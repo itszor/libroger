@@ -390,9 +390,16 @@ static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v
 
 int video_os_word(uint32_t r0, uint8_t *blk)
 {
-    if (r0 == 21 && blk[0] == 3 && rg_interactive)      /* set pointer position */
-        display_set_mouse(clamp_i((int16_t)(blk[1] | blk[2] << 8), mbox[0], mbox[2]),
-                          clamp_i((int16_t)(blk[3] | blk[4] << 8), mbox[1], mbox[3]));
+    if (r0 == 21 && (blk[0] == 4 || blk[0] == 6)) {     /* read the mouse (unbuffered) or pointer */
+        int x = clamp_i(mouse_x, mbox[0], mbox[2]), y = clamp_i(mouse_y, mbox[1], mbox[3]);   /* position */
+        blk[1] = (uint8_t)x; blk[2] = (uint8_t)(x >> 8); blk[3] = (uint8_t)y; blk[4] = (uint8_t)(y >> 8);
+    }
+    if (r0 == 21 && (blk[0] == 3 || blk[0] == 5)) {    /* set mouse / pointer position */
+        int x = clamp_i((int16_t)(blk[1] | blk[2] << 8), mbox[0], mbox[2]);
+        int y = clamp_i((int16_t)(blk[3] | blk[4] << 8), mbox[1], mbox[3]);
+        if (rg_interactive) display_set_mouse(x, y);
+        else { mouse_x = x; mouse_y = y; }
+    }
     if (r0 == 21 && blk[0] == 1)                        /* define the pointer's bounding box */
         for (int k = 0; k < 4; k++) mbox[k] = (int16_t)(blk[1 + 2 * k] | blk[2 + 2 * k] << 8);
     if (r0 == 11) {                                     /* read palette: colour -> mode 16, R, G, B */

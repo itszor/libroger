@@ -96,39 +96,8 @@ void roger_wimp_quit(void)                /* Message_Quit, as the Task Manager s
     roger_wimp_event(17, (const uint32_t[]){20, 0, 0, 0, 0}, 5);
 }
 
-/* The data transfer protocol's other end, for saving: a Filer window
- * stands under the pointer while game code has armed it with a destination
- * (roger_wimp_save_to()), as if the user had dragged the save box's icon
- * to a directory. Message_DataSave to it is answered with DataSaveAck
- * giving the full pathname, the program saves there and says so with
- * Message_DataLoad, answered with DataLoadAck. */
-#define FILER_WINDOW 0x46494C45u
-#define FILER_TASK   0x52454C46u
-static char save_to[1024];
 static uint32_t msg_ref = 0x100;
-
-void roger_wimp_save_to(const char *path) { snprintf(save_to, sizeof save_to, "%s", path ? path : ""); }
-
-static void filer_message(uint32_t m)
-{
-    uint32_t action = RD32(m + 16), b[64] = {0};
-    if (action == 1 && save_to[0]) {                         /* Message_DataSave */
-        memcpy(b, MEM + m, 44);                             /* window, icon, x, y, size, type */
-        size_t l = strlen(save_to);
-        memcpy((char *)b + 44, save_to, l + 1);
-        b[0] = (uint32_t)((44 + l + 1 + 3) & ~3u);
-        b[1] = FILER_TASK; b[3] = RD32(m + 8); b[2] = ++msg_ref; b[4] = 2;   /* DataSaveAck */
-        roger_wimp_event(17, b, (int)(b[0] / 4));
-    } else if (action == 3) {                                /* Message_DataLoad: saved */
-        char name[1024];
-        cstr(m + 44, name, 0);
-        ev("Filer_saved", "s", name, (int)strlen(name));
-        memcpy(b, MEM + m, 44);
-        b[0] = 44; b[1] = FILER_TASK; b[3] = RD32(m + 8); b[2] = ++msg_ref; b[4] = 4;   /* DataLoadAck */
-        roger_wimp_event(17, b, 11);
-        save_to[0] = 0;
-    }
-}
+uint32_t wimp_new_ref(void) { return ++msg_ref; }
 
 /* ---------------------------------------------------------------- templates
  * A template file: a header (font data offset, 3 words reserved), then an
@@ -238,6 +207,8 @@ static void load_template(void)
  * them; without it nothing is drawn. Open windows are kept in a stack,
  * bottom to top. */
 static struct win wins[WIMP_MAXWIN];
+uint32_t wimp_menu_win;                   /* (below) */
+#define menu_window wimp_menu_win
 struct win wimp_iconbar = {0xFFFFFFFE};
 int8_t wimp_bar_side[WIMP_MAXICON];
 static uint32_t next_window = 0x10000;
@@ -287,17 +258,31 @@ static int add_icon(struct win *w, const uint8_t *blk)
     return i;
 }
 
-static void create_window(void)           /* R1 block -> R0 handle */
+struct win *wimp_new_window(const uint8_t *blk)
 {
     int k;
     for (k = 0; k < WIMP_MAXWIN && wins[k].handle; k++) ;
-    if (k == WIMP_MAXWIN) { os_error(0, "Too many windows"); return; }
+    if (k == WIMP_MAXWIN) return NULL;
     struct win *w = &wins[k];
     free(w->back);
     memset(w, 0, sizeof *w);
     w->handle = next_window; next_window += 0x100;
-    memcpy(w->blk, MEM + R[1], 88);
+    memcpy(w->blk, blk, 88);
     s32(w->blk + 28, w32(w->blk + 28) & ~WIN_OPEN);
+    return w;
+}
+
+void wimp_delete(struct win *w)
+{
+    if (rg_desktop) wimp_close(w);
+    if (menu_window == w->handle) menu_window = 0;
+    w->handle = 0;
+}
+
+static void create_window(void)           /* R1 block -> R0 handle */
+{
+    struct win *w = wimp_new_window(MEM + R[1]);
+    if (!w) { os_error(0, "Too many windows"); return; }
     uint32_t n = w32(w->blk + 84);
     for (uint32_t i = 0; i < n && i < WIMP_MAXICON; i++) add_icon(w, MEM + R[1] + 88 + 32 * i);
     char t[1100]; title_of(w, t);
@@ -379,8 +364,6 @@ static void window_state(uint32_t blk, int outline)
  * handle: a dialogue box such as a save box), 0 if none; an icon's
  * indirected text buffer (0 if it has none) - for game code standing in
  * for the user (wimp_idle) */
-uint32_t wimp_menu_win;
-#define menu_window wimp_menu_win
 int32_t roger_wimp_menu_window(void) { return (int32_t)menu_window; }
 uint32_t roger_wimp_icon_buffer(int32_t window, int icon)
 {
@@ -489,6 +472,7 @@ static int pop_event(uint32_t mask, uint32_t blk)
         }
         memcpy(MEM + blk, queue[k].block, queue[k].n * 4);
         R[0] = r;
+        filer_delivered(r, queue[k].block);
         return 1;
     }
     return 0;
@@ -496,6 +480,7 @@ static int pop_event(uint32_t mask, uint32_t blk)
 
 static void poll(uint32_t b)              /* Wimp_Poll: R0 mask, R1 block (Wimp_PollIdle: R2 time) */
 {
+    filer_polled();
     if (rg_desktop) {
         uint32_t mask = R[0], blk = R[1], until = R[2];
         desktop_enter();
@@ -517,6 +502,7 @@ static void poll(uint32_t b)              /* Wimp_Poll: R0 mask, R1 block (Wimp_
     unsigned k = qhead++ % QLEN;
     memcpy(MEM + R[1], queue[k].block, queue[k].n * 4);
     R[0] = queue[k].reason;
+    filer_delivered(R[0], queue[k].block);
     ev("Wimp_Poll", "i", R[0]);
 }
 
@@ -629,9 +615,7 @@ int wimp_swi(uint32_t b)
         struct win *w = win_of(RD32(R[1]));
         if (w && w != &iconbar) {
             ev("Wimp_DeleteWindow", "i", w->handle);
-            if (rg_desktop) wimp_close(w);
-            if (menu_window == w->handle) menu_window = 0;
-            w->handle = 0;
+            wimp_delete(w);
         }
         return 1;
     }
@@ -712,7 +696,7 @@ int wimp_swi(uint32_t b)
         WR32(R[1] + 4, TASK_HANDLE);
         if (R[0] >= 17 && R[0] <= 19) WR32(R[1] + 8, ++msg_ref);
         if (R[2] == TASK_HANDLE) roger_wimp_event(R[0], (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);
-        else if (R[2] == FILER_WINDOW || R[2] == FILER_TASK) filer_message(R[1]);
+        else if (R[2] == FILER_WINDOW || R[2] == FILER_TASK || filer_owns(R[2])) filer_message(R[1], R[2]);
         return 1;
     }
     case 0x400F1:                                           /* Wimp_TransferBlock: within this task */
@@ -752,7 +736,7 @@ int wimp_swi(uint32_t b)
             return 1;
         }
         WR32(R[1], 640); WR32(R[1] + 4, 512); WR32(R[1] + 8, 0);
-        WR32(R[1] + 12, save_to[0] ? FILER_WINDOW : 0xFFFFFFFF);   /* over the Filer's window, */
+        WR32(R[1] + 12, filer_armed() ? FILER_WINDOW : 0xFFFFFFFF);   /* over the Filer's window, */
         WR32(R[1] + 16, 0xFFFFFFFF);                         /* when a save is to be dropped there */
         return 1;
     case 0x400D9: {                                          /* Wimp_OpenTemplate */

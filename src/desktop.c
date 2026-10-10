@@ -23,7 +23,6 @@
  * does: mouse_x/mouse_y/mouse_buttons and the keyboard, so --script drives
  * it too, in headless runs as well (screenshots show the desktop). */
 #include <SDL3/SDL.h>
-#include <dirent.h>
 #include <string.h>
 #include <strings.h>
 #include "internal.h"
@@ -536,11 +535,16 @@ static void draw_icon(const uint8_t *ic, int ox, int oy, uint32_t area, int care
     } else if (f & 4) frame_os(x0, y0, x1, y1, COL(fg));
     struct icon_layout L;
     layout_icon(ic, x0, y0, x1, y1, area, &L);
-    if (L.has_sp) draw_sprite(&L.sp, L.sx, L.sy, (f >> 11) & 1, shaded ? 1 : (sel && !(f & 0x100)) ? 2 : 0);
+    /* selected, with text and a sprite (and no second sprite for it): the
+     * sprite darkened, the text inverted - a directory viewer's */
+    char sv[64];
+    int invert = sel && L.has_sp && L.n && !(validation(ic, 'S', sv, sizeof sv) && strchr(sv, ','));
+    if (L.has_sp) draw_sprite(&L.sp, L.sx, L.sy, (f >> 11) & 1, shaded ? 1 : (sel && (!(f & 0x100) || invert)) ? 2 : 0);
     if (L.n) {
         char d[8];
         if (validation(ic, 'D', d, sizeof d)) memset(L.text, d[0], L.n);
-        text_os(L.tx, L.ty, L.text, L.n, shaded ? COL(3) : COL(fg));
+        if (invert) fill_os(L.tx - 4, L.ty - CHAR_H, L.tx + L.n * CHAR_W + 4, L.ty, COL(fg));
+        text_os(L.tx, L.ty, L.text, L.n, shaded ? COL(3) : invert ? COL(bg) : COL(fg));
     }
     if (caret_index >= 0) {                       /* the caret: red, with serifs */
         int cx = PX(L.tx + caret_index * CHAR_W) - 1, top = PY(L.ty + 4), bot = PY(L.ty - CHAR_H - 4);
@@ -1065,6 +1069,7 @@ static int menu_hit(const struct level *l, int x, int y)
 /* ---------------------------------------------------------------- drawing it all */
 static struct {                                   /* Wimp_DragBox (or 0) */
     int type, x0, y0, x1, y1, px0, py0, px1, py1, sx, sy;
+    int filer;                                    /* the Filer's, not the program's */
 } ubox;
 
 static void render(void)
@@ -1120,18 +1125,7 @@ void desktop_enter(void)
 {
     if (!sprites_merged) {                        /* the application's icons, as the Filer loads */
         sprites_merged = 1;                       /* them: !Sprites22 for square pixels, if there */
-        char path[2048];
-        DIR *d = opendir(rg_appdir);
-        struct dirent *e;
-        int best = 0;
-        while (d && (e = readdir(d))) {               /* (a host name may add ",type" or ",load-exec") */
-            size_t l = strcspn(e->d_name, ",");
-            int which = l == 10 && !strncasecmp(e->d_name, "!Sprites22", l) ? 2 :
-                        l == 8 && !strncasecmp(e->d_name, "!Sprites", l) ? 1 : 0;
-            if (which > best) { best = which; snprintf(path, sizeof path, "%s/%s", rg_appdir, e->d_name); }
-        }
-        if (d) closedir(d);
-        if (best) sprite_file_host(wimp_sprites(), path, 1);
+        filer_app_sprites(rg_appdir);
     }
     if (visible) return;
     visible = 1;
@@ -1170,7 +1164,13 @@ enum { P_NONE, P_WORK, P_BAR, P_TITLE, P_ADJUST, P_VSLIDE, P_HSLIDE, P_ARROW, P_
 static struct { struct win *w; int icon; int buttons; uint32_t t; } last_click;
 static uint32_t last_open_sent;                   /* monotonic: one Open_Window_Request a tick */
 
-static void event(uint32_t reason, const uint32_t *blk, int n) { roger_wimp_event(reason, blk, n); }
+/* an event for the program - or, on a directory viewer, for the Filer */
+static void event(uint32_t reason, const uint32_t *blk, int n)
+{
+    uint32_t window = reason == 6 ? blk[3] : blk[0];
+    if ((reason == 2 || reason == 3 || reason == 6 || reason == 10) && filer_owns(window)) { filer_event(reason, blk); return; }
+    roger_wimp_event(reason, blk, n);
+}
 
 static void click_event(int x, int y, uint32_t b, uint32_t window, int icon)
 {
@@ -1528,6 +1528,19 @@ void desktop_drag_box(uint32_t blk)
     ubox.px0 = (int32_t)rd(blk + 24); ubox.py0 = (int32_t)rd(blk + 28);
     ubox.px1 = (int32_t)rd(blk + 32); ubox.py1 = (int32_t)rd(blk + 36);
     ubox.sx = mouse_x; ubox.sy = mouse_y;
+    ubox.filer = 0;
+    pr.kind = P_NONE;
+}
+
+/* the Filer drags an icon (a box that size) anywhere on the screen */
+void desktop_drag_filer(const int32_t *box)
+{
+    ubox.type = 5;
+    ubox.x0 = box[0]; ubox.y0 = box[1]; ubox.x1 = box[2]; ubox.y1 = box[3];
+    ubox.px0 = imin(box[0], 0); ubox.py0 = imin(box[1], 0);
+    ubox.px1 = imax(box[2], SW); ubox.py1 = imax(box[3], SH);
+    ubox.sx = mouse_x; ubox.sy = mouse_y;
+    ubox.filer = 1;
     pr.kind = P_NONE;
 }
 
@@ -1546,7 +1559,8 @@ static void drag_box_input(int x, int y, int b)
     if (!b) {
         uint32_t blk[4] = {(uint32_t)ubox.x0, (uint32_t)ubox.y0, (uint32_t)ubox.x1, (uint32_t)ubox.y1};
         ubox.type = 0;
-        event(7, blk, 4);
+        if (ubox.filer) filer_drag_end();
+        else event(7, blk, 4);
     }
 }
 
@@ -1631,6 +1645,7 @@ static void keys(void)
 void desktop_input(void)
 {
     fit_window();
+    filer_tick();
     int x = mouse_x, y = mouse_y, b = mouse_buttons;
     keys();
     if (ubox.type) { drag_box_input(x, y, b); prev_buttons = b; return; }

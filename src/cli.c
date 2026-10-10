@@ -365,6 +365,15 @@ int cli_command(const char *line, int x)
         }
         return 1;
     }
+    if ((p = word_at(s, "ScreenLoad"))) {       /* a sprite file's first sprite to the screen */
+        arg(&p, name, sizeof name);
+        if (!screen_load(name)) {
+            fprintf(stderr, "*ScreenLoad: file not found %s\n", name);
+            if (cli_error(x)) return 1;
+            finish("file not found");
+        }
+        return 1;
+    }
     if ((p = word_at(s, "SChoose"))) {          /* a system sprite, for PLOT &E8-&EF */
         arg(&p, name, sizeof name);
         if (!vdu_schoose(name)) ev("SChoose_missing", "s", name, (int)strlen(name));
@@ -444,6 +453,12 @@ int cli_command(const char *line, int x)
     if ((p = word_at(s, "Delete")) || (p = word_at(s, "Remove"))) {
         arg(&p, name, sizeof name);
         if (!delete_object(name) && !strncasecmp(s, "Delete", 6)) return cli_error(x) || 1;
+        return 1;
+    }
+    if ((p = word_at(s, "Filer_OpenDir")) || (p = word_at(s, "Filer_CloseDir"))) {   /* a directory */
+        arg(&p, name, sizeof name);                  /* viewer (on the desktop: filer.c) */
+        if (!strncasecmp(s, "Filer_O", 7)) filer_open(name);
+        else filer_close(name);
         return 1;
     }
     if ((p = word_at(s, "Print"))) {             /* a file's bytes, to the VDU drivers */

@@ -41,7 +41,7 @@ static int lw = 1024;                           /* logical size: LH high, the mo
  * With roger_config.relative_mouse, a game that keeps re-centring the
  * pointer (reading only its movement) gets the host mouse captured, in
  * relative mode, for as long as it does so. */
-#define MOUSE_SENS 2.0f                         /* OS units per host pixel in relative mode */
+float rg_mouse_sens = 2.0f;                     /* OS units per host pixel in relative mode */
 static uint64_t last_setpos_ns;
 static int relative;
 void display_set_mouse(int x, int y)
@@ -445,8 +445,10 @@ void display_poll(void)
         case SDL_EVENT_MOUSE_BUTTON_UP: {
             if (relative) {
                 if (e.type == SDL_EVENT_MOUSE_MOTION) {
-                    mouse_x += (int)(e.motion.xrel * MOUSE_SENS);
-                    mouse_y -= (int)(e.motion.yrel * MOUSE_SENS);
+                    static float fx, fy;            /* (what's left of a unit, kept) */
+                    fx += e.motion.xrel * rg_mouse_sens; fy -= e.motion.yrel * rg_mouse_sens;
+                    mouse_x += (int)fx; mouse_y += (int)fy;
+                    fx -= (int)fx; fy -= (int)fy;
                 }
             } else {
                 SDL_ConvertEventToRenderCoordinates(ren, &e);

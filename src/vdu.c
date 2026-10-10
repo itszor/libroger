@@ -260,6 +260,13 @@ static void text_cell(int c, int col, int row)  /* VDU 4: an opaque cell */
     }
 }
 
+/* OS_Word 10: a character's definition, as VDU 23 sets it */
+void vdu_char_def(int c, uint8_t *def)
+{
+    if (!chars_set) { memcpy(chars, roger_font, sizeof chars); chars_set = 1; }
+    memcpy(def, chars[c & 255], 8);
+}
+
 static void put_char(int c)
 {
     if (!chars_set) { memcpy(chars, roger_font, sizeof chars); chars_set = 1; }
@@ -413,12 +420,15 @@ static uint32_t find_sprite(uint32_t area, uint32_t name)
     return 0;
 }
 
-static void put_sprite(uint32_t s, int x, int y, int action)
+static uint32_t rdp(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
+/* a sprite (sp: its header, in emulated memory or a host buffer) */
+static void put_sprite_at(const uint8_t *sp, int x, int y, int action)
 {
     int bpp = md()->bpp;
-    int wwords = rd32(s + 16) + 1, h = rd32(s + 20) + 1;
-    int first = rd32(s + 24), last = rd32(s + 28);
-    uint32_t img = s + rd32(s + 32), mask = s + rd32(s + 36);
+    int wwords = rdp(sp + 16) + 1, h = rdp(sp + 20) + 1;
+    int first = rdp(sp + 24), last = rdp(sp + 28);
+    const uint8_t *img = sp + rdp(sp + 32), *mask = sp + rdp(sp + 36);
     int hasmask = mask != img && (action & 8);
     int wpx = (wwords * 32 - first - (31 - last)) / bpp;
     int skip = first / bpp;
@@ -426,8 +436,8 @@ static void put_sprite(uint32_t s, int x, int y, int action)
     for (int r = 0; r < h; r++) {
         int yy = top + r;
         if (yy < wb || yy > wt) continue;
-        const uint8_t *src = MEM + img + r * wwords * 4;
-        const uint8_t *msk = MEM + mask + r * wwords * 4;
+        const uint8_t *src = img + r * wwords * 4;
+        const uint8_t *msk = mask + r * wwords * 4;
         uint8_t *dst = bankmem() + yy * line_bytes();
         for (int c = 0; c < wpx; c++) {
             int xx = left + c;
@@ -436,6 +446,35 @@ static void put_sprite(uint32_t s, int x, int y, int action)
             put_px(dst, xx, bpp, apply(action, get_px(dst, xx, bpp), get_px(src, skip + c, bpp), bpp));
         }
     }
+}
+static void put_sprite(uint32_t s, int x, int y, int action) { put_sprite_at(MEM + s, x, y, action); }
+
+/* *ScreenLoad (OS_SpriteOp 3): a sprite file's first sprite, in its own
+ * mode (changed to if it isn't the current one), with its palette if it
+ * has one (the first flash colours; 16 at most, as VIDC has), at the
+ * bottom left of the screen. f: the file, n bytes (an area without its
+ * size word). 0 if it holds no sprite. */
+int vdu_screenload(const uint8_t *f, size_t n)
+{
+    if (n < 12 || rdp(f) == 0) return 0;
+    uint32_t first = rdp(f + 4);
+    if (first < 4 || first - 4 + 44 > n) return 0;
+    const uint8_t *sp = f + first - 4;
+    uint32_t next = rdp(sp), imgoff = rdp(sp + 32);
+    if (first - 4 + next > n || imgoff < 44 || imgoff > next) return 0;
+    uint32_t mode = rdp(sp + 40);
+    const struct rg_mode *m = mode < 256 ? mode_info(mode) : NULL;
+    if (m && (m->width != md()->width || m->height != md()->height || m->bpp != md()->bpp)) {
+        vdu_write(22);
+        vdu_write((uint8_t)mode);
+    }
+    for (uint32_t k = 0; k < (imgoff - 44) / 8 && k < 16; k++) {
+        uint32_t c = rdp(sp + 44 + 8 * k);           /* &BBGGRR00 */
+        uint8_t v[6] = {19, (uint8_t)k, 16, (uint8_t)(c >> 8), (uint8_t)(c >> 16), (uint8_t)(c >> 24)};
+        for (int j = 0; j < 6; j++) vdu_write(v[j]);
+    }
+    if (rg_full_os) put_sprite_at(sp, -ox, -oy, 0);
+    return 1;
 }
 
 /* *SChoose: a sprite of the system area, for PLOT &E8-&EF; 0 if none */

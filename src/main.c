@@ -205,6 +205,7 @@ static void usage(const char *prog)
            "  --headless        headless with the default limit\n"
            "  --script=...      scripted input (see src/main.c)\n"
            "  --mips=N          the CPU's speed, interactive (0: unthrottled; default: the game's)\n"
+           "  --mouse-sens=N    a captured mouse: OS units per host pixel (default: the game's, or 2)\n"
            "  --trace-gaps      interpret untranslated code, logging it to untranslated.log\n"
            "  --full-os         VDU and sprite drivers in headless runs too\n"
            "  --desktop[=WxH]   a Wimp program's desktop, drawn and used for real (WxH:\n"
@@ -226,7 +227,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     const char *image = NULL;
     int scale = 4, headless = 0, no_sound = 0, no_title = 0;
     const char *fs = NULL, *wavpath = NULL, *shader = NULL;
-    float mips_opt = -1;
+    float mips_opt = -1, sens_opt = -1;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
     for (int k = 1; k < argc; k++)
         if (!strncmp(argv[k], "--limit=", 8) || !strcmp(argv[k], "--headless")) headless = 1;
@@ -243,6 +244,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         }
         else if (!strcmp(argv[k], "--windowed-games")) rg_windowed_games = 1;
         else if (!strncmp(argv[k], "--mips=", 7)) mips_opt = (float)atof(argv[k] + 7);
+        else if (!strncmp(argv[k], "--mouse-sens=", 13)) sens_opt = (float)atof(argv[k] + 13);
         else if (!strcmp(argv[k], "--trace-gaps")) rg_trace_gaps = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
@@ -264,6 +266,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else image = argv[k];
     }
     rg_mips = mips_opt >= 0 ? mips_opt : cfg->mips;
+    rg_mouse_sens = sens_opt > 0 ? sens_opt : cfg->mouse_sens > 0 ? cfg->mouse_sens : 2.0f;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     if (rg_interactive) { pthread_t wd; pthread_create(&wd, NULL, watchdog, NULL); pthread_detach(wd); }

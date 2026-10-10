@@ -61,14 +61,18 @@ What the configuration covers (all but the image optional):
   (`vidc20`)
 - interrupts: a raw IRQ handler at &100 (`irq1v`) for games that bypass the
   kernel's device vectors
-- input: pointer offset, relative mouse capture, the headless scenario
+- input: pointer offset, relative mouse capture (and its sensitivity:
+  `mouse_sens`, `--mouse-sens=N`), the headless scenario
 - translation gaps that are known and may be interpreted
 - hooks: init, every frame, every centisecond, first look at SWIs and at
   dispatch, extra command-line arguments, the program returning to the OS
   (`exited`: what !Run does next), finish
 - the desktop, for a program that is a Wimp task: `wimp_idle` stands in
   for the user when Wimp_Poll has nothing to return, queueing events
-  (`roger_wimp_click()`, `roger_wimp_menu()`, `roger_wimp_quit()`)
+  (`roger_wimp_click()`, `roger_wimp_menu()`, `roger_wimp_quit()`); on
+  the desktop (`--desktop`), directory viewers to open
+  (`roger_filer_open()`) and what running an application or file from
+  one does (`filer_run`)
 
 Game code (hooks, or a loader written in C - e.g. a BASIC program
 translated by hand) can call SWIs and * commands with `roger_swi()` and
@@ -81,7 +85,7 @@ replayed and screenshotted deterministically),
 `--desktop[=WxH]` and `--windowed-games` (below), `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
 speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),
-`--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
+`--mouse-sens=N`, `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
 `--crt` = `--shader=crt`), `--list-shaders`, `--no-sound`, `--wav=F`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
 
@@ -126,7 +130,9 @@ Implemented:
   21/6; circles and ellipses, outline and filled; text: VDU 4 in a text window, VDU 5 at the graphics cursor, VDU
   23 characters, cursor control), OS_SpriteOp on user areas and the
   system sprite area (*SLoad/*SMerge; load, merge, read area information,
-  select, plot; *SChoose and PLOT &E8-&EF), *Print and BBC font files
+  select, plot; *SChoose and PLOT &E8-&EF; *ScreenLoad and SpriteOp 3:
+  a sprite file's first sprite to the screen, in its mode, with its
+  palette), *Print and BBC font files
   (&FF7) run by name. OS_Byte 113 and OS_Word 22 set the same display
   start (the last one counts). A mode
   change resets the VIDC/MEMC display timing a program set itself.
@@ -141,7 +147,8 @@ Implemented:
   RISC OS 3.5 names for OS_SWINumberFromString
 - files: OS_File (load, save, catalogue; along a path string or
   variable; directories), OS_Find, OS_GBPB (including
-  directory listings, 9/10/12), OS_Args,
+  directory listings, 9/10/12: the program's saved copies as well as the
+  originals), OS_Args,
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
   `,load-exec` name suffixes, writes redirected to a save directory (and
   read back from there)
@@ -160,7 +167,8 @@ Implemented:
   scheduler (Sound_QSchedule, QTempo); to SDL or a WAV file
 - the command line: Set, SetEval (integer and string expressions), Unset,
   If ... Then ... Else, Load, Save, Copy (R: recursively), Delete, RMLoad,
-  RMRun, RMKill, FX, IconSprites, ChannelVoice, and loaded modules' commands, after GSTrans
+  RMRun, RMKill, FX, IconSprites, ChannelVoice, Filer_OpenDir and
+  Filer_CloseDir (directory viewers, on the desktop), and loaded modules' commands, after GSTrans
   (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
   integers). Other commands are logged and ignored
 - the Wimp, without a desktop (but see The desktop, below): Wimp_Initialise (version 3.16), Wimp_Poll
@@ -186,7 +194,8 @@ Implemented:
   emulator), no stack extension (a 64K root stack instead)
 - the kernel: OS_Byte (keyboard scans, single key or first key pressed, or
   from 16; the keyboard status (Caps Lock as the host's);
-  INKEY, the OS version, events, Escape, banks, mode, the vsync counter), OS_Word (palette, pointer, display
+  INKEY, the OS version, events, Escape, banks, mode, the vsync counter), OS_Word (character definitions, palette, pointer - its shape, bounding
+  box, and the mouse and pointer position, set and read - display
   start, the real-time clock: the host's, or fixed in headless runs),
   OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ServiceCall,
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
@@ -252,6 +261,23 @@ all, from the windows and icons wimp.c keeps:
 - the keyboard: writable icons edited by the Wimp (A validation, Delete,
   Copy, cursor left and right, Ctrl-U), the rest as Key_Pressed in the
   Wimp's key codes, Lose_Caret / Gain_Caret
+- the Filer (src/filer.c), a task of its own run in-process: directory
+  viewers (`roger_filer_open()`, *Filer_OpenDir) of one directory each -
+  the program's saved copies as well as the originals - in RISC OS 3's
+  large icons on a fixed grid (each cell as wide as the longest name,
+  ten characters at least; as many columns as fit, laid out again when
+  the window is resized), with "file_xxx", "directory" or an
+  application's own sprite (its !Sprites22 or !Sprites merged into the
+  pool), read again once a second. Select selects, Adjust toggles;
+  double-click opens a directory (Adjust: instead of this one), runs an
+  application, or offers a file to the program (Message_DataOpen - if
+  it doesn't take it, it is run); dragging an icon to the program's
+  window or icon bar icon gives it the file (Message_DataLoad); and a
+  save box's icon dragged to a viewer saves there (Message_DataSave,
+  DataSaveAck with the name in that directory, DataLoad, DataLoadAck).
+  Running is the game's to say (roger_config.filer_run: there's only the
+  one program; `roger_filer_load()` gives the program a file or
+  application as if dragged to it)
 
 Input is taken while the program is in Wimp_Poll, from the same mouse and
 keyboard state as everything else, so `--script` drives the desktop in
@@ -295,7 +321,9 @@ shaders/README. With them included, a program linked with libroger is
 distributed under the GPL, version 3.
 
 Not implemented (yet): on the desktop, outline fonts (Font_Paint text
-isn't drawn), other tasks (the Filer, so no saving by dragging), pointer
+isn't drawn), other tasks (but the Filer's viewers - which have no menu,
+small icons or full info, selection by dragging a box, or copying between
+them), pointer
 entering and leaving events, keyboard shortcuts for windows (hot keys);
 VDU colours and
 sprites at 16 and 32 bits per pixel, a 256-entry palette (8bpp modes keep
@@ -319,6 +347,7 @@ Files
     src/cli.c            OS_CLI (* commands) and system variables
     src/wimp.c           the Wimp, the application slot, the screen's dynamic area
     src/desktop.c        the desktop (--desktop): drawing it, and the user's input
+    src/filer.c          the Filer: directory viewers, the data transfer protocol's other end
     src/backdrop.S       embeds desktop/backdrop.png
     src/swi.c            SWI dispatch and the kernel's SWIs
     src/host.c           the SDL3 window, keyboard and mouse

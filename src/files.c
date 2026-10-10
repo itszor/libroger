@@ -451,64 +451,93 @@ static void os_find(void)
 
 /* OS_GBPB 9/10/12: read a directory's entries. R1 directory, R2 buffer,
  * R3 entries wanted, R4 offset (0 first), R5 buffer size, R6 wildcarded
- * name (0: all). Entries come in RISC OS's order (names compared without
- * case), without the host's ",xxx" suffixes. Returns R3 entries read, R4
- * the next offset (-1 at the end). */
+ * name (0: all). The entries are dir_entries(): the program's own copies
+ * as well as the originals. Returns R3 entries read, R4 the next offset
+ * (-1 at the end). */
 static int wild(const char *p, const char *s)
 {
     if (!*p) return !*s;
     if (*p == '*') return wild(p + 1, s) || (*s && wild(p, s + 1));
     return *s && (*p == '#' || tolower((unsigned char)*p) == tolower((unsigned char)*s)) && wild(p + 1, s + 1);
 }
-static int name_cmp(const void *a, const void *b) { return strcasecmp(*(char *const *)a, *(char *const *)b); }
+static int entry_cmp(const void *a, const void *b)
+{
+    return strcasecmp(((const struct dir_entry *)a)->leaf, ((const struct dir_entry *)b)->leaf);
+}
+
+/* add a host directory's entries to e[0..n) (those not there already) */
+static int dir_add(const char *dir, struct dir_entry *e, int n, int max)
+{
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    while (d && (de = readdir(d)) && n < max) {
+        if (de->d_name[0] == '.') continue;
+        struct dir_entry x = {0};
+        snprintf(x.leaf, sizeof x.leaf, "%.63s", de->d_name);
+        char *comma = strchr(x.leaf, ',');
+        if (comma) *comma = 0;
+        for (char *c = x.leaf; *c; c++) if (*c == '.') *c = '/';
+        int k;
+        for (k = 0; k < n && strcasecmp(e[k].leaf, x.leaf); k++) ;
+        if (k < n) continue;
+        char path[2400];
+        snprintf(path, sizeof path, "%s/%s", dir, de->d_name);
+        struct stat st;
+        x.isdir = stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+        file_info(de->d_name, &x.load, &x.exec);
+        if (x.isdir) { x.load = 0xFFFFFD00; x.exec = 0; }
+        else x.size = (uint32_t)st.st_size;
+        e[n++] = x;
+    }
+    if (d) closedir(d);
+    return n;
+}
+
+/* A directory's entries, as the program sees it: its own copies (in
+ * savedir, or on the RAM disc) and the originals they don't replace, in
+ * RISC OS's order (names compared without case), without the host's
+ * ",xxx" suffixes; -1 if there's no such directory */
+int dir_entries(const char *name, struct dir_entry *e, int max)
+{
+    char saved[2048], dir[2048];
+    int n = 0, found = 0;
+    if (saved_path(name, saved)) { found = 1; n = dir_add(saved, e, n, max); }
+    if (hostpath(name, dir) && !(found && !strcmp(dir, saved))) { found = 1; n = dir_add(dir, e, n, max); }
+    if (!found) return -1;
+    qsort(e, n, sizeof *e, entry_cmp);
+    return n;
+}
 
 static void gbpb_dir(uint32_t op)
 {
-    char name[1100], dir[2048], pat[256] = "*";
+    char name[1100], pat[256] = "*";
     cstr(R[1], name, 1);
     if (R[6]) cstr(R[6], pat, 1);
     ev("OS_GBPB", "is", op, name, (int)strlen(name));
-    if (!hostpath(name, dir)) { R[3] = 0; R[4] = 0xFFFFFFFF; return; }
-    DIR *d = opendir(dir);
-    char *names[256]; int n = 0;
-    struct dirent *e;
-    while (d && (e = readdir(d)) && n < 256) {
-        if (e->d_name[0] == '.') continue;
-        names[n++] = strdup(e->d_name);
-    }
-    if (d) closedir(d);
-    qsort(names, n, sizeof *names, name_cmp);
+    static struct dir_entry e[256];
+    int n = dir_entries(name, e, 256);
+    if (n < 0) { R[3] = 0; R[4] = 0xFFFFFFFF; return; }
     uint32_t want = R[3], off = R[4], out = R[2], end = R[2] + R[5], got = 0;
     int k;
     for (k = 0; k < n && got < want; k++) {
-        char leaf[256], path[2400];
-        snprintf(leaf, sizeof leaf, "%s", names[k]);
-        char *comma = strchr(leaf, ',');
-        if (comma) *comma = 0;
-        for (char *c = leaf; *c; c++) if (*c == '.') *c = '/';
+        const char *leaf = e[k].leaf;
         if ((uint32_t)k < off || !wild(pat, leaf)) continue;
-        snprintf(path, sizeof path, "%s/%s", dir, names[k]);
-        struct stat st;
-        int isdir = stat(path, &st) == 0 && S_ISDIR(st.st_mode);
         uint32_t noff = op == 10 ? 20 : op == 11 ? 29 : 24;               /* where the name goes */
         uint32_t len = strlen(leaf) + 1, rec = op == 9 ? len : (noff + len + 3) & ~3u;
         if (out + rec > end) break;
         if (op != 9) {
-            uint32_t load, exec;
-            file_info(names[k], &load, &exec);
-            if (isdir) { load = 0xFFFFFD00; exec = 0; }
-            WR32(out, load); WR32(out + 4, exec); WR32(out + 8, isdir ? 0 : (uint32_t)st.st_size);
-            WR32(out + 12, 3); WR32(out + 16, isdir ? 2 : 1);                    /* attributes WR, type */
+            uint32_t load = e[k].load;
+            WR32(out, load); WR32(out + 4, e[k].exec); WR32(out + 8, e[k].size);
+            WR32(out + 12, 3); WR32(out + 16, e[k].isdir ? 2 : 1);              /* attributes WR, type */
             if (op == 11) { WR32(out + 20, 0); memset(MEM + out + 24, 0, 5); }  /* SIN, 5-byte date */
             if (op == 12)                                                    /* filetype */
-                WR32(out + 20, isdir ? 0x1000 : (load >> 20) == 0xFFF ? (load >> 8) & 0xFFF : 0xFFFFFFFF);
+                WR32(out + 20, e[k].isdir ? 0x1000 : (load >> 20) == 0xFFF ? (load >> 8) & 0xFFF : 0xFFFFFFFF);
             memcpy(MEM + out + noff, leaf, len);
         } else memcpy(MEM + out, leaf, len);
         out += rec; got++;
     }
     while (k < n && (uint32_t)k < off) k++;
     R[3] = got; R[4] = k >= n ? 0xFFFFFFFF : (uint32_t)k;
-    for (int j = 0; j < n; j++) free(names[j]);
 }
 
 static void os_gbpb(void)
@@ -563,6 +592,20 @@ uint32_t wimp_sprites(void)
 uint32_t sprite_area(void) { return R[0] & 0x300 ? R[1] : sys_sprites(); }
 
 /* Load (replace the area's sprites) or merge (add to them) a sprite file */
+/* *ScreenLoad / OS_SpriteOp 3: 0 if the file isn't there */
+int screen_load(const char *name)
+{
+    char path[2048];
+    if (!hostpath_read(name, path)) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    static uint8_t buf[0x200000];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    if (!vdu_screenload(buf, n)) fprintf(stderr, "*ScreenLoad: no sprite in %s\n", name);
+    return 1;
+}
+
 int sprite_file(uint32_t area, const char *name, int merge)
 {
     char path[2048];
@@ -599,6 +642,12 @@ void sprite_op(void)
     ev("OS_SpriteOp", "iii", R[0], R[1], R[2]);
     if (op == 8) {                                /* read area control block */
         R[2] = RD32(area); R[3] = RD32(area + 4); R[4] = RD32(area + 8); R[5] = RD32(area + 12);
+        return;
+    }
+    if (op == 3) {                                /* screen load */
+        char name[1100];
+        cstr(R[2], name, 1);
+        if (!screen_load(name)) os_error(0xD6, "File not found");
         return;
     }
     if (op == 10 || op == 11) {                   /* load / merge sprite file */

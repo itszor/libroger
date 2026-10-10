@@ -121,6 +121,10 @@ struct roger_config {
     /* --- input */
     int pointer_y_offset;                 /* OS units between the host pointer and the game's
                                              pointer hit point */
+    float mouse_sens;                     /* ...then OS units per host pixel moved (0: 2); a
+                                             game that steers by how far the pointer moved
+                                             wants less, as an Archimedes mouse gave far fewer
+                                             counts than a modern one. --mouse-sens=N overrides */
     int relative_mouse;                   /* capture the host mouse (relative motion) while the
                                              program keeps re-centring the pointer */
     int ctrl_meta_keys;                   /* the runtime's keys are Ctrl+F10/F11/F12 (shaders,
@@ -151,6 +155,10 @@ struct roger_config {
     void (*wimp_idle)(void);              /* Wimp_Poll has no event to return: queue some
                                              (roger_wimp_click() &c.), standing in for the
                                              user at the desktop */
+    void (*filer_run)(const char *name);  /* on the desktop, a directory viewer's application,
+                                             or a file the program didn't load, double-clicked:
+                                             what *Run would do with it (there's only the one
+                                             program). Without it, reported on stderr */
 };
 
 /* Parse the command line, set up the machine and run the program; does not
@@ -194,6 +202,12 @@ void roger_wimp_quit(void);                            /* Message_Quit */
 int32_t roger_wimp_menu_window(void);                  /* the dialogue box open as a menu, or 0 */
 void roger_wimp_save_to(const char *path);             /* the next save dragged out goes to path
                                                           (a Filer under the pointer; "" none) */
+int  roger_filer_open(const char *dir);                /* on the desktop, a directory viewer
+                                                          (*Filer_OpenDir): 0 if not (no desktop) */
+int  roger_filer_load(const char *name, int32_t window, int32_t icon);   /* the file or application
+                                                          given to the program (Message_DataLoad)
+                                                          as if dragged from a viewer to the window
+                                                          and icon (-2: the icon bar): 0 if none */
 uint32_t roger_wimp_icon_buffer(int32_t window, int icon);   /* an icon's indirected text (0: none) */
 void roger_audio_out(const int16_t *lr, int frames, int rate);   /* host audio (stereo) */
 extern uint32_t vidc_palette[16];                      /* live VIDC palette (0x0BGR) */

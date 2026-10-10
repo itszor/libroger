@@ -119,6 +119,9 @@ static void os_word(void)
         for (int k = 0; k < 5; k++) blk[k] = (uint8_t)(t >> 8 * k);
         return;
     }
+    /* read a character's definition: Elite keeps the character set this
+     * way while its game redefines it, and puts it back with VDU 23 */
+    if (R[0] == 10 && blk[0] >= 32) vdu_char_def(blk[0], blk + 1);
     video_os_word(R[0], blk);
     if (R[0] == 21 && blk[0] == 0)
         ev("OS_Word", "isi", R[0], blk, 6, blk[6] | blk[7] << 8 | blk[8] << 16 | (uint32_t)blk[9] << 24);
@@ -223,6 +226,7 @@ static void swi_number_from_string(void)
         {"OS_Exit", 0x11, 0}, {"OS_Module", 0x1E, 0}, {"OS_Mouse", 0x1C, 0}, {"OS_ReadUnsigned", 0x21, 0},
         {"OS_ReadVarVal", 0x23, 0}, {"OS_SetVarVal", 0x24, 0}, {"OS_GSTrans", 0x27, 0},
         {"OS_ReadPalette", 0x2F, 0}, {"OS_ValidateAddress", 0x3A, 0}, {"OS_ReadMonotonicTime", 0x42, 0},
+        {"OS_RemoveCursors", 0x36, 0}, {"OS_RestoreCursors", 0x37, 0},
         {"OS_ReadMemMapInfo", 0x51, 0}, {"OS_ReadRAMFsLimits", 0x55, 0}, {"RamFS_FreeSpace", 0x40783, 0}, {"OS_SerialOp", 0x57, 0},
         {"OS_ConvertStandardDateAndTime", 0xC0, 0}, {"OS_ConvertDateAndTime", 0xC1, 0},
         {"Sound_Configure", 0x40140, 0}, {"Sound_Enable", 0x40141, 0}, {"Sound_Volume", 0x40180, 0},
