@@ -35,8 +35,8 @@ int desktop_visible(void) { return visible; }
 static int dw, dh;                                /* the desktop's size in pixels: the window's */
 #define SW (2 * dw)                               /* ...in OS units */
 #define SH (2 * dh)
-#define BAR_H      96                     /* the icon bar's height (OS units) */
-#define BAR_ORG    16                     /* its icons' y origin */
+#define BAR_H      134                    /* the icon bar's height (OS units), as RISC OS 3's */
+#define BAR_ORG    28                     /* its icons' y origin: text at the bottom, sprites on it */
 #define BAR_GAP    24                     /* between its icons, and at the ends */
 #define B          2                      /* furniture: a border line */
 #define T          40                     /* ...the title bar's height, a scroll bar's width */
@@ -466,6 +466,8 @@ static int icon_sprite(const uint8_t *ic, uint32_t area, struct spr *p)
     return lookup_sprite(area, name, p);
 }
 
+static int bar_icons;                             /* drawing the icon bar's: text may be wider */
+
 /* Where an icon's text and sprite go, x0..y1 its box on the screen */
 struct icon_layout { int tx, ty, sx, sy, n; struct spr sp; int has_sp; char text[256]; };
 static void layout_icon(const uint8_t *ic, int x0, int y0, int x1, int y1, uint32_t area, struct icon_layout *L)
@@ -482,6 +484,9 @@ static void layout_icon(const uint8_t *ic, int x0, int y0, int x1, int y1, uint3
         if (hc && !vc) {                          /* sprite above, text below (the icon bar's) */
             L->sx = (x0 + x1 - sw) / 2; L->sy = y1 - shh;
             L->tx = (x0 + x1 - tw) / 2; L->ty = y0 + CHAR_H;
+            /* on the icon bar, unclipped, the sprite stands on the text
+             * whatever the box's height (Elite's is just the sprite's) */
+            if (bar_icons) L->sy = L->ty;
         } else if (hc) {                          /* both in the middle */
             L->sx = (x0 + x1 - sw) / 2; L->sy = cy - shh / 2;
             L->tx = (x0 + x1 - tw) / 2; L->ty = cy + CHAR_H / 2;
@@ -510,8 +515,6 @@ static void slab(int x0, int y0, int x1, int y1, int in)   /* a 3D edge, 2 pixel
     }
 }
 
-static int bar_icons;                             /* drawing the icon bar's: text may be wider */
-
 static void draw_icon(const uint8_t *ic, int ox, int oy, uint32_t area, int caret_index)
 {
     uint32_t f = wimp_rd(ic + 16);
@@ -524,7 +527,7 @@ static void draw_icon(const uint8_t *ic, int ox, int oy, uint32_t area, int care
     if (sel && !(f & 2)) { int t = fg; fg = bg; bg = t; }
     int c[4];
     clip_save(c);
-    clip_and_os(bar_icons ? -0x10000 : x0, y0, bar_icons ? 0x10000 : x1, y1);
+    if (!bar_icons) clip_and_os(x0, y0, x1, y1);  /* (the icon bar's: just to the bar) */
     if (f & 0x20) fill_os(x0, y0, x1, y1, COL(bg));
     if (rtype >= 1 && rtype <= 7) {               /* border types */
         int in = rtype == 2 || rtype == 4 || rtype == 7 || ((rtype == 5 || rtype == 6) && sel);
