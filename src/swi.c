@@ -111,9 +111,25 @@ static uint64_t rtc_cs(void)
 
 uint8_t kbd_status = 0x30;                   /* Caps Lock and Shift Lock off */
 
+/* The system clock (BASIC's TIME): centiseconds, 5 bytes, counting with
+ * the monotonic timer from the value OS_Word 2 last wrote (0 at start) */
+static uint64_t sysclock_base;
+
 static void os_word(void)
 {
     uint8_t *blk = MEM + R[1];
+    if (R[0] == 1 || R[0] == 2) {                    /* read / write the system clock */
+        if (R[0] == 1) {
+            uint64_t t = (monotonic - sysclock_base) & 0xFFFFFFFFFFull;
+            for (int k = 0; k < 5; k++) blk[k] = (uint8_t)(t >> 8 * k);
+        } else {
+            uint64_t t = 0;
+            for (int k = 4; k >= 0; k--) t = t << 8 | blk[k];
+            sysclock_base = monotonic - t;
+        }
+        ev("OS_Word", "is", R[0], blk, 5);
+        return;
+    }
     if (R[0] == 14 && blk[0] == 3) {                 /* read the RTC: 5 bytes, centiseconds */
         uint64_t t = rtc_cs();
         for (int k = 0; k < 5; k++) blk[k] = (uint8_t)(t >> 8 * k);

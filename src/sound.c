@@ -464,8 +464,15 @@ static int sound_impl(uint32_t b)
     }
     case 0x401C6: R[0] = 0; return 1;      /* Sound_QBeat: no bar counting */
     case 0x40183: {                        /* Sound_InstallVoice: R0 header, R1 slot (0: any free) */
+        /* any free slot from 10: RISC OS 3.1's ROM voices are 1-9
+         * (WaveSynth-Beep, four StringLib, four Percussion), so a module's
+         * voice gets 10 or later, and games attach channels to the numbers
+         * they know it gets (Chocks Away: 10, 13, 14). Only Beep is made
+         * here; 2-9 are given out when 10-32 are full. */
         uint32_t slot = R[1];
-        if (!slot) for (slot = 1; slot < 32 && snd_voice[slot]; slot++) ;
+        if (!slot) for (slot = 10; slot <= 32 && snd_voice[slot]; slot++) ;
+        if (slot > 32) for (slot = 2; slot < 10 && snd_voice[slot]; slot++) ;
+        if (!R[1] && slot == 10 && snd_voice[10]) slot = 33;
         if (slot < 1 || slot > 32) { R[1] = 0; return 1; }
         snd_voice[slot] = R[0];
         R[1] = slot;
