@@ -11,7 +11,10 @@
  * update, OS_File save, *Save) go to savedir, mirroring their path, so the
  * extracted originals stay untouched; reads prefer a saved copy when there
  * is one. A RAM disc (roger_config.ramfs_size), RAM:$ or RAM::0.$, is a
- * temporary host directory: empty at start, gone at exit. */
+ * temporary host directory: empty at start, gone at exit. The current
+ * directory (*Dir, OS_FSControl 0) is a directory under the application
+ * directory, at first its top: a relative name (no prefix, variable, disc
+ * or "$") is looked for there first, then from the top as before. */
 #define _GNU_SOURCE                       /* nftw, mkdtemp */
 #include <ctype.h>
 #include <dirent.h>
@@ -125,10 +128,56 @@ static int lookup_in(const char *n, char *out)
     return 1;
 }
 
+/* ---------------------------------------------------------------- the current directory */
+static char csd[1100];                    /* from the top of the application directory ("": it) */
+
+/* a relative name in the current directory: the name from the top, in buf;
+ * NULL if name isn't relative or the current directory is the top */
+static const char *in_csd(const char *name, char *buf, size_t size)
+{
+    while (*name == ' ') name++;
+    if (!csd[0] || !*name || strip_prefixes(name) != name || strchr("<$:&%@^\\", *name) || strchr(name, ':'))
+        return NULL;
+    snprintf(buf, size, "%s.%s", csd, name);
+    return buf;
+}
+
+/* *Dir, OS_FSControl 0: the current directory set to name's ("$", ":0.$",
+ * "ADFS::0.$", a dir prefix or a variable start from the top; "^" is the
+ * parent, "@" the current directory). 0 if there's no such directory. */
+int set_csd(const char *name)
+{
+    char x[1100], d[1100], path[2048];
+    while (*name == ' ') name++;
+    const char *s = strip_prefixes(name);
+    int top = s != name || *name == '<' || !*name;    /* *Dir alone: the user root directory */
+    gstrans(s, x, sizeof x);
+    if (ram_name(x)) return 0;                        /* (not on the RAM disc) */
+    const char *n = x;
+    while (isalnum((unsigned char)*n)) n++;           /* a filing system, "ADFS:" */
+    n = *n == ':' && n > x ? n + 1 : x;
+    if (*n == ':') { top = 1; while (*n && *n != '.') n++; if (*n == '.') n++; }   /* a disc, ":0." */
+    if (*n == '$') { top = 1; n++; if (*n == '.') n++; }
+    snprintf(d, sizeof d, "%s", top ? "" : csd);
+    while (*n) {
+        size_t l = strcspn(n, "."), dl = strlen(d);
+        if (l == 1 && *n == '^') { char *dot = strrchr(d, '.'); *(dot ? dot : d) = 0; }
+        else if (!(l == 1 && *n == '@') && dl + l + 2 < sizeof d)
+            snprintf(d + dl, sizeof d - dl, "%s%.*s", dl ? "." : "", (int)l, n);
+        n += l + (n[l] == '.');
+    }
+    struct stat st;
+    strcpy(path, rg_appdir);
+    if (*d && (!lookup_in(d, path) || stat(path, &st) || !S_ISDIR(st.st_mode))) return 0;
+    strcpy(csd, d);
+    ev("Dir", "s", d, (int)strlen(d));
+    return 1;
+}
+
 /* A RISC OS filename -> the host file: under the application directory
  * (or the RAM disc); "HostFS:" followed by a host path names that host
  * file (e.g. a file given on the command line) */
-int hostpath(const char *name, char *out)
+static int hostpath_top(const char *name, char *out)
 {
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
@@ -141,6 +190,12 @@ int hostpath(const char *name, char *out)
     strcpy(out, rg_appdir);
     if (r) { strcpy(out, ramdir); n = r; }
     return lookup_in(n, out);
+}
+int hostpath(const char *name, char *out)
+{
+    char c[1200];
+    const char *r = in_csd(name, c, sizeof c);
+    return (r && hostpath_top(r, out)) || hostpath_top(name, out);
 }
 int roger_hostpath(const char *name, char *out) { return hostpath(name, out); }
 
@@ -169,7 +224,7 @@ static void save_path(const char *name, char *out, int create);
 
 /* the program's own copy of a file (in savedir, or the RAM disc), whatever
  * its catalogue suffix: 1 if there is one */
-static int saved_path(const char *name, char *out)
+static int saved_path_top(const char *name, char *out)
 {
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
@@ -177,6 +232,13 @@ static int saved_path(const char *name, char *out)
     const char *n = x, *r = ram_name(x);
     snprintf(out, 2048, "%s", r ? ramdir : rg_savedir);
     return lookup_in(r ? r : n, out);
+}
+
+static int saved_path(const char *name, char *out)
+{
+    char c[1200];
+    const char *r = in_csd(name, c, sizeof c);
+    return (r && saved_path_top(r, out)) || saved_path_top(name, out);
 }
 
 /* a file to read: the saved copy if the program has written one */
@@ -390,7 +452,9 @@ static FILE *handles[NHANDLES];           /* RISC OS handle k+1 */
 /* where the program's copy of a file goes; create: make its directories */
 static void save_path(const char *name, char *out, int create)
 {
-    char x[1100];
+    char x[1100], c[1200];
+    const char *r0 = in_csd(name, c, sizeof c);
+    if (r0) name = r0;
     gstrans(strip_prefixes(name), x, sizeof x);
     const char *n = x, *r = ram_name(x);
     snprintf(out, 2048, "%s/", r ? ramdir : rg_savedir);
@@ -670,6 +734,14 @@ int files_swi(uint32_t b)
                  CF = c == EOF; R[0] = c == EOF ? 0 : (uint32_t)c; return 1; }
     case 0x0B: { FILE *f = handle(R[1]); if (f) fputc(R[0] & 0xFF, f); return 1; }   /* OS_BPut */
     case 0x2E: sprite_op(); return 1;
+    case 0x29:                                    /* OS_FSControl */
+        if (R[0] == 0) {                          /* 0: set the current directory to R1's */
+            char name[1100];
+            cstr(R[1], name, 1);
+            if (!set_csd(name)) os_error(0xD6, "Not found");
+            return 1;
+        }
+        return 0;
     }
     return 0;
 }

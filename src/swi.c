@@ -456,7 +456,9 @@ void swi(uint32_t n, uint32_t nextpc)
     case 0x35:                                   /* OS_ReadModeVariable: R0 mode (-1 current), R1 variable */
         R[2] = modevar((int32_t)R[0] < 0 ? -1 : (int64_t)R[0], R[1]);
         return;
-    case 0x11: finish("OS_Exit");
+    case 0x11:                                   /* OS_Exit: a loader program (a utility *Run */
+        if (in_loader) { npc = RETURN_TO_OS; return; }   /* from !Run) ends, and !Run goes on */
+        finish("OS_Exit");
     case 0x2B: finish("OS_GenerateError");
     case 0x42: R[0] = rg_interactive ? (uint32_t)((display_ticks_ns() - rg_t0_ns) / CS_NS)   /* OS_ReadMonotonicTime */
                                      : (uint32_t)(icount / TICK_STEPS); return;

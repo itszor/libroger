@@ -4,7 +4,7 @@
  * set and test variables, load and save files, load and kill modules. The
  * line is GSTrans'd first (<name> expands to a variable's value, <nn> to a
  * character; an unset variable expands to nothing). Implemented: Set,
- * SetEval (integer and string expressions), Unset, If ... Then ... [Else ...], Load,
+ * SetEval (integer and string expressions), Unset, If ... Then ... [Else ...], Dir, Load,
  * Save, RMLoad, RMRun, RMKill, FX, Tuning, and the commands of loaded
  * modules. Anything else is only logged (the OS_CLI event every command
  * writes). */
@@ -320,6 +320,15 @@ int cli_command(const char *line, int x)
         else if (els) snprintf(cmd, sizeof cmd, "%s", els + 4);
         else return 1;
         return cli_command(cmd, x);
+    }
+    if ((p = word_at(s, "Dir"))) {               /* the current directory */
+        arg(&p, name, sizeof name);
+        if (!set_csd(name)) {
+            fprintf(stderr, "*Dir: not found %s\n", name);
+            if (cli_error(x)) return 1;
+            finish("directory not found");
+        }
+        return 1;
     }
     if ((p = word_at(s, "Load"))) {
         char path[2048];

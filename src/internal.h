@@ -61,7 +61,7 @@ int  script_active(void);
 
 /* cpu.c */
 extern uint32_t bank_r13[4], bank_r14[4];
-extern int in_handler, interp_only;
+extern int in_handler, interp_only, in_loader;
 extern uint32_t g_cur_pc;
 extern uint64_t interp_count, smc_count;
 void call_code(uint32_t addr, uint32_t mode, uint32_t r14);
@@ -148,6 +148,7 @@ extern int swi_x;                         /* the current SWI is X-flagged */
 int  cstr(uint32_t a, char *out, int term_ctrl);
 int  hostpath(const char *name, char *out);
 int  hostpath_read(const char *name, char *out);   /* preferring a saved copy */
+int  set_csd(const char *name);                   /* *Dir, OS_FSControl 0: 0 if no such directory */
 void file_info(const char *path, uint32_t *load, uint32_t *exec);
 int  save_file(const char *name, uint32_t addr, uint32_t len);
 long load_file(const char *path, uint32_t addr);

@@ -86,6 +86,9 @@ struct roger_config {
                                              <name> in a filename or command line expands to its
                                              value, so e.g. {"Game$Dir", "!Game"} with appdir
                                              ".." finds <Game$Dir>.Data as ../!Game/Data */
+    const char *directory;                /* the current directory as !Run left it (*Dir), e.g.
+                                             "<Game$Dir>"; relative names are looked for there
+                                             first. Default: the top of appdir */
 
     /* --- the machine as !Run left it */
     int initial_mode;                     /* screen mode */

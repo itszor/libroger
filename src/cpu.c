@@ -177,6 +177,7 @@ void call_addr(uint32_t a)
     }
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
+    if (interp_only) { interp_step(); return; }   /* a loader program: all of it interpreted */
     if (rg->interpreted)
         for (const uint32_t *g = rg->interpreted; g[1]; g += 2)
             if (a >= g[0] && a < g[1]) { interp_step(); return; }   /* a known gap */

@@ -52,10 +52,11 @@ What the configuration covers (all but the image optional):
   or when the program asks for them (`modules`, `on_demand`: *RMLoad,
   *RMRun, OS_Module, and *RMKill again; modules never loaded together may
   share an address and a translation); loader programs !Run runs before it
-  (`loader_programs`, interpreted)
+  (`loader_programs`, interpreted; OS_Exit ends the loader, not the run)
 - its files: the host directory standing in for the application directory
-  and the RISC OS prefixes that mean it, and system variables as !Run sets
-  them (`variables`; `<Game$Dir>` in a filename or command expands)
+  and the RISC OS prefixes that mean it, system variables as !Run sets
+  them (`variables`; `<Game$Dir>` in a filename or command expands) and the
+  current directory it leaves (`directory`: *Dir)
 - the machine as !Run left it: screen mode, WimpSlot, screen memory size and
   placement, initial stack; and whether it's an Archimedes or a Risc PC
   (`vidc20`)
@@ -119,7 +120,10 @@ Implemented:
   IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100;
   OS_IntOff/IntOn (the I bit; interrupts wait); module SWIs run with
   interrupts enabled, as on RISC OS (one may wait for a handler); palette changes part way down the
-  frame (timer 1 started at flyback, VIDC VDSR/VDER/VCR timing)
+  frame (timer 1 started at flyback, VIDC VDSR/VDER/VCR timing); VIDC's
+  horizontal timing (HDSR/HDER: a longer or shifted line, as a program
+  scrolling by a pixel or two at a time sets; HBSR/HBER: the border),
+  shown in the standard mode's window
 - video: the standard 50Hz graphics modes (0, 1, 2, 4, 5, 8, 9, 10, 12, 13,
   15), modes modules define (Service_ModeExtension: VIDC and workspace
   lists, e.g. an overscan mode, shown at their own size), screen banks
@@ -166,7 +170,7 @@ Implemented:
   Beep (voice 1, every channel's to start with) made natively; the
   scheduler (Sound_QSchedule, QTempo); to SDL or a WAV file
 - the command line: Set, SetEval (integer and string expressions), Unset,
-  If ... Then ... Else, Load, Save, Copy (R: recursively), Delete, RMLoad,
+  If ... Then ... Else, Dir, Load, Save, Copy (R: recursively), Delete, RMLoad,
   RMRun, RMKill, FX, IconSprites, ChannelVoice, Filer_OpenDir and
   Filer_CloseDir (directory viewers, on the desktop), and loaded modules' commands, after GSTrans
   (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
@@ -209,7 +213,9 @@ Implemented:
   errors as error blocks (os_error)
 - files: saves keep their type in the host name's suffix (OS_File 0/10,
   and 1-3/18 set it), the save directory looked up ignoring suffixes;
-  "HostFS:" followed by a host path names that host file
+  "HostFS:" followed by a host path names that host file; a current
+  directory (*Dir, OS_FSControl 0) where relative names are looked for
+  first
 
 The desktop
 -----------

@@ -8,7 +8,9 @@
  * Vinit/Vstart/Vend itself (e.g. a scrolling play area flipped between two
  * buffers above a fixed panel reached when DMA wraps from Vend to Vstart);
  * the latter takes over once it happens. VIDC's VDSR/VDER crop the picture
- * vertically; the output window is always the standard 256 lines. Modes
+ * vertically, and its HDSR/HDER and HBSR/HBER set where each line starts,
+ * how long it is and where the border hides it; the output window is
+ * always the standard mode's (256 lines of its width). Modes
  * that only a Risc PC's VIDC20 has (taller, or 16/32 bits per pixel) are
  * shown as they are, with the gamma tables PaletteV sets. */
 #include <string.h>
@@ -259,13 +261,16 @@ void vdu_put(uint8_t c)
  * Writes to &3400000-&35FFFFF: value | register << 26 (the address is
  * ignored). Registers 0-15 are the palette (4 bits each of R, G, B, bits
  * 0-11), 16 the border; 40 VCR, 43 VDSR and 44 VDER give the vertical
- * timing, in raster lines from the start of vertical sync (bits 14-23).
- * Until the program writes them, the standard 50Hz modes' values apply. */
+ * timing, in raster lines from the start of vertical sync (bits 14-23);
+ * 34 HBSR, 35 HDSR, 36 HDER and 37 HBER the horizontal, in units of two
+ * pixels from the start of horizontal sync (bits 14-23). Until the program
+ * writes them, the standard 50Hz modes' values apply. */
 uint32_t vidc_palette[16];               /* 0x0BGR per entry */
 uint32_t vidc_palette_top[16];           /* lines above palette_split */
 int palette_split;
 #define STD_VDSR 38
 static int vidc_vcr = 312, vidc_vdsr = STD_VDSR, vidc_vder = STD_VDSR + 256;
+static int vidc_hdsr = -1, vidc_hder = -1, vidc_hbsr = -1, vidc_hber = -1;   /* -1: the mode's own */
 static int vidc_seen[64];
 static int memc_direct;
 static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
@@ -276,6 +281,7 @@ static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
 static void reset_timing(void)
 {
     vidc_vcr = 312; vidc_vdsr = STD_VDSR; vidc_vder = STD_VDSR + 256;
+    vidc_hdsr = vidc_hder = vidc_hbsr = vidc_hber = -1;
     memc_direct = 0; memc_vinit = 0; memc_vstart = 0; memc_vend = ~0u;
     display_off = 0;
 }
@@ -288,6 +294,10 @@ void vidc_write(uint32_t v)
     if (reg == 40) vidc_vcr = val >> 14;
     if (reg == 43) vidc_vdsr = val >> 14;
     if (reg == 44) vidc_vder = val >> 14;
+    if (reg == 34) vidc_hbsr = val >> 14;
+    if (reg == 35) vidc_hdsr = val >> 14;
+    if (reg == 36) vidc_hder = val >> 14;
+    if (reg == 37) vidc_hber = val >> 14;
     if (val != 0 || vidc_seen[reg] < 8) {            /* vidc.log: the first few of each, and non-zero */
         vidc_seen[reg]++;
         FILE *f = fopen("vidc.log", "a");
@@ -361,26 +371,64 @@ void memc_write(uint32_t a)
     }
 }
 
+/* Horizontally, output pixel x of the window is raster pixel start + x
+ * (pixels from the start of sync): where a standard mode's display starts,
+ * as RISC OS's mode tables set HDSR - 131 at 8MHz (320 pixels wide), 261
+ * at 16MHz (640). VIDC's display starts at HDSR * 2 plus a delay that
+ * depends on the depth (19, 11, 7, 5 pixels at 1, 2, 4, 8 bpp) and is
+ * (HDER - HDSR) * 2 pixels long; the border covers raster pixels before
+ * HBSR * 2 + 1 and from HBER * 2 + 1. */
+static int hpix(const uint8_t *line, int i, int bpp)
+{
+    int per = 8 / bpp;
+    return line[i / per] >> (i % per * bpp) & ((1 << bpp) - 1);
+}
+
+static void put_hpix(uint8_t *line, int i, int bpp, int v)
+{
+    int per = 8 / bpp, sh = i % per * bpp;
+    line[i / per] = (uint8_t)((line[i / per] & ~(((1 << bpp) - 1) << sh)) | v << sh);
+}
+
 /* The frame as the display hardware shows it: 256 lines of the current
- * mode's pixels (output lines outside VDSR..VDER are border, shown as
- * colour 0). */
+ * mode's pixels (output lines outside VDSR..VDER, and pixels outside the
+ * display or inside the border horizontally, are border, shown as colour
+ * 0). */
 const uint8_t *displayed(void)
 {
-    static uint8_t frame[640 * 256];
+    static uint8_t frame[640 * 256], line[2048];
     const struct rg_mode *m = cur_mode();
     uint32_t sz = mode_bytes(m), row = sz / 256, total = screen_size();
-    if (!vidc1_mode(m) || (!memc_direct && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
+    int hprog = (m->width == 320 || m->width == 640) &&
+                ((vidc_hdsr >= 0 && vidc_hder > vidc_hdsr) || vidc_hbsr >= 0 || vidc_hber >= 0);
+    if (!vidc1_mode(m) || (!memc_direct && !hprog && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
         return MEM + screen_base() + display_off + display_bank * sz;
     uint32_t p = memc_direct ? memc_vinit : display_off + display_bank * sz;
     uint32_t end = memc_direct && memc_vend != ~0u ? memc_vend + 16 : total;
     int first = vidc_vdsr - STD_VDSR, last = vidc_vder - STD_VDSR;   /* output lines shown */
+    static const int delay[9] = {0, 19, 11, 0, 7, 0, 0, 0, 5};
+    int bpp = m->bpp, start = m->width == 320 ? 131 : 261;
+    int dstart = start, dpx = m->width;                            /* the display, in raster pixels */
+    if (hprog && vidc_hdsr >= 0 && vidc_hder > vidc_hdsr) {
+        dstart = vidc_hdsr * 2 + delay[bpp];
+        dpx = (vidc_hder - vidc_hdsr) * 2;
+    }
+    int bl = vidc_hbsr >= 0 ? vidc_hbsr * 2 + 1 : 0, br = vidc_hber >= 0 ? vidc_hber * 2 + 1 : 1 << 30;
+    uint32_t len = (uint32_t)dpx * bpp / 8;                        /* bytes of DMA a line */
+    if (len > sizeof line) len = sizeof line;
+    int plain = dstart == start && len == row && bl <= start && br >= start + m->width;
     for (int y = 0; y < 256; y++) {
         uint8_t *d = frame + y * row;
         if (y < first || y >= last) { memset(d, 0, row); continue; }
-        for (uint32_t n = 0; n < row; n += 16) {
-            memcpy(d + n, MEM + screen_base() + (p % total), 16);
-            p += 16;
-            if (p == end) p = memc_direct ? memc_vstart : 0;
+        uint8_t *l = plain ? d : line;
+        for (uint32_t n = 0; n < len; n++) {
+            l[n] = MEM[screen_base() + (p % total)];
+            if (++p == end) p = memc_direct ? memc_vstart : 0;
+        }
+        if (plain) continue;
+        for (int x = 0; x < m->width; x++) {
+            int r = start + x, i = r - dstart;
+            put_hpix(d, x, bpp, r < bl || r >= br || i < 0 || i >= dpx ? 0 : hpix(line, i, bpp));
         }
     }
     return frame;

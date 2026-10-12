@@ -180,6 +180,8 @@ static void *watchdog(void *arg)
 /* A loader-stage program (e.g. a title picture) run with the interpreter
  * before the program: it overlaps the program's addresses, so nothing
  * translated is used. */
+int in_loader;                            /* running a loader program */
+
 static void run_loader_program(const char *name)
 {
     char path[2048];
@@ -190,9 +192,9 @@ static void run_loader_program(const char *name)
     memcpy(saved, R, sizeof R);
     R[13] = rg->stack ? rg->stack : ram_limit(); R[14] = RETURN_TO_OS; R[12] = 0;
     npc = LOAD;
-    interp_only = 1;
+    interp_only = in_loader = 1;
     run_until(RETURN_TO_OS);
-    interp_only = 0;
+    interp_only = in_loader = 0;
     memset(MEM + LOAD, 0, n);
     memcpy(R, saved, sizeof R);
     NF = ZF = CF = VF = 0;
@@ -286,6 +288,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     if (wavpath && !audio_init_wav(wavpath)) fprintf(stderr, "cannot write %s\n", wavpath);
     if (!video_set_mode(cfg->initial_mode ? cfg->initial_mode : 12)) video_set_mode(12);   /* what !Run selected */
     cli_init();
+    if (cfg->directory && !set_csd(cfg->directory)) fprintf(stderr, "warning: no directory %s\n", cfg->directory);
     if (rg_full_os && !no_title && cfg->loader_programs) {
         for (int k = 0; cfg->loader_programs[k]; k++) run_loader_program(cfg->loader_programs[k]);
         recompute_irq();
