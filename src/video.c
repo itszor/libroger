@@ -261,7 +261,9 @@ void vdu_put(uint8_t c)
  * Writes to &3400000-&35FFFFF: value | register << 26 (the address is
  * ignored). Registers 0-15 are the palette (4 bits each of R, G, B, bits
  * 0-11), 16 the border; 40 VCR, 43 VDSR and 44 VDER give the vertical
- * timing, in raster lines from the start of vertical sync (bits 14-23);
+ * timing, in raster lines from the start of vertical sync (bits 14-23),
+ * and 42 VBSR and 45 VBER the border, covering lines of the display above
+ * VBSR and from VBER (a program hiding a few lines it draws into);
  * 34 HBSR, 35 HDSR, 36 HDER and 37 HBER the horizontal, in units of two
  * pixels from the start of horizontal sync (bits 14-23). Until the program
  * writes them, the standard 50Hz modes' values apply. */
@@ -271,6 +273,7 @@ int palette_split;
 #define STD_VDSR 38
 static int vidc_vcr = 312, vidc_vdsr = STD_VDSR, vidc_vder = STD_VDSR + 256;
 static int vidc_hdsr = -1, vidc_hder = -1, vidc_hbsr = -1, vidc_hber = -1;   /* -1: the mode's own */
+static int vidc_vbsr = -1, vidc_vber = -1;
 static int vidc_seen[64];
 static int memc_direct;
 static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
@@ -282,6 +285,7 @@ static void reset_timing(void)
 {
     vidc_vcr = 312; vidc_vdsr = STD_VDSR; vidc_vder = STD_VDSR + 256;
     vidc_hdsr = vidc_hder = vidc_hbsr = vidc_hber = -1;
+    vidc_vbsr = vidc_vber = -1;
     memc_direct = 0; memc_vinit = 0; memc_vstart = 0; memc_vend = ~0u;
     display_off = 0;
 }
@@ -298,6 +302,8 @@ void vidc_write(uint32_t v)
     if (reg == 35) vidc_hdsr = val >> 14;
     if (reg == 36) vidc_hder = val >> 14;
     if (reg == 37) vidc_hber = val >> 14;
+    if (reg == 42) vidc_vbsr = val >> 14;
+    if (reg == 45) vidc_vber = val >> 14;
     if (val != 0 || vidc_seen[reg] < 8) {            /* vidc.log: the first few of each, and non-zero */
         vidc_seen[reg]++;
         FILE *f = fopen("vidc.log", "a");
@@ -391,9 +397,9 @@ static void put_hpix(uint8_t *line, int i, int bpp, int v)
 }
 
 /* The frame as the display hardware shows it: 256 lines of the current
- * mode's pixels (output lines outside VDSR..VDER, and pixels outside the
- * display or inside the border horizontally, are border, shown as colour
- * 0). */
+ * mode's pixels (output lines outside VDSR..VDER or VBSR..VBER, and
+ * pixels outside the display or inside the border horizontally, are
+ * border, shown as colour 0). */
 const uint8_t *displayed(void)
 {
     static uint8_t frame[640 * 256], line[2048];
@@ -401,7 +407,8 @@ const uint8_t *displayed(void)
     uint32_t sz = mode_bytes(m), row = sz / 256, total = screen_size();
     int hprog = (m->width == 320 || m->width == 640) &&
                 ((vidc_hdsr >= 0 && vidc_hder > vidc_hdsr) || vidc_hbsr >= 0 || vidc_hber >= 0);
-    if (!vidc1_mode(m) || (!memc_direct && !hprog && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
+    int vb = vidc_vbsr > vidc_vdsr || (vidc_vber >= 0 && vidc_vber < vidc_vder);   /* border over the display */
+    if (!vidc1_mode(m) || (!memc_direct && !hprog && !vb && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
         return MEM + screen_base() + display_off + display_bank * sz;
     uint32_t p = memc_direct ? memc_vinit : display_off + display_bank * sz;
     uint32_t end = memc_direct && memc_vend != ~0u ? memc_vend + 16 : total;
@@ -424,6 +431,11 @@ const uint8_t *displayed(void)
         for (uint32_t n = 0; n < len; n++) {
             l[n] = MEM[screen_base() + (p % total)];
             if (++p == end) p = memc_direct ? memc_vstart : 0;
+        }
+        int ry = y + STD_VDSR;                                     /* its raster line */
+        if (vb && ((vidc_vbsr >= 0 && ry < vidc_vbsr) || (vidc_vber >= 0 && ry >= vidc_vber))) {
+            memset(d, 0, row);                                     /* under the border */
+            continue;
         }
         if (plain) continue;
         for (int x = 0; x < m->width; x++) {
