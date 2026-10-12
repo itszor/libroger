@@ -1489,7 +1489,7 @@ static void held(int x, int y)
         int len = v ? p.y1 - p.y0 - 2 * B : p.x1 - p.x0 - 2 * B, size = s2 - a;
         int total = v ? g.ey1 - g.ey0 : g.ex1 - g.ex0, vsz = v ? g.vy1 - g.vy0 : g.vx1 - g.vx0;
         if (len <= size || total <= vsz) return;
-        if (v) sy -= dy * (total - vsz) / (len - size);
+        if (v) sy += dy * (total - vsz) / (len - size);   /* (dragged down: dy < 0, sy down too) */
         else sx += dx * (total - vsz) / (len - size);
         clamp_scroll(&g, &sx, &sy);
         break;
