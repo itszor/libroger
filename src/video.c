@@ -210,6 +210,15 @@ static const uint32_t std16[16] = {
     0x000, 0x00F, 0x0F0, 0x0FF, 0xF00, 0xF0F, 0xFF0, 0xFFF,
     0x555, 0x009, 0x090, 0x099, 0x900, 0x909, 0x990, 0xAAA};
 
+/* A Risc PC's 256-colour modes: VIDC20 has a palette entry, 8 bits a gun,
+ * for each of the 256 pixel values, and VDU 19 / OS_Word 11 and 12 address
+ * them all (RISC OS 3.5). An Archimedes' VIDC1 has 16 entries, and the top
+ * four bits of a pixel drive the colour directly (vidc_rgb()). */
+static uint32_t vidc20_pal[256];                  /* 0xRRGGBB */
+static uint32_t vidc1_rgb(const uint32_t *pal, uint8_t p);
+static int full_palette(void) { return rg->vidc20 && cur_mode()->bpp == 8; }
+static uint32_t rgb12(uint32_t v) { return (v & 0xF) * 17 << 16 | (v >> 4 & 0xF) * 17 << 8 | (v >> 8 & 0xF) * 17; }
+
 /* ---------------------------------------------------------------- VDU stream
  * Every byte written is recorded (finish() saves it); interactive runs also
  * pass it to the VDU drivers (vdu.c). Mode changes are followed here. */
@@ -231,7 +240,10 @@ void vdu_put(uint8_t c)
         q[qn++] = c;
         if (qn == qwant) {
             if (q[0] == 22 && !disabled) video_set_mode(q[1]);
-            if (q[0] == 19 && !disabled) {          /* palette: logical, physical (16: R,G,B) */
+            if (q[0] == 19 && !disabled && full_palette()) {
+                if (q[2] == 16) vidc20_pal[q[1]] = (uint32_t)q[3] << 16 | (uint32_t)q[4] << 8 | q[5];
+                else if (q[2] < 16) vidc20_pal[q[1]] = rgb12(std16[q[2]]);
+            } else if (q[0] == 19 && !disabled) {   /* palette: logical, physical (16: R,G,B) */
                 int l = q[1] & 15, p = q[2];
                 if (p == 16) vidc_palette[l] = (q[3] >> 4) | (uint32_t)(q[4] >> 4) << 4 | (uint32_t)(q[5] >> 4) << 8;
                 else if (p < 16) vidc_palette[l] = std16[p];    /* (24 border, 25 pointer: not shown) */
@@ -300,7 +312,12 @@ int video_timer_line(uint32_t latch)
  * bit 7 blue 3. */
 uint32_t vidc_rgb(int line, uint8_t p)
 {
-    const uint32_t *pal = line < palette_split ? vidc_palette_top : vidc_palette;
+    if (full_palette()) return vidc20_pal[p];
+    return vidc1_rgb(line < palette_split ? vidc_palette_top : vidc_palette, p);
+}
+
+static uint32_t vidc1_rgb(const uint32_t *pal, uint8_t p)
+{
     uint32_t v = pal[p & 15];
     int r = v & 0xF, g = (v >> 4) & 0xF, b = (v >> 8) & 0xF;
     if (cur_mode()->bpp == 8) {
@@ -322,6 +339,8 @@ void video_default_palette(void)
             vidc_palette[c] = (uint32_t)((c >> 2 & 1) << 2 | t) | (uint32_t)t << 4 | (uint32_t)((c >> 3 & 1) << 2 | t) << 8;
         } else vidc_palette[c] = std16[c];
     }
+    if (full_palette())                       /* the same colours, in all 256 entries */
+        for (int p = 0; p < 256; p++) vidc20_pal[p] = vidc1_rgb(vidc_palette, (uint8_t)p);
 }
 
 /* ---------------------------------------------------------------- MEMC
@@ -402,6 +421,13 @@ int video_os_word(uint32_t r0, uint8_t *blk)
     }
     if (r0 == 21 && blk[0] == 1)                        /* define the pointer's bounding box */
         for (int k = 0; k < 4; k++) mbox[k] = (int16_t)(blk[1 + 2 * k] | blk[2 + 2 * k] << 8);
+    if ((r0 == 11 || r0 == 12) && full_palette()) {
+        uint32_t *e = &vidc20_pal[blk[0]];
+        if (r0 == 12 && blk[1] == 16) *e = (uint32_t)blk[2] << 16 | (uint32_t)blk[3] << 8 | blk[4];
+        else if (r0 == 12 && blk[1] < 16) *e = rgb12(std16[blk[1]]);
+        else if (r0 == 11) { blk[1] = 16; blk[2] = (uint8_t)(*e >> 16); blk[3] = (uint8_t)(*e >> 8); blk[4] = (uint8_t)*e; }
+        return 0;
+    }
     if (r0 == 11) {                                     /* read palette: colour -> mode 16, R, G, B */
         uint32_t v = vidc_palette[blk[0] & 0xF];
         blk[1] = 16;

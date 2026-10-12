@@ -261,14 +261,49 @@ static void swi_number_from_string(void)
     VF = 1;                                      /* "SWI name not known" */
 }
 
+/* The modes OS_ScreenMode 2 lists: what the monitor definition file of a
+ * multisync monitor offers, at the depths VIDC20 shows - the Archimedes'
+ * 50Hz TV-rate resolutions and the multisync ones (all of which libroger
+ * shows), 1 to 32 bits per pixel. */
+static const struct { uint16_t w, h, hz; } enum_modes[] = {
+    {320, 256, 50}, {640, 256, 50}, {640, 512, 60}, {640, 480, 60}, {800, 600, 60},
+};
+
+/* OS_ScreenMode 2: enumerate the available modes. R2 entries are skipped,
+ * then each is written at R6 (format 1: +0 size, +4 flags 1, +8 x pixels,
+ * +12 y pixels, +16 log2 bpp, +20 frame rate, +24 name; no names here) while
+ * R7 has room; R2 counts down through both, R6/R7 move past what's written.
+ * R6 = 0 only counts: R7 goes down by the space needed. R1 = 0 when the list
+ * ran out (else preserved: call again from the new R2). */
+static void enumerate_modes(void)
+{
+    for (unsigned k = 0; k < sizeof enum_modes / sizeof enum_modes[0]; k++)
+        for (int l2 = 0; l2 <= 5; l2++) {
+            struct rg_mode m = {enum_modes[k].w, enum_modes[k].h, 1 << l2};
+            if (mode_bytes(&m) > 0x200000) continue;
+            if ((int32_t)R[2] > 0) { R[2]--; continue; }
+            if (R[6] && R[7] < 28) return;
+            if (R[6]) {
+                uint32_t e[7] = {28, 1, m.width, m.height, (uint32_t)l2, enum_modes[k].hz, 0};
+                for (int i = 0; i < 7; i++) WR32(R[6] + 4 * i, e[i]);
+                R[6] += 28;
+            }
+            R[7] -= 28;
+            R[2]--;
+        }
+    R[1] = 0;
+}
+
 /* OS_ScreenMode (Risc PC): 0 select mode R1 (a number or a selector), 1
- * read the current one into R1 */
+ * read the current one into R1, 2 enumerate the modes */
 static int screen_mode_swi(void)
 {
     if (!rg->vidc20) return 0;
-    ev("OS_ScreenMode", "ii", R[0], R[1]);
+    if (R[0] == 2) ev("OS_ScreenMode", "iii", R[0], R[1], R[2]);
+    else ev("OS_ScreenMode", "ii", R[0], R[1]);
     if (R[0] == 0) { if (R[1] < 0x100) { vdu_put(22); vdu_put(R[1]); } else if (!video_set_mode(R[1])) VF = 1; }
     else if (R[0] == 1) R[1] = screen_mode;
+    else if (R[0] == 2) enumerate_modes();
     return 1;
 }
 
