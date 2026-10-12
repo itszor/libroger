@@ -472,7 +472,7 @@ void swi(uint32_t n, uint32_t nextpc)
     }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
-    if (cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
+    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");

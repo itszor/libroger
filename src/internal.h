@@ -320,6 +320,11 @@ int  pad_setup(const char *opt1, const char *opt2);   /* the mappings: 0 if one 
 void pad_set(int pad, int control, int source, int down);
 void pad_release_all(int pad);
 int  host_internal_key(int scancode);     /* SDL scancode -> internal key number, -1 */
+extern int rg_joystick;                   /* the joystick interfaces answered (0: none) */
+extern int rg_joystick_opt;               /* --joystick: 1, =off: 0, else -1 */
+void joystick_start(int controllers);
+void pad_axis(int pad, int axis, int value);   /* left stick x (0) or y (1), SDL's -32768..32767 */
+int  joystick_swi(uint32_t swi);          /* 1 if it's a joystick SWI, answered */
 extern int mouse_x, mouse_y, mouse_buttons;   /* OS units; 4 select, 2 menu, 1 adjust */
 extern int quit_requested, escape_pressed, screenshot_requested;
 int  key_buffer_get(void);

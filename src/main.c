@@ -234,6 +234,9 @@ static void usage(const char *prog)
            "                    --pad=a=Z,b=X,start=Space (controls: up down left right a b x y\n"
            "                    lb rb lt rt back start guide ls rs; keys as SDL names them);\n"
            "                    --pad=off: none\n"
+           "  --joystick        the controllers are the joystick the game reads, even headless\n"
+           "                    (default: if the game reads one and a controller is connected);\n"
+           "                    --joystick=off: they're keys only\n"
            "  --app=DIR         the program's directory   --save=DIR  where written files go\n"
            "  --out=PREFIX      output files PREFIX.events/.vdu/.screen/.regs\n%s",
            prog, rg->usage ? rg->usage : "");
@@ -269,6 +272,8 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
         else if (!strcmp(argv[k], "--no-sound")) no_sound = 1;
         else if (!strcmp(argv[k], "--pad=off")) rg_pads = 0;
+        else if (!strcmp(argv[k], "--joystick")) rg_joystick_opt = 1;
+        else if (!strcmp(argv[k], "--joystick=off")) rg_joystick_opt = 0;
         else if (!strncmp(argv[k], "--pad=", 6)) pad_opt = argv[k] + 6;
         else if (!strncmp(argv[k], "--pad2=", 7)) pad2_opt = argv[k] + 7;
         else if (!strcmp(argv[k], "--crt")) shader = "crt";
@@ -288,6 +293,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else image = argv[k];
     }
     if (!pad_setup(pad_opt, pad2_opt)) exit(1);
+    if (!rg_interactive) joystick_start(0);      /* (headless: only with --joystick) */
     rg_mips = mips_opt >= 0 ? mips_opt : cfg->mips;
     rg_mouse_sens = sens_opt > 0 ? sens_opt : cfg->mouse_sens > 0 ? cfg->mouse_sens : 2.0f;
     signal(SIGINT, on_signal);

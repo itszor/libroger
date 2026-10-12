@@ -142,6 +142,11 @@ struct roger_config {
                                              guide ls rs; keys by SDL's names, e.g. "Z", "Return",
                                              "'"); --pad= overrides */
     const char *pad2_map;                 /* a second controller's (default: the first's) */
+    int joystick;                         /* joystick interfaces the program reads, which
+                                             libroger answers from the controllers: ROGER_JOY_*
+                                             (src/pad.c). On when a controller is connected at
+                                             start, or --joystick; the D-pad, left stick, a and b
+                                             are then the joystick's, not keys */
 
     /* --- translation gaps: [from, to) address pairs, ending 0,0, that are
      * interpreted silently. Any other untranslated address stops the run
@@ -169,6 +174,12 @@ struct roger_config {
                                              what *Run would do with it (there's only the one
                                              program). Without it, reported on stderr */
 };
+
+/* roger_config.joystick: the interfaces, and how directions are given */
+#define ROGER_JOY_ACORN    1   /* Acorn's Joystick module: Joystick_Read (&43F40) */
+#define ROGER_JOY_KM       2   /* Keith Martin's (The Fourth Dimension's): Joy_Read0/1 (&CFFC0) */
+#define ROGER_JOY_ANALOGUE 4   /* Joystick_Read gives the left stick's position (-127..127),
+                                  not a digital joystick's -64, 0 or 64 */
 
 /* Parse the command line, set up the machine and run the program; does not
  * return (exits when the program ends, the window is closed, or the

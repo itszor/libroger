@@ -187,8 +187,8 @@ static void gamepad_event(const SDL_Event *e)
             if ((neg) >= 0) { if (v < -16384) pad_set(p, neg, PAD_STICK, 1); else if (v > -8192) pad_set(p, neg, PAD_STICK, 0); } \
         } while (0)
         switch (e->gaxis.axis) {
-        case SDL_GAMEPAD_AXIS_LEFTX: AXIS(PAD_LEFT, PAD_RIGHT); break;
-        case SDL_GAMEPAD_AXIS_LEFTY: AXIS(PAD_UP, PAD_DOWN); break;
+        case SDL_GAMEPAD_AXIS_LEFTX: pad_axis(p, 0, v); AXIS(PAD_LEFT, PAD_RIGHT); break;
+        case SDL_GAMEPAD_AXIS_LEFTY: pad_axis(p, 1, v); AXIS(PAD_UP, PAD_DOWN); break;
         case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: AXIS(-1, PAD_LT); break;
         case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: AXIS(-1, PAD_RT); break;
         }
@@ -265,6 +265,7 @@ int display_init(int scale, const char *fs, const char *shader)
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 0; }
     if (SDL_GetModState() & SDL_KMOD_CAPS) kbd_status &= ~0x10;   /* Caps Lock as the host has it */
     if (rg_pads && !SDL_InitSubSystem(SDL_INIT_GAMEPAD)) SDL_Log("game controllers: %s", SDL_GetError());
+    joystick_start(rg_pads && SDL_HasGamepad());
     ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
     if (ren && !shader_init(ren)) SDL_Log("display shaders unavailable (no SPIR-V)");
     if (!ren) ren = SDL_CreateRenderer(win, NULL);

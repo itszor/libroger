@@ -88,7 +88,7 @@ replayed and screenshotted deterministically),
 speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),
 `--mouse-sens=N`, `--pad=MAP`, `--pad2=MAP` and `--pad=off` (game
-controllers, below), `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
+controllers, below), `--joystick` and `--joystick=off`, `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
 `--crt` = `--shader=crt`), `--list-shaders`, `--no-sound`, `--wav=F`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
 
@@ -379,3 +379,16 @@ a=Return,...", keys by SDL's names, or inkeyN) goes over libroger's default
 (the cursor keys, a Space, b and start Return, back Escape), and --pad=
 over that; a second controller has `pad2_map` (default: the first's). In
 headless runs, --script's pad:control[:ms] and pad2:... press one (src/pad.c).
+
+Joysticks: a program that reads a joystick interface says so
+(`roger_config.joystick`), and when a controller is connected at start (or
+with --joystick; --joystick=off never) libroger answers the interface's
+SWIs from the controllers, ahead of any module that would read its
+hardware: ROGER_JOY_ACORN, Acorn's Joystick module (Joystick_Read: y and
+x signed, -64/0/64 as the A3010's digital ports give, or with
+ROGER_JOY_ANALOGUE the stick's position; bit 16 a, 17 b), and
+ROGER_JOY_KM, Keith Martin's interface in The Fourth Dimension's games
+(Joy_Read0/1: five lines, high when pressed - right, left, down, up,
+fire). The D-pad, left stick, a and b are then the joystick's, not keys;
+the other controls keep their keys. Joystick 0 is the first controller,
+1 the second.
