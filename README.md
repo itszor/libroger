@@ -63,7 +63,8 @@ What the configuration covers (all but the image optional):
 - interrupts: a raw IRQ handler at &100 (`irq1v`) for games that bypass the
   kernel's device vectors
 - input: pointer offset, relative mouse capture (and its sensitivity:
-  `mouse_sens`, `--mouse-sens=N`), the headless scenario
+  `mouse_sens`, `--mouse-sens=N`), game controllers (`pad_map`, `pad2_map`:
+  the keys their controls hold), the headless scenario
 - translation gaps that are known and may be interpreted
 - hooks: init, every frame, every centisecond, first look at SWIs and at
   dispatch, extra command-line arguments, the program returning to the OS
@@ -86,7 +87,8 @@ replayed and screenshotted deterministically),
 `--desktop[=WxH]` and `--windowed-games` (below), `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
 speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),
-`--mouse-sens=N`, `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
+`--mouse-sens=N`, `--pad=MAP`, `--pad2=MAP` and `--pad=off` (game
+controllers, below), `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
 `--crt` = `--shader=crt`), `--list-shaders`, `--no-sound`, `--wav=F`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
 
@@ -363,3 +365,17 @@ Files
     shaders/             the display shaders: build.py, own/, slang/ (from
                          libretro's slang-shaders), generated/chains.c; see
                          shaders/README
+
+Game controllers
+----------------
+
+Controllers SDL knows as gamepads (Xbox, PlayStation, ...) play as the
+keyboard: each control holds a RISC OS key while it's pressed, so every
+way a program reads keys (INKEY, OS_Byte 121, key transition events, the
+keyboard buffer) sees it, and no program needs to know. The controls are
+up down left right (the D-pad, and the left stick past half way), a b x y,
+lb rb lt rt, back start guide, ls rs. A game's `pad_map` ("left=Z,right=X,
+a=Return,...", keys by SDL's names, or inkeyN) goes over libroger's default
+(the cursor keys, a Space, b and start Return, back Escape), and --pad=
+over that; a second controller has `pad2_map` (default: the first's). In
+headless runs, --script's pad:control[:ms] and pad2:... press one (src/pad.c).

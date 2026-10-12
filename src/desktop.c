@@ -1629,12 +1629,12 @@ static void keys(void)
     static uint8_t was[128];
     for (unsigned i = 0; i < sizeof special / sizeof *special; i++) {
         int k = special[i].k;
-        if (key_down[k] && !was[k]) {
+        if (key_held(k) && !was[k]) {
             int code = special[i].code;
-            if (code >= 0x180) code += (key_down[0] ? 0x10 : 0) + (key_down[1] ? 0x20 : 0);
+            if (code >= 0x180) code += (key_held(0) ? 0x10 : 0) + (key_held(1) ? 0x20 : 0);
             key(code);
         }
-        was[k] = key_down[k];
+        was[k] = key_held(k);
     }
     if (escape_pressed) { escape_pressed = 0; key(27); }
     int c;

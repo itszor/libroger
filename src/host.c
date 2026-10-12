@@ -89,6 +89,9 @@ int key_buffer_get(void)
 }
 
 /* SDL scancode -> RISC OS internal key number (INKEY -(n+1)), -1 if none */
+static int internal_key(SDL_Scancode s);
+int host_internal_key(int s) { return internal_key((SDL_Scancode)s); }
+
 static int internal_key(SDL_Scancode s)
 {
     static const struct { SDL_Scancode s; int k; } map[] = {
@@ -128,6 +131,71 @@ static int internal_key(SDL_Scancode s)
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
         if (map[i].s == s) return map[i].k;
     return -1;
+}
+
+/* ---------------------------------------------------------------- game controllers
+ * The first two controllers connected are pads 0 and 1 (pad.c maps their
+ * controls to keys). The left stick and the triggers count as pressed
+ * past half way, released below a quarter. */
+static SDL_JoystickID pad_id[2];
+
+static int pad_of(SDL_JoystickID id)
+{
+    for (int p = 0; p < 2; p++) if (pad_id[p] == id) return p;
+    return -1;
+}
+
+static void gamepad_event(const SDL_Event *e)
+{
+    static const int button[SDL_GAMEPAD_BUTTON_COUNT] = {
+        [SDL_GAMEPAD_BUTTON_SOUTH] = PAD_A + 1, [SDL_GAMEPAD_BUTTON_EAST] = PAD_B + 1,
+        [SDL_GAMEPAD_BUTTON_WEST] = PAD_X + 1, [SDL_GAMEPAD_BUTTON_NORTH] = PAD_Y + 1,
+        [SDL_GAMEPAD_BUTTON_BACK] = PAD_BACK + 1, [SDL_GAMEPAD_BUTTON_GUIDE] = PAD_GUIDE + 1,
+        [SDL_GAMEPAD_BUTTON_START] = PAD_START + 1, [SDL_GAMEPAD_BUTTON_LEFT_STICK] = PAD_LS + 1,
+        [SDL_GAMEPAD_BUTTON_RIGHT_STICK] = PAD_RS + 1, [SDL_GAMEPAD_BUTTON_LEFT_SHOULDER] = PAD_LB + 1,
+        [SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = PAD_RB + 1, [SDL_GAMEPAD_BUTTON_DPAD_UP] = PAD_UP + 1,
+        [SDL_GAMEPAD_BUTTON_DPAD_DOWN] = PAD_DOWN + 1, [SDL_GAMEPAD_BUTTON_DPAD_LEFT] = PAD_LEFT + 1,
+        [SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = PAD_RIGHT + 1,
+    };
+    int p;
+    switch (e->type) {
+    case SDL_EVENT_GAMEPAD_ADDED:
+        for (p = 0; p < 2 && pad_id[p]; p++) ;
+        if (p < 2 && SDL_OpenGamepad(e->gdevice.which)) {
+            pad_id[p] = e->gdevice.which;
+            SDL_Log("controller %d: %s", p + 1, SDL_GetGamepadNameForID(e->gdevice.which));
+        }
+        break;
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        if ((p = pad_of(e->gdevice.which)) >= 0) {
+            pad_release_all(p);
+            SDL_CloseGamepad(SDL_GetGamepadFromID(pad_id[p]));
+            pad_id[p] = 0;
+        }
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        if ((p = pad_of(e->gbutton.which)) >= 0 && e->gbutton.button < SDL_GAMEPAD_BUTTON_COUNT &&
+            button[e->gbutton.button])
+            pad_set(p, button[e->gbutton.button] - 1, PAD_BUTTON, e->gbutton.down);
+        break;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+        if ((p = pad_of(e->gaxis.which)) < 0) break;
+        int v = e->gaxis.value;
+        #define AXIS(neg, pos) do { \
+            if (v > 16384) pad_set(p, pos, PAD_STICK, 1); else if (v < 8192) pad_set(p, pos, PAD_STICK, 0); \
+            if ((neg) >= 0) { if (v < -16384) pad_set(p, neg, PAD_STICK, 1); else if (v > -8192) pad_set(p, neg, PAD_STICK, 0); } \
+        } while (0)
+        switch (e->gaxis.axis) {
+        case SDL_GAMEPAD_AXIS_LEFTX: AXIS(PAD_LEFT, PAD_RIGHT); break;
+        case SDL_GAMEPAD_AXIS_LEFTY: AXIS(PAD_UP, PAD_DOWN); break;
+        case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: AXIS(-1, PAD_LT); break;
+        case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: AXIS(-1, PAD_RT); break;
+        }
+        #undef AXIS
+        break;
+    }
+    }
 }
 
 /* Fullscreen keeps the 4:3 picture: the logical presentation letterboxes it
@@ -196,6 +264,7 @@ int display_init(int scale, const char *fs, const char *shader)
                      : SDL_CreateWindow(rg->title ? rg->title : "libroger", 256 * scale, 192 * scale, SDL_WINDOW_RESIZABLE);
     if (!win) { SDL_Log("window: %s", SDL_GetError()); return 0; }
     if (SDL_GetModState() & SDL_KMOD_CAPS) kbd_status &= ~0x10;   /* Caps Lock as the host has it */
+    if (rg_pads && !SDL_InitSubSystem(SDL_INIT_GAMEPAD)) SDL_Log("game controllers: %s", SDL_GetError());
     ren = SDL_CreateRenderer(win, SDL_GPU_RENDERER);
     if (ren && !shader_init(ren)) SDL_Log("display shaders unavailable (no SPIR-V)");
     if (!ren) ren = SDL_CreateRenderer(win, NULL);
@@ -401,6 +470,13 @@ void display_poll(void)
         switch (e.type) {
         case SDL_EVENT_QUIT:
             quit_requested = 1;
+            break;
+        case SDL_EVENT_GAMEPAD_ADDED:
+        case SDL_EVENT_GAMEPAD_REMOVED:
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            gamepad_event(&e);
             break;
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP: {

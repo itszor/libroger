@@ -14,7 +14,7 @@ uint32_t swi_pc;
  * headless runs the scripted keys */
 int pressed(int inkey)
 {
-    if (inkey >= 1 && inkey <= 128 && key_down[inkey - 1]) return 1;   /* (headless: --script keys) */
+    if (inkey >= 1 && inkey <= 128 && key_held(inkey - 1)) return 1;   /* (headless: --script keys) */
     if (rg_interactive) return 0;
     for (unsigned k = 0; k < rg->nkeys; k++)
         if (rg->keys[k].inkey == inkey && rg->keys[k].from <= icount && icount < rg->keys[k].to) return 1;
@@ -59,7 +59,7 @@ static void os_byte(void)
         return;
     }
     if (op == 202) {                                   /* keyboard status: (old AND R2) EOR R1 */
-        uint8_t old = (kbd_status & ~0x48) | (key_down[0] ? 0x08 : 0) | (key_down[1] ? 0x40 : 0);
+        uint8_t old = (kbd_status & ~0x48) | (key_held(0) ? 0x08 : 0) | (key_held(1) ? 0x40 : 0);
         kbd_status = ((old & R[2]) ^ R[1]) & ~0x48;
         R[1] = old;
         return;

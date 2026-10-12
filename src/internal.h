@@ -306,6 +306,20 @@ void display_screenshot(const uint8_t *pix, const char *path);
 extern uint8_t kbd_status;                /* OS_Byte 202: bit 4 clear Caps Lock on, bit 5
                                              clear Shift Lock on; 3 Shift, 6 Ctrl down (live) */
 extern uint8_t key_down[128];             /* by RISC OS internal key number */
+/* game controllers as the keyboard (pad.c) */
+#define NPAD_CONTROLS 17
+enum { PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_A, PAD_B, PAD_X, PAD_Y, PAD_LB, PAD_RB, PAD_LT, PAD_RT,
+       PAD_BACK, PAD_START, PAD_GUIDE, PAD_LS, PAD_RS };
+enum { PAD_BUTTON = 1, PAD_STICK = 2, PAD_SCRIPT = 4 };   /* what holds a control */
+extern uint8_t pad_down[128];             /* controls holding each internal key */
+extern int rg_pads;                       /* use the host's controllers */
+int  key_held(int k);                     /* internal key k down: the keyboard or a controller */
+int  pad_control(const char *name, int len);   /* a control's number, -1 if no such name */
+int  pad_map(int pad, const char *mapping);
+int  pad_setup(const char *opt1, const char *opt2);   /* the mappings: 0 if one is bad */
+void pad_set(int pad, int control, int source, int down);
+void pad_release_all(int pad);
+int  host_internal_key(int scancode);     /* SDL scancode -> internal key number, -1 */
 extern int mouse_x, mouse_y, mouse_buttons;   /* OS units; 4 select, 2 menu, 1 adjust */
 extern int quit_requested, escape_pressed, screenshot_requested;
 int  key_buffer_get(void);

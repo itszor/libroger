@@ -62,12 +62,14 @@ void roger_log(const char *name, const char *fmt, ...)
  * units), tap:px:py (a host click at screen pixel px,py, through the real
  * SDL event path), poke:addr:value (write a memory word), release,
  * buttons:mask, move:dx:dy, esc, key:inkey[:ms] (INKEY -inkey held ms,
- * default 200),
+ * default 200), pad:control[:ms] and pad2:control[:ms] (a game controller's
+ * control - up, a, start, ... (pad.c) - held ms, default 200),
  * type:ascii, shot, shader[:dir] (as F10: next, or -1 previous), quit */
 #define MAXSCRIPT 8192
 static struct { uint64_t ms; char act[8]; int a, b; } script[MAXSCRIPT];
 static int nscript, script_i;
 static uint64_t key_release_ms[129];
+static uint64_t pad_release_ms[2][NPAD_CONTROLS];
 
 static void parse_script(const char *p)
 {
@@ -77,7 +79,11 @@ static void parse_script(const char *p)
         if (*p == ':') p++;
         while (*p && *p != ':' && *p != ',' && n < 7) script[nscript].act[n++] = *p++;
         script[nscript].act[n] = 0;
-        if (*p == ':') { p++; script[nscript].a = strtol(p, (char **)&p, 0); }
+        if (*p == ':' && !strncmp(script[nscript].act, "pad", 3)) {   /* a control, by name */
+            int l = (int)strcspn(++p, ":,");
+            if ((script[nscript].a = pad_control(p, l)) < 0) { fprintf(stderr, "--script: no control %.*s\n", l, p); exit(1); }
+            p += l;
+        } else if (*p == ':') { p++; script[nscript].a = strtol(p, (char **)&p, 0); }
         if (*p == ':') { p++; script[nscript].b = strtol(p, (char **)&p, 0); }
         if (*p == ',') p++;
         nscript++;
@@ -91,6 +97,9 @@ void script_run(void)
     uint64_t ms = rg_interactive ? (display_ticks_ns() - rg_t0_ns) / 1000000 : icount * 10 / TICK_STEPS;
     for (int k = 0; k < 129; k++)
         if (key_release_ms[k] && ms >= key_release_ms[k]) { key_down[k - 1] = 0; key_release_ms[k] = 0; }
+    for (int p = 0; p < 2; p++)
+        for (int c = 0; c < NPAD_CONTROLS; c++)
+            if (pad_release_ms[p][c] && ms >= pad_release_ms[p][c]) { pad_set(p, c, PAD_SCRIPT, 0); pad_release_ms[p][c] = 0; }
     while (script_i < nscript && ms >= script[script_i].ms) {
         const char *a = script[script_i].act;
         int x = script[script_i].a, y = script[script_i].b;
@@ -104,6 +113,9 @@ void script_run(void)
         else if (!strcmp(a, "key") && x >= 1 && x <= 128) {
             if (x == 65) kbd_status ^= 0x10;                /* Caps Lock (INKEY -65) toggles */
             key_down[x - 1] = 1; key_release_ms[x] = ms + (y > 0 ? y : 200); }
+        else if (!strcmp(a, "pad") || !strcmp(a, "pad2")) {
+            int p = a[3] == '2';
+            pad_set(p, x, PAD_SCRIPT, 1); pad_release_ms[p][x] = ms + (y > 0 ? y : 200); }
         else if (!strcmp(a, "type")) key_buffer_put(x);
         else if (!strcmp(a, "shot")) screenshot_requested = 1;
         else if (!strcmp(a, "shader")) display_cycle_shader(x ? x : 1);   /* as F10 */
@@ -218,6 +230,10 @@ static void usage(const char *prog)
            "  --shader=NAME     display shader (F10 / Shift+F10 cycle; --crt = --shader=crt)\n"
            "  --list-shaders\n"
            "  --no-sound --wav=FILE\n"
+           "  --pad=MAP --pad2=MAP  game controllers: the keys their controls hold, e.g.\n"
+           "                    --pad=a=Z,b=X,start=Space (controls: up down left right a b x y\n"
+           "                    lb rb lt rt back start guide ls rs; keys as SDL names them);\n"
+           "                    --pad=off: none\n"
            "  --app=DIR         the program's directory   --save=DIR  where written files go\n"
            "  --out=PREFIX      output files PREFIX.events/.vdu/.screen/.regs\n%s",
            prog, rg->usage ? rg->usage : "");
@@ -228,6 +244,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     rg = cfg;
     const char *image = NULL;
     int scale = 4, headless = 0, no_sound = 0, no_title = 0;
+    const char *pad_opt = NULL, *pad2_opt = NULL;
     const char *fs = NULL, *wavpath = NULL, *shader = NULL;
     float mips_opt = -1, sens_opt = -1;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
@@ -251,6 +268,9 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
         else if (!strcmp(argv[k], "--fullscreen")) fs = "";
         else if (!strcmp(argv[k], "--no-sound")) no_sound = 1;
+        else if (!strcmp(argv[k], "--pad=off")) rg_pads = 0;
+        else if (!strncmp(argv[k], "--pad=", 6)) pad_opt = argv[k] + 6;
+        else if (!strncmp(argv[k], "--pad2=", 7)) pad2_opt = argv[k] + 7;
         else if (!strcmp(argv[k], "--crt")) shader = "crt";
         else if (!strncmp(argv[k], "--shader=", 9)) shader = argv[k] + 9;
         else if (!strcmp(argv[k], "--list-shaders")) { shader_list(); exit(0); }
@@ -267,6 +287,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (argv[k][0] == '-') { fprintf(stderr, "unknown option %s\n", argv[k]); usage(argv[0]); exit(1); }
         else image = argv[k];
     }
+    if (!pad_setup(pad_opt, pad2_opt)) exit(1);
     rg_mips = mips_opt >= 0 ? mips_opt : cfg->mips;
     rg_mouse_sens = sens_opt > 0 ? sens_opt : cfg->mouse_sens > 0 ? cfg->mouse_sens : 2.0f;
     signal(SIGINT, on_signal);

@@ -136,6 +136,12 @@ struct roger_config {
     unsigned nclicks;
     const struct roger_key *keys;
     unsigned nkeys;
+    const char *pad_map;                  /* game controllers: the keys their controls hold,
+                                             "control=key,..." over libroger's default (src/pad.c:
+                                             up down left right a b x y lb rb lt rt back start
+                                             guide ls rs; keys by SDL's names, e.g. "Z", "Return",
+                                             "'"); --pad= overrides */
+    const char *pad2_map;                 /* a second controller's (default: the first's) */
 
     /* --- translation gaps: [from, to) address pairs, ending 0,0, that are
      * interpreted silently. Any other untranslated address stops the run
