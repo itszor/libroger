@@ -514,6 +514,36 @@ static void slab(int x0, int y0, int x1, int y1, int in)   /* a 3D edge, 2 pixel
     }
 }
 
+/* Formatted text: an indirected text-only icon that isn't vertically
+ * centred, too narrow for its text and tall enough for two lines or more,
+ * has the text word-wrapped from its top, each line placed as the icon's
+ * justification says, as RISC OS's Wimp does (Elite's error box). 1 if
+ * the icon is one. */
+#define LINE_H 40                                 /* OS units a formatted line */
+static int draw_formatted(uint32_t f, int x0, int y0, int x1, int y1, const char *t, int n, uint32_t c)
+{
+    int type = f >> 12 & 15, cols = (x1 - x0 - 24) / CHAR_W;
+    if ((f & 0x113) != 0x101 || type == 14 || type == 15 || n * CHAR_W <= x1 - x0 - 24 ||
+        y1 - y0 < 2 * LINE_H || cols < 1)
+        return 0;
+    int y = y1 - (LINE_H - CHAR_H) / 2;
+    while (n > 0 && y - CHAR_H >= y0) {
+        while (n > 0 && *t == ' ') { t++; n--; }  /* (a line doesn't start with spaces) */
+        int len = n <= cols ? n : cols;
+        if (len < n) {                            /* break at the last space that fits */
+            int k = len;
+            while (k > 0 && t[k] != ' ') k--;
+            if (k > 0) len = k;
+        }
+        int w = len;
+        while (w > 0 && t[w - 1] == ' ') w--;
+        int x = f & 8 ? (x0 + x1 - w * CHAR_W) / 2 : f & 0x200 ? x1 - 12 - w * CHAR_W : x0 + 12;
+        text_os(x, y, t, w, c);
+        t += len; n -= len; y -= LINE_H;
+    }
+    return 1;
+}
+
 static void draw_icon(const uint8_t *ic, int ox, int oy, uint32_t area, int caret_index)
 {
     uint32_t f = wimp_rd(ic + 16);
@@ -540,6 +570,9 @@ static void draw_icon(const uint8_t *ic, int ox, int oy, uint32_t area, int care
     char sv[64];
     int invert = sel && L.has_sp && L.n && !(validation(ic, 'S', sv, sizeof sv) && strchr(sv, ','));
     if (L.has_sp) draw_sprite(&L.sp, L.sx, L.sy, (f >> 11) & 1, shaded ? 1 : (sel && (!(f & 0x100) || invert)) ? 2 : 0);
+    if (L.n && !L.has_sp && caret_index < 0 && !validation(ic, 'D', sv, sizeof sv) &&
+        draw_formatted(f, x0, y0, x1, y1, L.text, L.n, shaded ? COL(3) : COL(fg)))
+        L.n = 0;                                  /* (drawn) */
     if (L.n) {
         char d[8];
         if (validation(ic, 'D', d, sizeof d)) memset(L.text, d[0], L.n);
