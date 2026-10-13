@@ -112,6 +112,9 @@ The emulated machine
 
 Implemented:
 
+- the pointer: the OS's (OS_Byte 106) is shown as the host's pointer; a
+  mode change turns it off, unless roger_config.desktop_pointer (a game
+  started from the desktop relying on the Wimp's pointer staying on)
 - overlays (roger_config.programs with overlay set): the image loaded
   last at an address is the one dispatched there, over an earlier overlay
   or the program; a gap in one is treated as the program's

@@ -155,7 +155,7 @@ int video_set_mode(uint32_t m)
     }
     screen_mode = m;
     bank = display_bank = 0;
-    pointer_shape = 0;
+    if (!rg->desktop_pointer) pointer_shape = 0;
     video_default_palette();
     reset_timing();                       /* the OS programs VIDC and MEMC for the mode */
     mbox[0] = mbox[1] = 0;                /* the mouse's bounding box: the whole screen again */
@@ -467,7 +467,8 @@ int video_palettev(void)
 }
 
 /* ---------------------------------------------------------------- OS_Word */
-int pointer_shape;                              /* a mode change turns the pointer off */
+int pointer_shape;                              /* a mode change turns the pointer off
+                                                   (unless roger_config.desktop_pointer) */
 int mbox[4] = {0, 0, 1279, 1023};               /* OS_Word 21,1: left, bottom, right, top
                                                    (a mode change resets it to the screen) */
 static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }

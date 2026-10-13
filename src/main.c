@@ -317,6 +317,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     if (rg_desktop) desktop_init();
     if (wavpath && !audio_init_wav(wavpath)) fprintf(stderr, "cannot write %s\n", wavpath);
     if (!video_set_mode(cfg->initial_mode ? cfg->initial_mode : 12)) video_set_mode(12);   /* what !Run selected */
+    if (cfg->desktop_pointer) pointer_shape = 1;       /* the Wimp's, left on */
     cli_init();
     if (cfg->directory && !set_csd(cfg->directory)) fprintf(stderr, "warning: no directory %s\n", cfg->directory);
     if (rg_full_os && !no_title && cfg->loader_programs) {

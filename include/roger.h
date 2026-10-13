@@ -111,6 +111,11 @@ struct roger_config {
                                              runs it). For games that don't wait for the
                                              frame and so run at the speed of the machine:
                                              an 8MHz ARM2 is about 4.5. --mips=N overrides */
+    int desktop_pointer;                  /* started from the desktop with its pointer on (shape
+                                             1) and relying on it: it stays on through mode
+                                             changes (otherwise a mode change turns the pointer
+                                             off) until the program turns it off (OS_Byte 106).
+                                             It's shown as the host's pointer */
     int monitor_type;                     /* the configured monitor type modules are asked about
                                              (Service_ModeExtension R3): 0 a TV-standard monitor
                                              (the default), 1 multisync, 3 VGA - a module that
