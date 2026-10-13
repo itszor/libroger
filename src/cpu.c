@@ -50,7 +50,7 @@ void set_psr_mode(uint32_t m)
  * The program image (where &8000-based code is dispatched; replaced when a
  * chain-loaded program takes over) plus any others, e.g. modules in the
  * RMA, dispatched wherever their address range is. */
-struct loaded { const struct roger_image *img; fn_t *tab; };
+struct loaded { const struct roger_image *img; fn_t *tab; int overlay; };
 #define MAXIMG 64
 static struct loaded prog, extra[MAXIMG];
 static int nextra;
@@ -81,27 +81,37 @@ void roger_set_image(const struct roger_image *img)
 }
 const struct roger_image *roger_current_image(void) { return prog.img; }
 
+/* The image an address is dispatched through: of the images loaded beside
+ * the program (modules, overlays), the one loaded last that covers it - an
+ * overlay loaded over another, or over part of the program, replaces the
+ * code there - and otherwise the program. NULL if none covers it. */
+static struct loaded *owner(uint32_t a)
+{
+    for (int k = nextra - 1; k >= 0; k--)
+        if (a >= extra[k].img->base && a < extra[k].img->end) return &extra[k];
+    if (a >= img_base && a < img_end) return &prog;
+    return NULL;
+}
+
 /* Would dispatching a reach translated code? (relocations applied) */
 int cpu_translated(uint32_t a)
 {
     if (rg->relocations)
         for (const struct roger_relocation *r = rg->relocations; r->image; r++)
             if (prog.img == r->image && a >= r->to && a < r->to + r->len) a -= r->to - r->from;
-    if (a >= img_base && a < img_end) return prog.tab[(a - img_base) >> 2] != 0;
-    for (int k = 0; k < nextra; k++)
-        if (a >= extra[k].img->base && a < extra[k].img->end) return extra[k].tab[(a - extra[k].img->base) >> 2] != 0;
-    return 0;
+    struct loaded *l = owner(a);
+    return l && l->tab[(a - l->img->base) >> 2] != 0;
 }
 
 void cpu_add_image(const struct roger_image *img)
 {
-    if (nextra < MAXIMG) { extra[nextra].img = img; extra[nextra].tab = tab_for(img); nextra++; }
+    if (nextra < MAXIMG) { extra[nextra].img = img; extra[nextra].tab = tab_for(img); extra[nextra].overlay = 0; nextra++; }
 }
 
-void cpu_remove_image(const struct roger_image *img)
+void cpu_remove_image(const struct roger_image *img)          /* (keeping the others' order) */
 {
     for (int k = 0; k < nextra; k++)
-        if (extra[k].img == img) { extra[k] = extra[--nextra]; return; }
+        if (extra[k].img == img) { memmove(&extra[k], &extra[k + 1], (--nextra - k) * sizeof *extra); return; }
 }
 
 /* Programs that may be loaded at their image's base: OS_File loaded one;
@@ -113,7 +123,11 @@ void cpu_programs_loaded(const char *leaf, uint32_t addr)
     for (const struct roger_program *p = rg->programs; p->leaf; p++)
         if (!strcasecmp(p->leaf, leaf) && p->image->base == addr) {
             if (!p->overlay) pending = p->image;
-            else { cpu_remove_image(p->image); cpu_add_image(p->image); }
+            else {
+                cpu_remove_image(p->image);
+                cpu_add_image(p->image);
+                if (nextra && extra[nextra - 1].img == p->image) extra[nextra - 1].overlay = 1;
+            }
         }
 }
 
@@ -138,9 +152,8 @@ void cpu_log_gap(uint32_t a)
     FILE *f = fopen("untranslated.log", "a");
     if (f) {
         uint32_t b = 0, e = 0;
-        if (a >= img_base && a < img_end) b = img_base, e = img_end;
-        else for (int k = 0; k < nextra; k++)
-            if (a >= extra[k].img->base && a < extra[k].img->end) { b = extra[k].img->base; e = extra[k].img->end; break; }
+        struct loaded *l = owner(a);
+        if (l) b = l->img->base, e = l->img->end;
         fprintf(f, "%llu: branch to untranslated address %08x (LR=%08x, from pc=%08x)",
                 (unsigned long long)icount, a, R[14], g_cur_pc);
         if (e) fprintf(f, " img=%08x-%08x\n", b, e); else fprintf(f, " img=none\n");
@@ -171,13 +184,13 @@ void call_addr(uint32_t a)
     if (SMC_DIRTY(a) && smc_stale(a)) { interp_step(); return; }   /* self-modified: as it is now */
     fn_t f = 0;
     if (!interp_only) {
-        if (a >= img_base && a < img_end) f = prog.tab[(a - img_base) >> 2];
-        else for (int k = 0; k < nextra; k++)
-            if (a >= extra[k].img->base && a < extra[k].img->end) { f = extra[k].tab[(a - extra[k].img->base) >> 2]; break; }
+        struct loaded *l = nextra || !(a >= img_base && a < img_end) ? owner(a) : &prog;
+        if (l) f = l->tab[(a - l->img->base) >> 2];
     }
     if (f) { f(a); return; }
     if (a == HANDLER_RET) return;
     if (interp_only) { interp_step(); return; }   /* a loader program: all of it interpreted */
+    if (a >= ROM_MODULES && a < ROM_MODULES_END) { interp_step(); return; }   /* (disc.c) */
     if (rg->interpreted)
         for (const uint32_t *g = rg->interpreted; g[1]; g += 2)
             if (a >= g[0] && a < g[1]) { interp_step(); return; }   /* a known gap */
@@ -186,15 +199,16 @@ void call_addr(uint32_t a)
         interp_step();
         return;
     }
-    for (int k = 0; k < nextra; k++)
-        if (a >= extra[k].img->base && a < extra[k].img->end) {
-            /* module code should be fully translated: report the gap and end
-             * this call rather than the whole run */
-            if (!cpu_seen_gap(a)) cpu_log_gap(a);
-            npc = HANDLER_RET;
-            return;
-        }
-    if (in_handler && (!rg_trace_gaps || !(a >= img_base && a < img_end))) {
+    struct loaded *l = owner(a);              /* the program's code: its image, or an overlay */
+    int program = l && (l == &prog || l->overlay);
+    if (l && !program) {
+        /* module code should be fully translated: report the gap and end
+         * this call rather than the whole run */
+        if (!cpu_seen_gap(a)) cpu_log_gap(a);
+        npc = HANDLER_RET;
+        return;
+    }
+    if (in_handler && (!rg_trace_gaps || !program)) {
         /* an interrupt handler the runtime called landed somewhere it can't
          * follow: end that call (the next interrupt tries again). With
          * --trace-gaps only untranslated code in the program is followed: a
@@ -217,6 +231,7 @@ void run_until(uint32_t stop)
 {
     while (npc != stop) {
         if (npc == RETURN_TO_OS) finish("returned to OS");
+        if (npc == HANDLER_RET) finish("return to the runtime outside a call (a gap in module code?)");
         call_addr(npc);
     }
 }
@@ -264,8 +279,22 @@ void bad_entry(uint32_t fn, uint32_t e)
     fprintf(stderr, "bad entry %08x into F_%x\n", e, fn);
     finish("bad entry");
 }
+/* An undefined instruction - on an ARM2, a coprocessor's too, there being
+ * none: the trap, as RISC OS passes it on to the undefined instruction
+ * handler (OS_ChangeEnvironment 1) in SVC mode with IRQs off and R14_svc
+ * the address after it (with the caller's PSR). Programs telling an ARM2
+ * from an ARM3 (an MRC from the cache controller, p15) rely on it. With no
+ * handler, the run stops. */
 void undefined_insn(uint32_t a, uint32_t w)
 {
+    if (env[1][0]) {
+        uint32_t ret = ((a + 4) & 0x3FFFFFC) | PSR();
+        ev("undefined_instruction", "ii", a, w);
+        set_psr_mode(0x08000000u | 3);
+        R[14] = ret;
+        npc = env[1][0];
+        return;
+    }
     fprintf(stderr, "undefined/coproc instruction %08x at %08x\n", w, a);
     finish("undefined instruction");
 }
@@ -510,7 +539,7 @@ static int exec_word(uint32_t pc, uint32_t i)
     } else if (op == 7 && (i >> 24) & 1) {                     /* SWI */
         swi(i & 0xFFFFFF, next);
         return npc != next;
-    } else undefined_insn(pc, i);
+    } else { undefined_insn(pc, i); return 1; }
     return 0;
 }
 

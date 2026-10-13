@@ -34,6 +34,8 @@
 #define ERROR_BUF    0x017FC400u          /* the error block a failing SWI returns (os_error) */
 #define BEEP_VOICE   0x017FC500u          /* WaveSynth-Beep's voice header (sound.c) */
 #define MOD_PRIVATE  0x017FFFFCu          /* module k's private word: MOD_PRIVATE - 4k */
+#define ROM_MODULES  0x03800000u          /* RISC OS modules' stand-ins (disc.c), where the ROM is */
+#define ROM_MODULES_END 0x03801000u
 #define RMA_BASE     0x01800000u
 #define RMA_HEAP     0x01810000u
 #define IOC          0x3200000u
@@ -52,7 +54,7 @@ extern int rg_interactive, rg_full_os, rg_trace_gaps;
 extern float rg_mouse_sens;               /* captured mouse: OS units per host pixel */
 extern float rg_mips;                     /* interactive CPU speed (MIPS), 0 unthrottled */
 extern uint64_t rg_limit, rg_t0_ns;
-extern const char *rg_appdir, *rg_savedir;
+extern const char *rg_appdir, *rg_savedir, *rg_floppy;
 void ev(const char *name, const char *fmt, ...);
 void os_error(uint32_t num, const char *msg);   /* a SWI fails: R0 -> error block, V set */
 void finish(const char *why) __attribute__((noreturn));
@@ -166,6 +168,14 @@ int  screen_load(const char *name);        /* ...from a file: 0 if it isn't ther
 int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMerge: 0 if not found */
 int  sprite_file_host(uint32_t area, const char *path, int merge);   /* ...a host file */
 int  files_swi(uint32_t b);
+
+/* disc.c */
+void disc_init(void);
+int  disc_swi(uint32_t b);
+int  disc_rom_module(const char *name, uint32_t *base, uint32_t *word);
+
+/* swi.c */
+extern uint32_t env[17][3];               /* OS_ChangeEnvironment's handlers (1: undefined instruction) */
 struct dir_entry {                        /* a directory entry (dir_entries) */
     char leaf[64];                        /* its RISC OS name ("/" for a host ".") */
     uint32_t load, exec, size;            /* catalogue information */

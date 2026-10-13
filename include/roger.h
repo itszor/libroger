@@ -99,6 +99,11 @@ struct roger_config {
     uint32_t screen_base;                 /* where screen memory starts (default: so that it
                                              ends at &2000000, as RISC OS maps it) */
     uint32_t stack;                       /* initial R13 (default: the RAM limit) */
+    const char *floppy;                   /* the disc in drive 0, for programs that read it
+                                             sector by sector (FileCore_DiscOp, ADFS_DiscOp:
+                                             copy protection): an HxC .hfe image (sector sizes
+                                             and CRC errors as on the disc) or a flat .adf
+                                             (800K or 1600K). --floppy=FILE overrides */
     uint32_t ramfs_size;                  /* a RAM disc of this many bytes (RAM:, empty at
                                              start, as !Run would have sized it); 0: none */
     float mips;                           /* interactive runs: the CPU's speed, millions of
@@ -106,6 +111,11 @@ struct roger_config {
                                              runs it). For games that don't wait for the
                                              frame and so run at the speed of the machine:
                                              an 8MHz ARM2 is about 4.5. --mips=N overrides */
+    int monitor_type;                     /* the configured monitor type modules are asked about
+                                             (Service_ModeExtension R3): 0 a TV-standard monitor
+                                             (the default), 1 multisync, 3 VGA - a module that
+                                             only defines its modes for one (e.g. 480-line VGA
+                                             modes) needs it */
     int vidc20;                           /* a Risc PC rather than an Archimedes: VIDC20's
                                              modes (taller ones, multisync numbered modes,
                                              RISC OS 3.5 mode selectors, 16 and 32 bits per

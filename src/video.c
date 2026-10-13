@@ -57,7 +57,8 @@ static struct rg_mode current = {640, 256, 4, 1, 2, 80, 32};
 static int vidc1_mode(const struct rg_mode *m) { return m->height == 256 && m->bpp <= 8; }
 
 /* A mode a module defines: Service_ModeExtension (&50, R2 the mode, R3 the
- * monitor type - 0, a TV-standard monitor) answered with R3 a VIDC list
+ * monitor type - roger_config.monitor_type, 0 a TV-standard monitor by
+ * default) answered with R3 a VIDC list
  * (+0 format, +4 base mode, then VIDC register values up to -1) and R4 a
  * workspace list (+0 flags, +4 base mode, then mode variable / value pairs
  * up to -1). The geometry comes from the workspace list, what it leaves
@@ -76,7 +77,7 @@ static const struct rg_mode *module_mode(uint32_t m)
     if (asking) return NULL;                       /* a module's own mode checks */
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
     memcpy(saved, R, sizeof R);
-    R[1] = 0x50; R[2] = m; R[3] = 0; R[4] = 0;
+    R[1] = 0x50; R[2] = m; R[3] = rg->monitor_type; R[4] = 0;
     asking = 1;
     int claimed = modules_service();
     asking = 0;

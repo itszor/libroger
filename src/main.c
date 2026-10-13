@@ -16,7 +16,7 @@
 const struct roger_config *rg;
 int rg_interactive, rg_full_os, rg_trace_gaps;
 uint64_t rg_limit = 20000000, rg_t0_ns;
-const char *rg_appdir, *rg_savedir = "savedata";
+const char *rg_appdir, *rg_savedir = "savedata", *rg_floppy;
 static const char *outprefix = "recomp";
 static FILE *evlog;
 extern volatile uint64_t rg_last_service_ns;
@@ -238,6 +238,7 @@ static void usage(const char *prog)
            "                    (default: if the game reads one and a controller is connected);\n"
            "                    --joystick=off: they're keys only\n"
            "  --app=DIR         the program's directory   --save=DIR  where written files go\n"
+           "  --floppy=FILE     the disc in drive 0 for sector reads (.hfe or .adf)\n"
            "  --out=PREFIX      output files PREFIX.events/.vdu/.screen/.regs\n%s",
            prog, rg->usage ? rg->usage : "");
 }
@@ -251,6 +252,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     const char *fs = NULL, *wavpath = NULL, *shader = NULL;
     float mips_opt = -1, sens_opt = -1;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
+    rg_floppy = cfg->floppy;
     for (int k = 1; k < argc; k++)
         if (!strncmp(argv[k], "--limit=", 8) || !strcmp(argv[k], "--headless")) headless = 1;
     rg_interactive = rg_full_os = !headless;
@@ -287,6 +289,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (!strncmp(argv[k], "--app=", 6)) rg_appdir = argv[k] + 6;
         else if (!strncmp(argv[k], "--out=", 6)) outprefix = argv[k] + 6;
         else if (!strncmp(argv[k], "--save=", 7)) rg_savedir = argv[k] + 7;
+        else if (!strncmp(argv[k], "--floppy=", 9)) rg_floppy = argv[k] + 9;
         else if (!strcmp(argv[k], "--help") || !strcmp(argv[k], "-h")) { usage(argv[0]); exit(0); }
         else if (cfg->arg && cfg->arg(argv[k])) ;
         else if (argv[k][0] == '-') { fprintf(stderr, "unknown option %s\n", argv[k]); usage(argv[0]); exit(1); }
@@ -330,6 +333,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     fclose(f);
     if (cfg->image->base + n != cfg->image->end) fprintf(stderr, "warning: image size differs from compiled image\n");
     bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
+    disc_init();
     modules_load();
     if (cfg->init) cfg->init();
     R[13] = cfg->stack ? cfg->stack : ram_limit(); R[14] = RETURN_TO_OS; R[12] = 0;

@@ -9,6 +9,7 @@
 #include "internal.h"
 
 uint32_t swi_pc;
+uint32_t env[17][3];                             /* OS_ChangeEnvironment's handlers: code, R12, buffer */
 
 /* INKEY -(inkey): host keyboard (by internal key number + 1), or in
  * headless runs the scripted keys */
@@ -390,7 +391,7 @@ void swi(uint32_t n, uint32_t nextpc)
         else { R[0] = 640; R[1] = 512; R[2] = 0; R[3] = monotonic; }
         return;
     case 0x40: {                                 /* OS_ChangeEnvironment: R0 handler, R1 code, R2 R12, R3 buffer */
-        static uint32_t env[17][3];              /* returns the previous values; 0 = read only */
+                                                 /* returns the previous values; 0 = read only */
         ev("OS_ChangeEnvironment", "iiii", R[0], R[1], R[2], R[3]);
         if (R[0] <= 16) {
             uint32_t *e = env[R[0]], old[3] = {e[0], e[1], e[2]};
@@ -400,6 +401,13 @@ void swi(uint32_t n, uint32_t nextpc)
         return;
     }
     case 0x1D: return;                           /* OS_RemoveCursors (old number): no cursor to hide */
+    case 0x58:                                   /* OS_ReadSysInfo */
+        if (R[0] == 2) {                         /* 2: the hardware - R0 its chips (bits 8-15 the I/O */
+            R[0] = rg->vidc20 ? 0x01010100u : 0; /* controller, 16-23 the memory controller, 24-31 the */
+            R[1] = R[2] = R[3] = R[4] = 0;       /* video controller: IOC, MEMC1, VIDC1 0, IOMD, */
+            return;                              /* VIDC20 1), no 82C710, no LCD, no machine ID */
+        }
+        break;
     case 0x13: MODEBITS &= ~0x08000000u; return; /* OS_IntOn / OS_IntOff: the caller's I bit */
     case 0x14: MODEBITS |= 0x08000000u; return;
     case 0x51: R[0] = 0x8000; R[1] = 128; return;   /* OS_ReadMemMapInfo: 128 pages of 32K (4MB) */
@@ -472,7 +480,7 @@ void swi(uint32_t n, uint32_t nextpc)
     }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
-    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
+    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || disc_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");

@@ -112,6 +112,9 @@ The emulated machine
 
 Implemented:
 
+- overlays (roger_config.programs with overlay set): the image loaded
+  last at an address is the one dispatched there, over an earlier overlay
+  or the program; a gap in one is treated as the program's
 - CPU: processor modes with banked registers, TEQP mode changes, the
   ARM2 interpreter (gaps, self-modified instructions); self-modified code
   at run time: a compiled word the program stores to is interpreted as it
@@ -128,7 +131,8 @@ Implemented:
   shown in the standard mode's window
 - video: the standard 50Hz graphics modes (0, 1, 2, 4, 5, 8, 9, 10, 12, 13,
   15), modes modules define (Service_ModeExtension: VIDC and workspace
-  lists, e.g. an overscan mode, shown at their own size), screen banks
+  lists, e.g. an overscan mode, shown at their own size; asked about for
+  roger_config.monitor_type, a TV monitor by default), screen banks
   (OS_Byte 112/113, returning the previous bank; OS_Word 22), MEMC Vinit/Vstart/Vend
   with wrap-around, VIDC palette including 256-colour modes, VDU and mode
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, VDU 19 palette,
@@ -158,6 +162,15 @@ Implemented:
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
   `,load-exec` name suffixes, writes redirected to a save directory (and
   read back from there)
+- the floppy disc (roger_config.floppy, --floppy=), for programs that
+  read it sector by sector, as copy protection does: FileCore_DiscOp and
+  ADFS_DiscOp reads and verifies from an HxC .hfe image (its MFM tracks
+  decoded with each sector's ID, size and CRC: odd sectors and CRC errors
+  as on the disc; a bad sector's data is transferred before the error) or
+  a flat 800K/1600K .adf, alternative disc records, ADFS_Retries;
+  OS_FSControl 14 and 20 (ADFS's module base and FileCore instance);
+  FileCore and ADFS as "ROM" modules at &3800000 that OS_Module 18 finds,
+  whose SWI handlers come back to the same calls (src/disc.c)
 - a RAM disc (roger_config.ramfs_size): RAM:$ as a temporary host
   directory, empty at start and removed at exit; OS_ReadRAMFsLimits,
   RamFS_FreeSpace
@@ -203,11 +216,14 @@ Implemented:
   INKEY, the OS version, events, Escape, banks, mode, the vsync counter), OS_Word (character definitions, palette, pointer - its shape, bounding
   box, and the mouse and pointer position, set and read - display
   start, the real-time clock: the host's, or fixed in headless runs),
-  OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ServiceCall,
+  OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ReadSysInfo 2 (the
+  hardware: IOC/MEMC1/VIDC1, or a Risc PC's IOMD/VIDC20), OS_ServiceCall,
   OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
   OS_ReadModeVariable, OS_ReadMonotonicTime, conversions (numbers, and
   dates: OS_ConvertDateAndTime, OS_ConvertStandardDateAndTime), OS_CLI (logged),
-  modules' SWI chunks, OS_Module claims, OS_CheckModeValid,
+  modules' SWI chunks, OS_Module claims and look-ups by name (18),
+  OS_CheckModeValid, the undefined instruction trap (OS_ChangeEnvironment
+  1's handler: an ARM2's answer to an ARM3 cache-controller MRC),
   OS_SWINumberFromString (a few names programs probe for); key transition
   events (event 11, low-level key numbers, once a frame); Hourglass
   (nothing shown); OS_SpriteOp select, read sprite information and area
@@ -351,6 +367,7 @@ Files
     src/sound.c          the sound system
     src/audio.c          host audio (SDL stream, WAV)
     src/files.c          files and sprite files
+    src/disc.c           the floppy, sector by sector (DiscOp), FileCore and ADFS stand-ins
     src/modules.c        relocatable modules, the RMA
     src/cli.c            OS_CLI (* commands) and system variables
     src/wimp.c           the Wimp, the application slot, the screen's dynamic area

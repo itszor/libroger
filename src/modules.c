@@ -225,6 +225,20 @@ int modules_swi(uint32_t b, int x)
         } else if (R[0] == 4) {                          /* delete: R1 title */
             cstr(R[1], s, 1);
             if (!modules_rmkill(s) && x) VF = 1;
+        } else if (R[0] == 18) {                         /* look up by name: R1 the name (to a space */
+            cstr(R[1], s, 1);                            /* or control character; "%instance" ignored) */
+            s[strcspn(s, " %")] = 0;
+            uint32_t base, word;
+            for (int k = 0; k < MAXMOD; k++)
+                if (mods[k].m && !strcasecmp(title_of(mods[k].base), s)) {
+                    R[1] = k; R[2] = 0; R[3] = mods[k].base; R[4] = RD32(mods[k].private_word); R[5] = 0;
+                    return 1;
+                }
+            if (disc_rom_module(s, &base, &word)) {      /* RISC OS's own (stand-ins: disc.c) */
+                R[1] = MAXMOD + (base >> 10 & 15); R[2] = 0; R[3] = base; R[4] = RD32(word); R[5] = 0;
+                return 1;
+            }
+            os_error(0x102, "Module not found");
         }
         return 1;
     }
