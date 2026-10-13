@@ -368,7 +368,8 @@ static uint32_t pitch_step(uint32_t p)
 
 /* Sound_Control, as SoundChannels 1.27 does it. Amplitude: &100-&1FF
  * logarithmic (bit 7 set: change the sound already playing, no new note),
- * or -15..0 as BBC BASIC's SOUND (log &7F down to &43: 0 isn't silent);
+ * or -15..0 as BBC BASIC's SOUND (log &7F down to &47; 0 silent, log 0 -
+ * Saloon Cars turns its engine off with it, ten times a second);
  * anything else changes nothing. A new note (bit 7 clear) gates the voice
  * on; at log amplitude 0 it's gated off first; bit 7 set calls the voice's
  * update entry instead. Pitch: &8000 and up the
@@ -384,7 +385,8 @@ static void control(int chan, int32_t amp, uint32_t pitch, uint32_t dur)
     uint32_t sccb = SCCB_AREA + c * 0x100;
     int logamp;
     if (amp >= 0x100 && amp <= 0x1FF) logamp = amp & 0xFF;
-    else if (amp <= 0 && amp >= -15) logamp = 0x7F ^ (((amp - 1) & 15) << 2);
+    else if (amp == 0) logamp = 0;
+    else if (amp < 0 && amp >= -15) logamp = 0x7F ^ (((amp - 1) & 15) << 2);
     else return;
     MEM[sccb] = (uint8_t)(logamp & 0x7F);
     MEM[sccb + 1] = snd_attached[c];
