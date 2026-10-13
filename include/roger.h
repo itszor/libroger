@@ -24,11 +24,16 @@
  * address. An overlay is code the program loads and calls alongside its
  * own (e.g. a BASIC program's CALL into a file it *Loads into a DIMmed
  * block): once loaded, its image is dispatched from as well, like a
- * module's. */
+ * module's. A file that is packed is loaded elsewhere and unpacked to the
+ * image's base by the program: `at` is where it is loaded (0: the base),
+ * and loading it there selects the image all the same (e.g. a level's code,
+ * one image per level for the same address, loaded into a buffer and
+ * decrunched into place). */
 struct roger_program {
     const char *leaf;
     const struct roger_image *image;
     int overlay;
+    uint32_t at;
 };
 
 /* A relocatable module RMLoaded before the program starts (as !Run would):

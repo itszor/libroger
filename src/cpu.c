@@ -114,14 +114,15 @@ void cpu_remove_image(const struct roger_image *img)          /* (keeping the ot
         if (extra[k].img == img) { memmove(&extra[k], &extra[k + 1], (--nextra - k) * sizeof *extra); return; }
 }
 
-/* Programs that may be loaded at their image's base: OS_File loaded one;
- * it takes over when control next arrives at its base. */
+/* Programs that may be loaded at their image's base (or, packed, at their
+ * `at`): OS_File loaded one; it takes over when control next arrives at
+ * its base. */
 static const struct roger_image *pending;
 void cpu_programs_loaded(const char *leaf, uint32_t addr)
 {
     if (!rg->programs) return;
     for (const struct roger_program *p = rg->programs; p->leaf; p++)
-        if (!strcasecmp(p->leaf, leaf) && p->image->base == addr) {
+        if (!strcasecmp(p->leaf, leaf) && (p->at ? p->at : p->image->base) == addr) {
             if (!p->overlay) pending = p->image;
             else {
                 cpu_remove_image(p->image);
