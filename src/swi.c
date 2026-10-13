@@ -44,6 +44,8 @@ static void os_byte(void)
                 rt_service(0);
             }
         } else {
+            int c = key_buffer_get();                   /* (--script's type:) */
+            if (c >= 0) { R[1] = c; R[2] = 0; return; }
             R[1] = 0; R[2] = 0xFF;
             for (unsigned k = 0; k < rg->nkeys; k++)   /* a scripted Space reads as ' ' */
                 if (rg->keys[k].from <= icount && icount < rg->keys[k].to && rg->keys[k].inkey == 99) {
@@ -258,7 +260,7 @@ static void swi_number_from_string(void)
     s[l] = 0;
     for (unsigned k = 0; k < sizeof names / sizeof names[0]; k++)
         if (!strcmp(s, names[k].name) && (!names[k].ro35 || rg->vidc20)) { R[0] = names[k].n; return; }
-    if (modules_swi_number(s, &R[0])) return;
+    if (modules_swi_number(s, &R[0]) || fonts_swi_number(s, &R[0])) return;
     VF = 1;                                      /* "SWI name not known" */
 }
 
@@ -480,7 +482,7 @@ void swi(uint32_t n, uint32_t nextpc)
     }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
-    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || disc_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b)) return;
+    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || disc_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b) || fonts_swi(b)) return;
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");

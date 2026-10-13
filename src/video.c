@@ -7,8 +7,9 @@
  * (screen banks: OS_Byte 112/113, OS_Word 22) or by programming MEMC's
  * Vinit/Vstart/Vend itself (e.g. a scrolling play area flipped between two
  * buffers above a fixed panel reached when DMA wraps from Vend to Vstart);
- * the latter takes over once it happens. VIDC's VDSR/VDER crop the picture
- * vertically, and its HDSR/HDER and HBSR/HBER set where each line starts,
+ * the latter takes over once it happens. VIDC's VDSR/VDER set where the
+ * picture starts and ends vertically (moved up or down, or cropped), and
+ * its HDSR/HDER and HBSR/HBER set where each line starts,
  * how long it is and where the border hides it; the output window is
  * always the standard mode's (256 lines of its width). Modes
  * that only a Risc PC's VIDC20 has (taller, or 16/32 bits per pixel) are
@@ -308,8 +309,10 @@ void vidc_write(uint32_t v)
     if (reg == 37) vidc_hber = val >> 14;
     if (reg == 42) vidc_vbsr = val >> 14;
     if (reg == 45) vidc_vber = val >> 14;
-    if (val != 0 || vidc_seen[reg] < 8) {            /* vidc.log: the first few of each, and non-zero */
-        vidc_seen[reg]++;
+    static uint32_t last[64];
+    if ((val != 0 && val != last[reg]) || vidc_seen[reg] < 8) {   /* vidc.log: the first few of each, */
+        vidc_seen[reg]++;                                         /* then non-zero changes */
+        last[reg] = val;
         FILE *f = fopen("vidc.log", "a");
         if (f) { fprintf(f, "%llu: VIDC reg %u = %#x (raw %#x)\n",
                           (unsigned long long)icount, reg, val, v); fclose(f); }
@@ -428,6 +431,13 @@ const uint8_t *displayed(void)
     uint32_t len = (uint32_t)dpx * bpp / 8;                        /* bytes of DMA a line */
     if (len > sizeof line) len = sizeof line;
     int plain = dstart == start && len == row && bl <= start && br >= start + m->width;
+    /* a display starting above the window (VDSR before the standard
+     * mode's): its first lines are fetched but not seen, and the picture
+     * moves up (Saloon Cars shakes the screen this way, VDSR and HDSR
+     * changed every frame) */
+    for (int y = first; y < 0 && y < last; y++)
+        for (uint32_t n = 0; n < len; n++)
+            if (++p == end) p = memc_direct ? memc_vstart : 0;
     for (int y = 0; y < 256; y++) {
         uint8_t *d = frame + y * row;
         if (y < first || y >= last) { memset(d, 0, row); continue; }

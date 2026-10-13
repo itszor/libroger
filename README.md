@@ -127,11 +127,22 @@ Implemented:
   a claimant can intercept with the return address on the stack), OS_ClaimDeviceVector (vsync,
   IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100;
   OS_IntOff/IntOn (the I bit; interrupts wait); module SWIs run with
-  interrupts enabled, as on RISC OS (one may wait for a handler); palette changes part way down the
+  interrupts enabled, as on RISC OS (one may wait for a handler; entered
+  in SVC mode with R14's PSR bits saying so, as the kernel calls them);
+  palette changes part way down the
   frame (timer 1 started at flyback, VIDC VDSR/VDER/VCR timing); VIDC's
-  horizontal timing (HDSR/HDER: a longer or shifted line, as a program
+  vertical display start and end (VDSR/VDER: the picture moved up or down,
+  or cropped - Saloon Cars shakes the screen with them and HDSR/HDER every
+  frame) and horizontal timing (HDSR/HDER: a longer or shifted line, as a program
   scrolling by a pixel or two at a time sets; HBSR/HBER: the border),
   shown in the standard mode's window
+- fonts (src/fonts.c): the Font Manager for RISC OS 2's pixel fonts - a
+  font directory along Font$Prefix or Font$Path with IntMetrics and
+  x90y45 - at any size and resolution (the nearest larger bitmap size,
+  scaled), anti-aliased into the screen's closest colours: Font_FindFont,
+  LoseFont, SetFont, CurrentFont, SetFontColours, SetPalette, Paint (with
+  its colour, font and move sequences), StringWidth, ConverttoOS and
+  Converttopoints; no outline fonts
 - video: the standard 50Hz graphics modes (0, 1, 2, 4, 5, 8, 9, 10, 12, 13,
   15), modes modules define (Service_ModeExtension: VIDC and workspace
   lists, e.g. an overscan mode, shown at their own size; asked about for
@@ -347,8 +358,8 @@ MIT, GPL (2.0 or later; xBRZ's code GPL-3.0) or public domain - see
 shaders/README. With them included, a program linked with libroger is
 distributed under the GPL, version 3.
 
-Not implemented (yet): on the desktop, outline fonts (Font_Paint text
-isn't drawn), other tasks (but the Filer's viewers - which have no menu,
+Not implemented (yet): outline fonts (Font_Paint draws pixel fonts only,
+and on the desktop only in the program's own screen), other tasks (but the Filer's viewers - which have no menu,
 small icons or full info, selection by dragging a box, or copying between
 them), pointer
 entering and leaving events, keyboard shortcuts for windows (hot keys);
@@ -370,6 +381,7 @@ Files
     src/sound.c          the sound system
     src/audio.c          host audio (SDL stream, WAV)
     src/files.c          files and sprite files
+    src/fonts.c          the Font Manager (pixel fonts)
     src/disc.c           the floppy, sector by sector (DiscOp), FileCore and ADFS stand-ins
     src/modules.c        relocatable modules, the RMA
     src/cli.c            OS_CLI (* commands) and system variables

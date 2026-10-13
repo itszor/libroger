@@ -124,9 +124,12 @@ int modules_rmkill(const char *title)
 }
 
 /* A SWI in a module's chunk: entered in SVC mode with R11 = offset in the
- * chunk, R12 = private word, R14_svc = return address + the caller's PSR,
- * which the handler's movs/orrs pc,lr restores (with V set on error).
- * R0-R9 are in/out; the kernel preserves R10-R12 for the caller. */
+ * chunk, R12 = private word, R14_svc = the kernel's return address with
+ * the caller's flags and interrupt state but SVC mode, as RISC OS calls
+ * it: a handler that enables interrupts with `bic rX, lr, #I : teqp rX, #0`
+ * stays in SVC mode (LZWD, Saloon Cars'). It returns with movs/orrs pc,lr
+ * (V set on error); the caller's mode is restored afterwards. R0-R9 are
+ * in/out; the kernel preserves R10-R12 for the caller. */
 static void module_swi(int k, uint32_t b, int x)
 {
     uint32_t handler = RD32(mods[k].base + 0x20);
@@ -134,7 +137,7 @@ static void module_swi(int k, uint32_t b, int x)
     uint32_t r10 = R[10], r11 = R[11], r12 = R[12];
     R[11] = b & 0x3F; R[12] = mods[k].private_word;
     if ((MODEBITS & 3) == 0) bank_r13[3] = SVC_STACK;   /* a SWI from USR mode starts on an empty SVC stack */
-    call_swi_code(mods[k].base + handler, MODE_SVC, HANDLER_RET | (PSR() & ~0x10000000u));
+    call_swi_code(mods[k].base + handler, MODE_SVC, HANDLER_RET | (PSR() & ~0x10000003u) | 3);
     R[10] = r10; R[11] = r11; R[12] = r12;
     if (VF && !x) fprintf(stderr, "module SWI &%x returned an error: %s\n", b, (char *)MEM + ((R[0] + 4) & 0x3FFFFFF));
 }

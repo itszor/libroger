@@ -93,6 +93,17 @@ static void pset(int x, int y, int fg)          /* pixel coords, y down */
     int c = fg ? colour_pixel(gfg_col, tint_gfg) : colour_pixel(gbg_col, tint_gbg);
     put_px(row, x, bpp, apply(act, get_px(row, x, bpp), c, bpp));
 }
+/* for the Font Manager (fonts.c): a pixel value at pixel coordinates (y
+ * down), inside the graphics window; the graphics origin; a colour number's
+ * pixel value */
+void vdu_paint_pixel(int x, int y, int v)
+{
+    if (x < wl || x > wr || y < wb || y > wt) return;
+    put_px(bankmem() + y * line_bytes(), x, md()->bpp, v);
+}
+void vdu_origin(int *x, int *y) { *x = ox; *y = oy; }
+uint8_t vdu_colour_pixel(int c) { return colour_pixel(c, 0); }
+
 static int tox(int x) { return x >> md()->xeig; }
 static int toy(int y) { return scr_h() - 1 - (y >> md()->yeig); }
 

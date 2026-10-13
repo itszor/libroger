@@ -133,6 +133,13 @@ void vdu_write(uint8_t c);
 void vdu_mode_reset(void);                /* after a mode change: windows, colours, CLS */
 void vdu_char_def(int c, uint8_t *def);   /* OS_Word 10: a character's 8 rows */
 int  sprite_op_full(void);
+void vdu_paint_pixel(int x, int y, int v);   /* (fonts.c) pixel coordinates, y down; clipped */
+void vdu_origin(int *x, int *y);          /* the graphics origin, OS units */
+uint8_t vdu_colour_pixel(int c);          /* a GCOL colour number's pixel value */
+
+/* fonts.c: the Font Manager (RISC OS 2's pixel fonts) */
+int  fonts_swi(uint32_t b);
+int  fonts_swi_number(const char *name, uint32_t *n);
 
 /* sound.c */
 void sound_dma_advance(uint32_t us);

@@ -64,7 +64,8 @@ void roger_log(const char *name, const char *fmt, ...)
  * buttons:mask, move:dx:dy, esc, key:inkey[:ms] (INKEY -inkey held ms,
  * default 200), pad:control[:ms] and pad2:control[:ms] (a game controller's
  * control - up, a, start, ... (pad.c) - held ms, default 200),
- * type:ascii, shot, shader[:dir] (as F10: next, or -1 previous), quit */
+ * type:ascii (into the keyboard buffer: OS_ReadC, INKEY), shot, shader[:dir]
+ * (as F10: next, or -1 previous), quit */
 #define MAXSCRIPT 8192
 static struct { uint64_t ms; char act[8]; int a, b; } script[MAXSCRIPT];
 static int nscript, script_i;
