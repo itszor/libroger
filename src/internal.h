@@ -244,6 +244,7 @@ extern int8_t wimp_bar_side[WIMP_MAXICON];   /* an icon bar icon's side: -2 left
 extern uint32_t wimp_caret[6];            /* window, icon, x, y, height+flags, index */
 extern uint32_t wimp_menu_win;            /* the dialogue box open as a menu, 0 if none */
 struct win *wimp_window(uint32_t handle); /* NULL if none; the icon bar for -1 and -2 */
+int  wimp_bar_icon(const uint8_t *icon, int side);   /* an icon bar icon of the runtime's own: -2 left */
 int  wimp_stack(struct win **out);        /* the open windows, bottom to top */
 void wimp_open(struct win *w, const uint8_t *open, uint32_t behind);   /* open: visible area, scroll */
 void wimp_close(struct win *w);
@@ -258,9 +259,11 @@ uint32_t wimp_new_ref(void);              /* a message's my_ref */
  * the data transfer protocol */
 #define FILER_WINDOW 0x46494C45u          /* without the desktop: the viewer a save is dropped on */
 #define FILER_TASK   0x52454C46u
+#define FILER_BAR    0xFFFFFFFEu          /* filer_message: to its icon bar icon */
 int  filer_open(const char *dir);         /* *Filer_OpenDir: 0 if not (no desktop, no directory) */
 void filer_close(const char *dir);        /* *Filer_CloseDir */
 int  filer_owns(uint32_t handle);         /* a viewer's window */
+int  filer_bar_icon(void);                /* its icon bar icon, -1 */
 void filer_event(uint32_t reason, const uint32_t *blk);   /* the user's, on a viewer */
 void filer_drag_end(void);                /* a drag from a viewer ended (at the pointer) */
 void filer_message(uint32_t m, uint32_t to);   /* Wimp_SendMessage to it (a window, or FILER_TASK) */

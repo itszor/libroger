@@ -258,6 +258,13 @@ static int add_icon(struct win *w, const uint8_t *blk)
     return i;
 }
 
+int wimp_bar_icon(const uint8_t *blk, int side)
+{
+    int i = add_icon(&iconbar, blk);
+    if (i >= 0) wimp_bar_side[i] = (int8_t)side;
+    return i;
+}
+
 struct win *wimp_new_window(const uint8_t *blk)
 {
     int k;
@@ -697,6 +704,8 @@ int wimp_swi(uint32_t b)
         if (R[0] >= 17 && R[0] <= 19) WR32(R[1] + 8, ++msg_ref);
         if (R[2] == TASK_HANDLE) roger_wimp_event(R[0], (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);
         else if (R[2] == FILER_WINDOW || R[2] == FILER_TASK || filer_owns(R[2])) filer_message(R[1], R[2]);
+        else if (R[2] == 0xFFFFFFFE && filer_bar_icon() >= 0 && R[3] == (uint32_t)filer_bar_icon())
+            filer_message(R[1], FILER_BAR);                 /* (a save dropped on its icon bar icon) */
         return 1;
     }
     case 0x400F1:                                           /* Wimp_TransferBlock: within this task */

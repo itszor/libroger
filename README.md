@@ -266,7 +266,10 @@ all, from the windows and icons wimp.c keeps:
   resizes the desktop, never scales it, and display shaders aren't used
   on it - each pixel 2x2 OS units (so 640x512 is the 1280x1024 OS units a
   program expects, and a larger window more desktop); `--desktop=WxH` sets
-  the size to start with (1024x768), and a headless run's. The backdrop
+  the size to start with (1024x768), and a headless run's. Resized, the
+  windows and menus keep their place from the top left, and windows are
+  moved back onto the screen (the title bar first), as after a mode
+  change. The backdrop
   (desktop/backdrop.png, embedded) is scaled to cover the screen above the
   icon bar; the Wimp's 16 colours and palette; the system font (the
   character set, below, drawn double height)
@@ -290,7 +293,9 @@ all, from the windows and icons wimp.c keeps:
   windows, scroll arrows (auto-repeat), wells and sliders, Scroll_Request
   for windows that scroll themselves, back, close and toggle size as
   Open_Window_Request / Close_Window_Request (carried out by the Wimp if
-  the program masks them), Wimp_DragBox (User_Drag_Box), Wimp_GetPointerInfo
+  the program masks them), Wimp_DragBox (User_Drag_Box; a parent box
+  that is the mode's screen, as a save box's usually is, taken as the
+  desktop's), Wimp_GetPointerInfo
 - menus: menu trees (titles, ticks, dotted lines, shaded and sprite items,
   submenus opened from the arrow - to the left when there's no room - or
   through Message_MenuWarning and Wimp_CreateSubMenu, dialogue boxes as
@@ -313,6 +318,9 @@ all, from the windows and icons wimp.c keeps:
   window or icon bar icon gives it the file (Message_DataLoad); and a
   save box's icon dragged to a viewer saves there (Message_DataSave,
   DataSaveAck with the name in that directory, DataLoad, DataLoadAck).
+  The first directory the game opens has an icon on the icon bar's left,
+  as a disc's: Select or Adjust opens its viewer again (where a new one
+  opens), and a save dropped on it saves there.
   Running is the game's to say (roger_config.filer_run: there's only the
   one program; `roger_filer_load()` gives the program a file or
   application as if dragged to it)

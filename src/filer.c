@@ -31,7 +31,12 @@
  * Without the desktop there are no viewers, but game code can still stand
  * in for the user dragging a save to one: roger_wimp_save_to() arms a
  * destination, a viewer the program finds under the pointer
- * (FILER_WINDOW) until the save is done. */
+ * (FILER_WINDOW) until the save is done.
+ *
+ * The directory the game opens first (roger_filer_open) has an icon of
+ * its own on the icon bar's left, as a disc's: Select or Adjust on it opens
+ * its viewer again (closed, or under other windows, or off the screen), and
+ * a save dropped on it goes to that directory. */
 #include <dirent.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -259,7 +264,46 @@ int filer_open(const char *dir)
     return 1;
 }
 
-int roger_filer_open(const char *dir) { return filer_open(dir); }
+/* ---------------------------------------------------------------- the icon bar icon */
+#define BAR_DATA (FILER_DATA + NVIEW * VIEW_DATA) /* its text (64), validation (16) */
+static char home[256];                            /* the directory it opens */
+static int bar_icon = -1;
+
+int roger_filer_open(const char *dir)
+{
+    int ok = filer_open(dir);
+    if (ok && !home[0]) gstrans(dir, home, sizeof home);
+    return ok;
+}
+
+/* made once the program polls, its own icon (0) made by then */
+static void make_bar_icon(void)
+{
+    if (!rg_desktop || !home[0] || bar_icon >= 0) return;
+    size_t l = strlen(home);
+    while (l && (home[l - 1] == ' ' || home[l - 1] == '.')) home[--l] = 0;
+    const char *leaf = strrchr(home, '.');
+    snprintf((char *)MEM + BAR_DATA, 64, "%s", leaf ? leaf + 1 : home);
+    snprintf((char *)MEM + BAR_DATA + 64, 16, "Sdirectory");
+    int tw = 16 * (int)strlen((char *)MEM + BAR_DATA);
+    int32_t ic[8] = {0, -16, tw > 68 ? tw : 68, 84,
+                     0x1700310B,                    /* text and sprite, centred, indirected, click */
+                     (int32_t)BAR_DATA, (int32_t)(BAR_DATA + 64), 64};
+    bar_icon = wimp_bar_icon((const uint8_t *)ic, -2);
+}
+int filer_bar_icon(void) { return bar_icon; }
+
+/* Select or Adjust on it */
+static void bar_click(uint32_t b)
+{
+    if (b != 4 && b != 1) return;
+    for (int k = 0; k < NVIEW; k++)               /* (filer_open keeps where it is) */
+        if (views[k].w && !strcasecmp(views[k].dir, home)) {
+            wimp_delete(views[k].w);
+            views[k].w = NULL;
+        }
+    filer_open(home);
+}
 
 void filer_close(const char *dir)                /* *Filer_CloseDir */
 {
@@ -316,6 +360,7 @@ void filer_delivered(uint32_t reason, const uint32_t *blk)
 
 void filer_polled(void)
 {
+    make_bar_icon();
     if (!pending.ref || !pending.delivered) return;
     pending.ref = 0;
     if (pending.action == 5) run(pending.name);  /* Message_DataOpen not taken: run it */
@@ -341,6 +386,11 @@ void filer_message(uint32_t m, uint32_t to)
             cstr(m + 44, leaf, 1);
             const char *dot = strrchr(leaf, '.');
             snprintf(name, sizeof name, "%s.%s", v->dir, dot ? dot + 1 : leaf);
+        } else if (to == FILER_BAR && home[0]) {
+            char leaf[256];
+            cstr(m + 44, leaf, 1);
+            const char *dot = strrchr(leaf, '.');
+            snprintf(name, sizeof name, "%s.%s", home, dot ? dot + 1 : leaf);
         } else if (save_to[0] && (to == FILER_WINDOW || to == FILER_TASK)) snprintf(name, sizeof name, "%s", save_to);
         else return;
         send(17, 2, RD32(m + 8), w6, name);                 /* DataSaveAck: the full name */
@@ -385,6 +435,7 @@ static void open_entry(struct viewer *v, int i, int adjust)
 /* desktop.c's events for the Filer's windows */
 void filer_event(uint32_t reason, const uint32_t *blk)
 {
+    if (reason == 6 && blk[3] == 0xFFFFFFFE) { bar_click(blk[2]); return; }   /* its icon bar icon */
     struct viewer *v = view_of(reason == 6 ? blk[3] : blk[0]);
     if (!v) return;
     switch (reason) {
@@ -448,6 +499,7 @@ void filer_drag_end(void)
     int32_t window, icon;
     desktop_pointer(&x, &y, &window, &icon);
     if (window == -1 || filer_owns((uint32_t)window)) return;   /* nowhere, or a viewer: no copying */
+    if (window == -2 && icon == bar_icon) return;                /* ...or its own icon */
     char name[400];
     entry_name(v, drag_icon, name, sizeof name);
     const struct dir_entry *e = &v->e[drag_icon];

@@ -176,6 +176,7 @@ static void scale_backdrop(int w, int h)
 /* The desktop's size: the window's in pixels (interactive), or as
  * --desktop=WxH gave it */
 int rg_desktop_w = 1024, rg_desktop_h = 768;
+static void keep_on_screen(int dy);
 static void fit_window(void)
 {
     int w = rg_desktop_w, h = rg_desktop_h;
@@ -184,8 +185,10 @@ static void fit_window(void)
     if (w == dw && h == dh && fb) return;
     uint32_t *n = SDL_realloc(fb, (size_t)w * h * 4);
     if (!n) return;
+    int old_sh = fb ? SH : 0;
     fb = n; dw = w; dh = h;
     scale_backdrop(dw, PY(BAR_H));
+    if (old_sh) keep_on_screen(SH - old_sh);
 }
 
 /* ---------------------------------------------------------------- sprites
@@ -961,6 +964,29 @@ static void close_levels(int from)                /* close level from and those 
     if (warned_level >= from - 1) warned_level = warned_item = -1;
 }
 
+/* The desktop resized (dy: its height's change): the windows and menus
+ * keep their place from its top left, as the host's window does, and the
+ * windows are moved back onto it as the Wimp does after a mode change -
+ * the title bar first, then as much of the rest as fits. */
+static void keep_on_screen(int dy)
+{
+    for (int k = 0; k < nlv; k++) lv[k].y += dy;
+    struct win *st[WIMP_MAXWIN];
+    int n = wimp_stack(st);
+    for (int i = 0; i < n; i++) {
+        struct geom g;
+        geom_of(st[i], &g);
+        int mx = 0, my = dy;
+        if (g.o[2] + mx > SW) mx = SW - g.o[2];
+        if (g.o[0] + mx < 0) mx = -g.o[0];
+        if (g.o[1] + my < 0) my = -g.o[1];
+        if (g.o[3] + my > SH) my = SH - g.o[3];
+        if (!mx && !my) continue;
+        int32_t o[6] = {g.vx0 + mx, g.vy0 + my, g.vx1 + mx, g.vy1 + my, g.sx, g.sy};
+        wimp_open(st[i], (const uint8_t *)o, 0xFFFFFFFD);
+    }
+}
+
 /* open a menu level with its items' top left at x, y - for a submenu that
  * doesn't fit to the right, ending at left instead (left of its parent) */
 static void open_level(uint32_t menu, int x, int y, int left)
@@ -1202,6 +1228,10 @@ static void event(uint32_t reason, const uint32_t *blk, int n)
 {
     uint32_t window = reason == 6 ? blk[3] : blk[0];
     if ((reason == 2 || reason == 3 || reason == 6 || reason == 10) && filer_owns(window)) { filer_event(reason, blk); return; }
+    if (reason == 6 && window == 0xFFFFFFFE && filer_bar_icon() >= 0 && blk[4] == (uint32_t)filer_bar_icon()) {
+        filer_event(reason, blk);
+        return;
+    }
     roger_wimp_event(reason, blk, n);
 }
 
@@ -1560,6 +1590,16 @@ void desktop_drag_box(uint32_t blk)
     ubox.x1 = (int32_t)rd(blk + 16); ubox.y1 = (int32_t)rd(blk + 20);
     ubox.px0 = (int32_t)rd(blk + 24); ubox.py0 = (int32_t)rd(blk + 28);
     ubox.px1 = (int32_t)rd(blk + 32); ubox.py1 = (int32_t)rd(blk + 36);
+    /* A parent box that is the screen as the mode's size gives it (Elite's
+     * save box: 1280x1024, and a margin) is the desktop's - the window's
+     * size, perhaps larger; and the box starts inside it, not pulled in
+     * there (away from the pointer) on the first move. */
+    int mw = (int)(modevar(-1, 11) + 1) << modevar(-1, 4), mh = (int)(modevar(-1, 12) + 1) << modevar(-1, 5);
+    if (ubox.px0 <= 0 && ubox.py0 <= 0 && ubox.px1 >= mw && ubox.py1 >= mh) {
+        ubox.px1 += imax(SW - mw, 0); ubox.py1 += imax(SH - mh, 0);
+    }
+    ubox.px0 = imin(ubox.px0, imin(ubox.x0, ubox.x1)); ubox.py0 = imin(ubox.py0, imin(ubox.y0, ubox.y1));
+    ubox.px1 = imax(ubox.px1, imax(ubox.x0, ubox.x1)); ubox.py1 = imax(ubox.py1, imax(ubox.y0, ubox.y1));
     ubox.sx = mouse_x; ubox.sy = mouse_y;
     ubox.filer = 0;
     pr.kind = P_NONE;
