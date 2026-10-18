@@ -7,7 +7,8 @@
  * tracks are decoded here into the sectors on them, keeping each one's ID
  * (C, H, R, N) and whether its data CRC is good, so a protection track of
  * odd sizes and deliberate CRC errors reads as it did on the drive - or a
- * flat image (.adf: ADFS D/E, 800K, or F, 1600K; every sector good).
+ * flat image (.adf: ADFS D/E, 800K, or F, 1600K; every sector good; a dump
+ * short by whole tracks has those unformatted).
  *
  * A DiscOp addresses the disc as bytes, which a disc record turns into
  * (cylinder, head, sector): the disc's own geometry, or an alternative
@@ -157,15 +158,19 @@ static int load_hfe(const uint8_t *d, long size)
     return best > 0;
 }
 
+/* A dump that stops short by whole tracks (Ego: Repton 4's, 795K: its last
+ * track, which its protection needs unreadable, isn't in it) has those
+ * tracks unformatted: no sectors on them. */
 static int load_flat(const uint8_t *d, long size)
 {
-    if (size == 819200) { geom.log2size = 10; geom.spt = 5; }        /* ADFS D/E */
-    else if (size == 1638400) { geom.log2size = 10; geom.spt = 10; } /* ADFS F */
+    if (size <= 819200 && size % 5120 == 0) { geom.log2size = 10; geom.spt = 5; }       /* ADFS D/E */
+    else if (size <= 1638400 && size % 10240 == 0) { geom.log2size = 10; geom.spt = 10; } /* ADFS F */
     else { fprintf(stderr, "floppy: a flat image of %ld bytes: not an 800K or 1600K disc\n", size); return 0; }
     geom.heads = 2; geom.low = 0;
     int secsize = 1 << geom.log2size;
+    long ntracks = size / (secsize * geom.spt);
     for (int c = 0; c < 80; c++)
-        for (int h = 0; h < 2; h++)
+        for (int h = 0; h < 2 && c * 2 + h < ntracks; h++)
             for (int s = 0; s < geom.spt; s++) {
                 struct sector x = {c, h, s, geom.log2size - 7, 1, malloc(secsize)};
                 memcpy(x.data, d + ((long)(c * 2 + h) * geom.spt + s) * secsize, secsize);
