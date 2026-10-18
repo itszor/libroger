@@ -372,11 +372,16 @@ static void reset_colours(void)
     tint_tfg = tint_gfg = 3; tint_tbg = tint_gbg = 0;
 }
 
-/* after a mode change (video_set_mode) */
+/* after a mode change (video_set_mode): the new mode's screen is cleared,
+ * as RISC OS's CLS does, and the rest of screen memory keeps what it had
+ * (a program double-buffering in it may never draw some of its second
+ * bank: Enter the Realm's MODE 12 CLS in colour 7, then MODE 9, leaves
+ * its play area's edges and last rows colour 7 in both) */
 void vdu_mode_reset(void)
 {
+    uint32_t n = mode_bytes(md());
     reset_windows(); reset_colours();
-    memset(MEM + screen_base(), 0, screen_size()); cx = cy = px_ = py_ = 0;
+    memset(MEM + screen_base(), 0, n < screen_size() ? n : screen_size()); cx = cy = px_ = py_ = 0;
     vdu5 = 0;
 }
 
