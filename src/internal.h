@@ -60,6 +60,7 @@ void os_error(uint32_t num, const char *msg);   /* a SWI fails: R0 -> error bloc
 void finish(const char *why) __attribute__((noreturn));
 void script_run(void);
 int  script_active(void);
+int  script_typing(void);                    /* --script has type: actions to come */
 
 /* cpu.c */
 extern uint32_t bank_r13[4], bank_r14[4];
@@ -78,7 +79,7 @@ void cpu_dump_pchist(void);
 void cpu_report_interp(void);
 int  cpu_seen_gap(uint32_t a);
 void cpu_log_gap(uint32_t a);
-void cpu_programs_loaded(const char *leaf, uint32_t addr);   /* OS_File loaded a file */
+void cpu_programs_loaded(const char *name, uint32_t addr);   /* OS_File loaded a file */
 
 /* clib.c: the Shared C Library */
 int  clib_swi(uint32_t b);                 /* SharedCLibrary_LibInit... */
@@ -135,6 +136,7 @@ void vdu_char_def(int c, uint8_t *def);   /* OS_Word 10: a character's 8 rows */
 int  sprite_op_full(void);
 void vdu_paint_pixel(int x, int y, int v);   /* (fonts.c) pixel coordinates, y down; clipped */
 void vdu_origin(int *x, int *y);          /* the graphics origin, OS units */
+void vdu_text_cursor(int *x, int *y);     /* the text cursor, in the text window */
 uint8_t vdu_colour_pixel(int c);          /* a GCOL colour number's pixel value */
 
 /* fonts.c: the Font Manager (RISC OS 2's pixel fonts) */
@@ -195,6 +197,7 @@ void sprite_op(void);
 void modules_load(void);
 int  modules_rmload(const char *name);   /* 0: not a configured module file */
 int  modules_rmkill(const char *title);
+void modules_rmclear(void);                 /* *RMClear: every module killed */
 int  modules_swi(uint32_t b, int x);
 int  modules_swi_number(const char *name, uint32_t *n);   /* a loaded module's SWI by name */
 int  modules_gap(uint32_t a);             /* an untranslated address in a module */

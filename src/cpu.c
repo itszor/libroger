@@ -116,13 +116,25 @@ void cpu_remove_image(const struct roger_image *img)          /* (keeping the ot
 
 /* Programs that may be loaded at their image's base (or, packed, at their
  * `at`): OS_File loaded one; it takes over when control next arrives at
- * its base. */
+ * its base. A program's leaf names the file; with dots in it, the last
+ * components of its name ("Data.CODE": two files of the same leaf). */
 static const struct roger_image *pending;
-void cpu_programs_loaded(const char *leaf, uint32_t addr)
+static int names_program(const char *name, const char *leaf)
+{
+    char x[1100];
+    gstrans(name, x, sizeof x);
+    size_t ln = strlen(x), ll = strlen(leaf);
+    if (!strchr(leaf, '.')) {
+        const char *l = strrchr(x, '.');
+        return !strcasecmp(l ? l + 1 : x, leaf);
+    }
+    return ln >= ll && !strcasecmp(x + ln - ll, leaf) && (ln == ll || strchr(".:", x[ln - ll - 1]));
+}
+void cpu_programs_loaded(const char *name, uint32_t addr)
 {
     if (!rg->programs) return;
     for (const struct roger_program *p = rg->programs; p->leaf; p++)
-        if (!strcasecmp(p->leaf, leaf) && (p->at ? p->at : p->image->base) == addr) {
+        if (names_program(name, p->leaf) && (p->at ? p->at : p->image->base) == addr) {
             if (!p->overlay) pending = p->image;
             else {
                 cpu_remove_image(p->image);

@@ -186,7 +186,7 @@ static int hostpath_top(const char *name, char *out)
         snprintf(out, 2048, "%s", x + 7);
         return stat(out, &st) == 0;
     }
-    const char *n = x, *r = ram_name(x);
+    const char *n = strip_prefixes(x), *r = ram_name(x);     /* (a variable's value may start with one) */
     strcpy(out, rg_appdir);
     if (r) { strcpy(out, ramdir); n = r; }
     return lookup_in(n, out);
@@ -229,7 +229,7 @@ static int saved_path_top(const char *name, char *out)
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
     if (!strncasecmp(x, "HostFS:", 7)) return 0;
-    const char *n = x, *r = ram_name(x);
+    const char *n = strip_prefixes(x), *r = ram_name(x);
     snprintf(out, 2048, "%s", r ? ramdir : rg_savedir);
     return lookup_in(r ? r : n, out);
 }
@@ -356,8 +356,7 @@ static void os_file(void)
         }
         if (R[3] & 0xFF) finish("load at file address unsupported");
         long len = load_file(path, R[2]);
-        const char *leaf = strrchr(name, '.');
-        cpu_programs_loaded(leaf ? leaf + 1 : name, R[2]);
+        cpu_programs_loaded(name, R[2]);
         R[4] = (uint32_t)len; R[0] = 1;
         return;
     }
@@ -456,7 +455,7 @@ static void save_path(const char *name, char *out, int create)
     const char *r0 = in_csd(name, c, sizeof c);
     if (r0) name = r0;
     gstrans(strip_prefixes(name), x, sizeof x);
-    const char *n = x, *r = ram_name(x);
+    const char *n = strip_prefixes(x), *r = ram_name(x);
     snprintf(out, 2048, "%s/", r ? ramdir : rg_savedir);
     if (r) n = r;
     else if (create) mkdir(rg_savedir, 0777);

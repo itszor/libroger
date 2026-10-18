@@ -38,7 +38,8 @@
  *                    Joystick_CalibrateTopRight and BottomLeft do nothing.
  *   ROGER_JOY_KM     Keith Martin's interface (The Fourth Dimension's
  *                    games): Joy_Read0 and Joy_Read1 (&CFFC0, &CFFC1), the
- *                    port's five lines, high when pressed: KM_* below. */
+ *                    port's five lines, high when pressed: KM_* below; and
+ *                    the port itself, the byte at &33A0004 (joystick 0). */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -119,12 +120,15 @@ int pad_setup(const char *opt1, const char *opt2)
     return 1;
 }
 
+static void km_port(void);
+
 /* control c of controller p pressed or released by a source */
 void pad_set(int p, int c, int source, int down)
 {
     if (p < 0 || p > 1 || c < 0 || c >= NPAD_CONTROLS) return;
     int was = held[p][c] != 0;
     held[p][c] = down ? held[p][c] | source : held[p][c] & ~source;
+    km_port();
     int now = held[p][c] != 0, k = joystick_control(c) ? -1 : map[p][c].key;
     if (now == was || k < 0) return;
     int both = k >= 3 && k <= 8 ? (k - 3) % 3 : -1;     /* left/right Shift, Ctrl, Alt: and either */
@@ -170,6 +174,21 @@ static int axis[2][2];                    /* each controller's left stick, x and
 
 void pad_axis(int p, int a, int v) { if (p >= 0 && p < 2 && a >= 0 && a < 2) axis[p][a] = v; }
 
+static uint32_t km_lines(int p)
+{
+    return (held[p][PAD_UP] ? KM_UP : 0) | (held[p][PAD_DOWN] ? KM_DOWN : 0) |
+           (held[p][PAD_LEFT] ? KM_LEFT : 0) | (held[p][PAD_RIGHT] ? KM_RIGHT : 0) |
+           (held[p][PAD_A] || held[p][PAD_B] ? KM_FIRE : 0);
+}
+
+/* the interface's port, as a program that reads the hardware sees it (its
+ * Joystick module does the same: Enter the Realm reads it itself): the
+ * first joystick's lines in the byte at &33A0004 */
+static void km_port(void)
+{
+    if ((rg_joystick & ROGER_JOY_KM) && MEM) MEM[0x33A0004] = (uint8_t)km_lines(0);
+}
+
 /* the joystick's controls: not keys while the joystick is on */
 static int joystick_control(int c) { return rg_joystick && c <= PAD_B; }
 
@@ -204,9 +223,7 @@ int joystick_swi(uint32_t b)
         uint32_t v = 0;
         if (b <= 0xCFFC1) {                                /* Joy_Read0, Joy_Read1 */
             int p = b - 0xCFFC0;
-            v = (held[p][PAD_UP] ? KM_UP : 0) | (held[p][PAD_DOWN] ? KM_DOWN : 0) |
-                (held[p][PAD_LEFT] ? KM_LEFT : 0) | (held[p][PAD_RIGHT] ? KM_RIGHT : 0) |
-                (held[p][PAD_A] || held[p][PAD_B] ? KM_FIRE : 0);
+            v = km_lines(p);
             ev("Joy_Read", "ii", p, v);
         }
         R[0] = v;

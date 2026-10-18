@@ -91,6 +91,11 @@ static void parse_script(const char *p)
     }
 }
 int script_active(void) { return nscript > 0; }
+int script_typing(void)                          /* keys still to be typed (type:) */
+{
+    for (int k = script_i; k < nscript; k++) if (!strcmp(script[k].act, "type")) return 1;
+    return 0;
+}
 
 void script_run(void)
 {

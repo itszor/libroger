@@ -235,10 +235,16 @@ static int if_condition(const char *e)
 }
 
 /* the word w (case-insensitive) at s, followed by a space: a pointer past it */
+/* s starts with command w (any case), or an abbreviation of it - a
+ * prefix ending in '.', as "L." for Load: the first command it abbreviates
+ * in the order they're tried (RISC OS's kernel and modules' order) */
 static const char *word_at(const char *s, const char *w)
 {
     size_t l = strlen(w);
-    return !strncasecmp(s, w, l) && (s[l] == ' ' || s[l] == 0) ? s + l : NULL;
+    if (!strncasecmp(s, w, l) && (s[l] == ' ' || s[l] == 0)) return s + l;
+    size_t a = 0;
+    while (a < l && s[a] && s[a] != '.' && s[a] != ' ' && tolower((unsigned char)s[a]) == tolower((unsigned char)w[a])) a++;
+    return a > 0 && a < l && s[a] == '.' ? s + a + 1 : NULL;
 }
 
 static const char *find_word(const char *s, const char *w)
@@ -246,7 +252,8 @@ static const char *find_word(const char *s, const char *w)
     int q = 0;
     for (; *s; s++) {
         if (*s == '"') q = !q;
-        else if (!q && s[-1] == ' ' && word_at(s, w)) return s;
+        else if (!q && s[-1] == ' ' && !strncasecmp(s, w, strlen(w)) && (s[strlen(w)] == ' ' || !s[strlen(w)]))
+            return s;
     }
     return NULL;
 }
@@ -343,8 +350,7 @@ int cli_command(const char *line, int x)
         if (*word) addr = (uint32_t)strtoul(word, NULL, 16);
         else { uint32_t load, exec; file_info(path, &load, &exec); addr = load; }
         load_file(path, addr);
-        const char *leaf = strrchr(name, '.');
-        cpu_programs_loaded(leaf ? leaf + 1 : name, addr);
+        cpu_programs_loaded(name, addr);
         return 1;
     }
     if ((p = word_at(s, "SLoad")) || (p = word_at(s, "SMerge"))) {   /* the system sprite area */
@@ -416,6 +422,10 @@ int cli_command(const char *line, int x)
         if (!modules_rmkill(name)) return cli_error(x);   /* "Module not found" */
         return 1;
     }
+    if (word_at(s, "RMClear")) {
+        modules_rmclear();
+        return 1;
+    }
     if ((p = word_at(s, "Tuning"))) {             /* relative to the current tuning; 0: the default */
         p = skip(p);
         int neg = *p == '-';
@@ -485,7 +495,8 @@ int cli_command(const char *line, int x)
     if (modules_command(word, skip(s), x)) return 1;
     /* running a file (*Run name, or the name as the command, with or
      * without a leading slash): a BBC font file (&FF7) is printed, as
-     * Alias$@RunType_FF7 (Print %*0) does */
+     * Alias$@RunType_FF7 (Print %*0) does, and a module (&FFA) RMRun
+     * (Alias$@RunType_FFA) */
     if ((p = word_at(cmd, "Run"))) arg(&p, word, sizeof word);
     {
         char path[2048];
@@ -494,6 +505,11 @@ int cli_command(const char *line, int x)
         if (*f && hostpath_read(f, path)) {
             file_info(path, &load, &exec);
             if ((load >> 20) == 0xFFF && ((load >> 8) & 0xFFF) == 0xFF7) return print_file(path);
+            if ((load >> 20) == 0xFFF && ((load >> 8) & 0xFFF) == 0xFFA) {
+                if (modules_rmload(f)) return 1;
+                fprintf(stderr, "*RMRun: module file not configured %s\n", f);
+                return cli_error(x);
+            }
         }
     }
     return 0;

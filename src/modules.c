@@ -123,6 +123,13 @@ int modules_rmkill(const char *title)
     return 0;
 }
 
+/* *RMClear: every module killed, the last loaded first */
+void modules_rmclear(void)
+{
+    for (int k = MAXMOD - 1; k >= 0; k--)
+        if (mods[k].m) module_kill(k);
+}
+
 /* A SWI in a module's chunk: entered in SVC mode with R11 = offset in the
  * chunk, R12 = private word, R14_svc = the kernel's return address with
  * the caller's flags and interrupt state but SVC mode, as RISC OS calls

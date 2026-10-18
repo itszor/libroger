@@ -117,7 +117,9 @@ Implemented:
   started from the desktop relying on the Wimp's pointer staying on)
 - overlays (roger_config.programs with overlay set): the image loaded
   last at an address is the one dispatched there, over an earlier overlay
-  or the program; a gap in one is treated as the program's
+  or the program; a gap in one is treated as the program's. A program is
+  named by its leaf, or by its last components where two files share a
+  leaf ("Data.CODE": Enter the Realm)
 - CPU: processor modes with banked registers, TEQP mode changes, the
   ARM2 interpreter (gaps, self-modified instructions); self-modified code
   at run time: a compiled word the program stores to is interpreted as it
@@ -151,7 +153,8 @@ Implemented:
   with wrap-around, VIDC palette including 256-colour modes, VDU and mode
   variables, VDU drivers (MODE, CLS/CLG, COLOUR/GCOL, VDU 19 palette,
   tints, windows, origin, PLOT lines/points/triangles/rectangles; VDU
-  21/6; circles and ellipses, outline and filled; text: VDU 4 in a text window, VDU 5 at the graphics cursor, VDU
+  21/6; circles and ellipses, outline and filled; flood fill (PLOT
+  &80-&8F, BASIC's FILL); text: VDU 4 in a text window, VDU 5 at the graphics cursor, VDU
   23 characters, cursor control), OS_SpriteOp on user areas and the
   system sprite area (*SLoad/*SMerge; load, merge, read area information,
   select, plot; *SChoose and PLOT &E8-&EF; *ScreenLoad and SpriteOp 3:
@@ -200,9 +203,11 @@ Implemented:
   scheduler (Sound_QSchedule, QTempo); to SDL or a WAV file
 - the command line: Set, SetEval (integer and string expressions), Unset,
   If ... Then ... Else, Dir, Load, Save, Copy (R: recursively), Delete, RMLoad,
-  RMRun, RMKill, FX, IconSprites, ChannelVoice, Filer_OpenDir and
+  RMRun, RMKill, RMClear, FX, IconSprites, ChannelVoice, Filer_OpenDir and
   Filer_CloseDir (directory viewers, on the desktop), and loaded modules' commands, after GSTrans
-  (<var>); OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
+  (<var>), abbreviated too ("L." for Load: the first command it abbreviates);
+  running a file by name: a BBC font file (&FF7) printed, a module (&FFA)
+  RMRun; OS_GSTrans; OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
   integers). Other commands are logged and ignored
 - the Wimp, without a desktop (but see The desktop, below): Wimp_Initialise (version 3.16), Wimp_Poll
   (events queued by the game's code), templates (Wimp_OpenTemplate,
@@ -227,7 +232,8 @@ Implemented:
   emulator), no stack extension (a 64K root stack instead)
 - the kernel: OS_Byte (keyboard scans, single key or first key pressed, or
   from 16; the keyboard status (Caps Lock as the host's);
-  INKEY, the OS version, events, Escape, banks, mode, the vsync counter), OS_Word (character definitions, palette, pointer - its shape, bounding
+  INKEY, the OS version, events, Escape, banks, mode, the vsync counter,
+  the text cursor), OS_Word (character definitions, palette, pointer - its shape, bounding
   box, and the mouse and pointer position, set and read - display
   start, the real-time clock: the host's, or fixed in headless runs),
   OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ReadSysInfo 2 (the
@@ -429,6 +435,7 @@ x signed, -64/0/64 as the A3010's digital ports give, or with
 ROGER_JOY_ANALOGUE the stick's position; bit 16 a, 17 b), and
 ROGER_JOY_KM, Keith Martin's interface in The Fourth Dimension's games
 (Joy_Read0/1: five lines, high when pressed - right, left, down, up,
-fire). The D-pad, left stick, a and b are then the joystick's, not keys;
+fire; and the port itself, the byte at &33A0004, for a program that reads
+it: Enter the Realm). The D-pad, left stick, a and b are then the joystick's, not keys;
 the other controls keep their keys. Joystick 0 is the first controller,
 1 the second.

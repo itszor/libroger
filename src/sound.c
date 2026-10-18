@@ -503,7 +503,9 @@ static int sound_impl(uint32_t b)
         R[0] = pitch_step(R[0] & 0x7FFF);
         return 1;
     case 0x40189:                          /* Sound_Control: R0 channel, R1 amplitude, R2 pitch, R3 duration */
-        control((int)R[0], (int32_t)R[1], R[2], R[3]);
+        /* the amplitude is 16 bits, as OS_Word 7's (and ControlPacked's):
+         * BASIC passes -15 as &FFFFFFF1, Enter the Realm as &FFF1 */
+        control((int)R[0], (int16_t)(R[1] & 0xFFFF), R[2], R[3]);
         return 1;
     case 0x40186:                          /* Sound_ControlPacked: R0 amplitude << 16 | channel,
                                               R1 duration << 16 | pitch */

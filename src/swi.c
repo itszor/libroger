@@ -27,6 +27,12 @@ static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v
 static void os_byte(void)
 {
     uint32_t op = R[0] & 0xFF;
+    if (op == 134 || op == 165) {                      /* the text cursor (134), the output cursor */
+        int x, y;                                      /* (165, the same here): R1 x, R2 y, in the */
+        vdu_text_cursor(&x, &y);                       /* text window (BASIC's POS, VPOS) */
+        R[1] = (uint32_t)x; R[2] = (uint32_t)y;
+        return;
+    }
     if (op == 129) {                                   /* INKEY */
         if (R[2] == 0xFF && (R[1] & 0xFF) == 0) {      /* the OS version: 3.1, or 3.5 on a Risc PC */
             R[1] = rg->vidc20 ? 0xA5 : 0xA4; R[2] = 0;
@@ -245,7 +251,7 @@ static void swi_number_from_string(void)
         {"OS_Exit", 0x11, 0}, {"OS_Module", 0x1E, 0}, {"OS_Mouse", 0x1C, 0}, {"OS_ReadUnsigned", 0x21, 0},
         {"OS_ReadVarVal", 0x23, 0}, {"OS_SetVarVal", 0x24, 0}, {"OS_GSTrans", 0x27, 0},
         {"OS_ReadPalette", 0x2F, 0}, {"OS_ValidateAddress", 0x3A, 0}, {"OS_ReadMonotonicTime", 0x42, 0},
-        {"OS_RemoveCursors", 0x36, 0}, {"OS_RestoreCursors", 0x37, 0},
+        {"OS_RemoveCursors", 0x36, 0}, {"OS_RestoreCursors", 0x37, 0}, {"OS_EnterOS", 0x16, 0},
         {"OS_ReadMemMapInfo", 0x51, 0}, {"OS_ReadRAMFsLimits", 0x55, 0}, {"RamFS_FreeSpace", 0x40783, 0}, {"OS_SerialOp", 0x57, 0},
         {"OS_ConvertStandardDateAndTime", 0xC0, 0}, {"OS_ConvertDateAndTime", 0xC1, 0},
         {"Sound_Configure", 0x40140, 0}, {"Sound_Enable", 0x40141, 0}, {"Sound_Volume", 0x40180, 0},
@@ -362,7 +368,18 @@ void swi(uint32_t n, uint32_t nextpc)
     case 3: vdu_put('\n'); vdu_put('\r'); return;                   /* OS_NewLine */
     case 4:                                      /* OS_ReadC: wait for a key; C set on Escape */
         CF = 0;
-        if (!rg_interactive) { R[0] = 13; return; }   /* headless: Return */
+        if (!rg_interactive) {                   /* headless: a key typed (type:), waited for in */
+            uint32_t m = MODEBITS;               /* emulated time while the script has some to */
+            MODEBITS &= ~0x08000000u;            /* come (interrupts on, as the kernel waits); */
+            for (;;) {                           /* or Return */
+                int c = key_buffer_get();
+                if (c >= 0) { R[0] = (uint32_t)c; break; }
+                if (!script_typing()) { R[0] = 13; break; }
+                roger_idle(TICK_STEPS);
+            }
+            MODEBITS = m;
+            return;
+        }
         for (;;) {
             if (escape_pressed) { R[0] = 27; CF = 1; return; }
             int c = key_buffer_get();
@@ -469,6 +486,21 @@ void swi(uint32_t n, uint32_t nextpc)
     case 0x11:                                   /* OS_Exit: a loader program (a utility *Run */
         if (in_loader) { npc = RETURN_TO_OS; return; }   /* from !Run) ends, and !Run goes on */
         finish("OS_Exit");
+    case 0x27: {                                 /* OS_GSTrans: R0 string, R1 buffer, R2 size (bit 29: */
+        char in[1024], out[1024];                /* a space ends the string too) -> R0 past it, R2 length */
+        uint32_t p = R[0];
+        int n = 0, sp = (R[2] & 0x20000000u) != 0, size = (int)(R[2] & 0x1FFFFFFF);
+        while (n < 1023 && MEM[p] >= ' ' && !(sp && MEM[p] == ' ')) in[n++] = MEM[p++];
+        in[n] = 0;
+        gstrans(in, out, sizeof out);
+        int l = (int)strlen(out);
+        CF = l >= size;                          /* the buffer overflowed */
+        if (CF) l = size > 0 ? size - 1 : 0;
+        memcpy(MEM + R[1], out, l);
+        if (size > l) MEM[R[1] + l] = 0;
+        R[0] = p; R[2] = (uint32_t)l;
+        return;
+    }
     case 0x2B: finish("OS_GenerateError");
     case 0x42: R[0] = rg_interactive ? (uint32_t)((display_ticks_ns() - rg_t0_ns) / CS_NS)   /* OS_ReadMonotonicTime */
                                      : (uint32_t)(icount / TICK_STEPS); return;

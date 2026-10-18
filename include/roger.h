@@ -30,7 +30,8 @@
  * one image per level for the same address, loaded into a buffer and
  * decrunched into place). */
 struct roger_program {
-    const char *leaf;
+    const char *leaf;                     /* the file's leaf name, or its last components
+                                             ("Data.CODE") where two files share a leaf */
     const struct roger_image *image;
     int overlay;
     uint32_t at;
@@ -197,7 +198,8 @@ struct roger_config {
 
 /* roger_config.joystick: the interfaces, and how directions are given */
 #define ROGER_JOY_ACORN    1   /* Acorn's Joystick module: Joystick_Read (&43F40) */
-#define ROGER_JOY_KM       2   /* Keith Martin's (The Fourth Dimension's): Joy_Read0/1 (&CFFC0) */
+#define ROGER_JOY_KM       2   /* Keith Martin's (The Fourth Dimension's): Joy_Read0/1 (&CFFC0),
+                                  and its port at &33A0004 */
 #define ROGER_JOY_ANALOGUE 4   /* Joystick_Read gives the left stick's position (-127..127),
                                   not a digital joystick's -64, 0 or 64 */
 

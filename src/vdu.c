@@ -102,6 +102,7 @@ void vdu_paint_pixel(int x, int y, int v)
     put_px(bankmem() + y * line_bytes(), x, md()->bpp, v);
 }
 void vdu_origin(int *x, int *y) { *x = ox; *y = oy; }
+void vdu_text_cursor(int *x, int *y) { *x = tcx - twl; *y = tcy - twt; }   /* in the text window */
 uint8_t vdu_colour_pixel(int c) { return colour_pixel(c, 0); }
 
 static int tox(int x) { return x >> md()->xeig; }
@@ -124,6 +125,42 @@ static void line(int x0, int y0, int x1, int y1, int fg)
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
+}
+
+/* PLOT &80-&8F, flood fill (BASIC's FILL is PLOT 133): from the point,
+ * across the pixels of the background colour (&80-&87) or those that
+ * aren't the foreground colour (&88-&8F), within the graphics window */
+static void flood(int x, int y, int to_fg, int fg)
+{
+    if (x < wl || x > wr || y < wb || y > wt) return;
+    int W = md()->width, H = scr_h(), bpp = md()->bpp;
+    int bgv = colour_pixel(gbg_col, tint_gbg), fgv = colour_pixel(gfg_col, tint_gfg);
+    uint8_t *seen = calloc((size_t)W * H, 1);
+    int *stack = malloc(sizeof(int) * 4 * (size_t)W * H), n = 0;   /* (a run is pushed twice at most) */
+    if (!seen || !stack) { free(seen); free(stack); return; }
+#define ROW(Y) (bankmem() + (Y) * line_bytes())
+#define FILLS(X, Y) (!seen[(Y) * W + (X)] && \
+                     (to_fg ? get_px(ROW(Y), X, bpp) != fgv : get_px(ROW(Y), X, bpp) == bgv))
+    stack[n++] = x; stack[n++] = y;
+    while (n) {
+        int yy = stack[--n], xx = stack[--n];
+        if (!FILLS(xx, yy)) continue;
+        int l = xx, r = xx;                      /* the run of the line it's in */
+        while (l > wl && FILLS(l - 1, yy)) l--;
+        while (r < wr && FILLS(r + 1, yy)) r++;
+        for (int k = l; k <= r; k++) seen[yy * W + k] = 1;
+        for (int d = -1; d <= 1; d += 2) {       /* the runs above and below */
+            int ny = yy + d;
+            if (ny < wb || ny > wt) continue;
+            for (int k = l; k <= r; k++)
+                if (FILLS(k, ny) && (k == l || !FILLS(k - 1, ny))) { stack[n++] = k; stack[n++] = ny; }
+        }
+        for (int k = l; k <= r; k++) pset(k, yy, fg);
+    }
+#undef FILLS
+#undef ROW
+    free(seen);
+    free(stack);
 }
 
 static void triangle(int x0, int y0, int x1, int y1, int x2, int y2, int fg)
@@ -207,6 +244,7 @@ static void plot(int k, int x, int y)
         if (grp <= 56) line(X0, Y0, X1, Y1, fg);
         else if (grp == 64) pset(X1, Y1, fg);
         else if (grp == 80) triangle(tox(px_), toy(py_), X0, Y0, X1, Y1, fg);
+        else if (grp == 128 || grp == 136) flood(X1, Y1, grp == 136, fg);
         else if (grp == 232) {                     /* PLOT &E8-&EF: the chosen sprite, its */
             if (chosen_sprite)                     /* bottom left at the point */
                 put_sprite(chosen_sprite, x - ox, y - oy, gfg_act);
