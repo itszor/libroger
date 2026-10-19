@@ -449,6 +449,47 @@ static int ascii_for(SDL_Scancode s, int shift)
     return -1;
 }
 
+/* The host pointer takes the shape the program gave the OS pointer
+ * (OS_Word 21,0, OS_SpriteOp 36) in its colours, a pointer pixel the size
+ * of a screen pixel as shown (the desktop's: a host pixel); the system's
+ * own pointer for a shape never defined (the Wimp's). */
+static void update_cursor(void)
+{
+    static SDL_Cursor *cursor;
+    static int shown_shape = -1, shown_gen = -1;
+    static float shown_sx, shown_sy;
+    if (!win) return;
+    const struct pointer_def *d = &pointer_defs[pointer_shape & 15];
+    float sx = 1, sy = 1, density = SDL_GetWindowPixelDensity(win);
+    SDL_FRect vp;
+    if (!desk && SDL_GetRenderLogicalPresentationRect(ren, &vp) && vp.w >= 1 && vp.h >= 1) {
+        sx = vp.w / cur_mode()->width; sy = vp.h / cur_mode()->height;
+    }
+    if (density > 0) { sx /= density; sy /= density; }
+    if (sx < 1) sx = 1;
+    if (sy < 1) sy = 1;
+    if (pointer_shape == shown_shape && pointer_gen == shown_gen && sx == shown_sx && sy == shown_sy) return;
+    shown_shape = pointer_shape; shown_gen = pointer_gen; shown_sx = sx; shown_sy = sy;
+    SDL_Cursor *old = cursor;
+    cursor = NULL;
+    int w = (int)(d->w * sx + 0.5f), h = (int)(d->h * sy + 0.5f);
+    SDL_Surface *s = d->w && d->h ? SDL_CreateSurface(w, h, SDL_PIXELFORMAT_ARGB8888) : NULL;
+    if (s) {
+        for (int y = 0; y < h; y++) {
+            uint32_t *row = (uint32_t *)((uint8_t *)s->pixels + y * s->pitch);
+            for (int x = 0; x < w; x++) {
+                int p = d->pix[(int)(y / sy) * 32 + (int)(x / sx)];
+                row[x] = p ? 0xFF000000u | pointer_rgb[p] : 0;
+            }
+        }
+        int hx = (int)((d->ax + 0.5f) * sx), hy = (int)((d->ay + 0.5f) * sy);
+        cursor = SDL_CreateColorCursor(s, hx < w ? hx : w - 1, hy < h ? hy : h - 1);
+        SDL_DestroySurface(s);
+    }
+    SDL_SetCursor(cursor ? cursor : SDL_GetDefaultCursor());
+    if (old) SDL_DestroyCursor(old);
+}
+
 void display_poll(void)
 {
     SDL_Event e;
@@ -467,6 +508,7 @@ void display_poll(void)
         cursor_shown = show;
         if (show) SDL_ShowCursor(); else SDL_HideCursor();
     }
+    if (show) update_cursor();
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_EVENT_QUIT:

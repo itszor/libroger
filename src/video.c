@@ -226,6 +226,7 @@ static uint32_t vidc20_pal[256];                  /* 0xRRGGBB */
 static uint32_t vidc1_rgb(const uint32_t *pal, uint8_t p);
 static int full_palette(void) { return rg->vidc20 && cur_mode()->bpp == 8; }
 static uint32_t rgb12(uint32_t v) { return (v & 0xF) * 17 << 16 | (v >> 4 & 0xF) * 17 << 8 | (v >> 8 & 0xF) * 17; }
+static void pointer_colour(int n, uint32_t rgb);
 
 /* ---------------------------------------------------------------- VDU stream
  * Every byte written is recorded (finish() saves it); interactive runs also
@@ -248,13 +249,15 @@ void vdu_put(uint8_t c)
         q[qn++] = c;
         if (qn == qwant) {
             if (q[0] == 22 && !disabled) video_set_mode(q[1]);
-            if (q[0] == 19 && !disabled && full_palette()) {
+            if (q[0] == 19 && !disabled && q[2] == 25)  /* pointer colour: R, G, B */
+                pointer_colour(q[1], (uint32_t)q[3] << 16 | (uint32_t)q[4] << 8 | q[5]);
+            else if (q[0] == 19 && !disabled && full_palette()) {
                 if (q[2] == 16) vidc20_pal[q[1]] = (uint32_t)q[3] << 16 | (uint32_t)q[4] << 8 | q[5];
                 else if (q[2] < 16) vidc20_pal[q[1]] = rgb12(std16[q[2]]);
             } else if (q[0] == 19 && !disabled) {   /* palette: logical, physical (16: R,G,B) */
                 int l = q[1] & 15, p = q[2];
                 if (p == 16) vidc_palette[l] = (q[3] >> 4) | (uint32_t)(q[4] >> 4) << 4 | (uint32_t)(q[5] >> 4) << 8;
-                else if (p < 16) vidc_palette[l] = std16[p];    /* (24 border, 25 pointer: not shown) */
+                else if (p < 16) vidc_palette[l] = std16[p];    /* (24 border: not shown) */
             }
             qn = qwant = 0;
         }
@@ -301,6 +304,7 @@ void vidc_write(uint32_t v)
     unsigned reg = v >> 26;
     uint32_t val = v & 0x3FFFFFF;
     if (reg < 16) vidc_palette[reg] = val;
+    if (reg >= 17 && reg <= 19 && !rg->vidc20) pointer_colour(reg - 16, rgb12(val & 0xFFF));   /* VIDC1's cursor colours */
     if (reg == 40) vidc_vcr = val >> 14;
     if (reg == 43) vidc_vdsr = val >> 14;
     if (reg == 44) vidc_vder = val >> 14;
@@ -507,6 +511,18 @@ int mbox[4] = {0, 0, 1279, 1023};               /* OS_Word 21,1: left, bottom, r
                                                    (a mode change resets it to the screen) */
 static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+/* The pointer shapes (OS_Word 21,0; OS_SpriteOp 36), shown as the host's
+ * pointer: 2 bits a pixel, 0 transparent and 1-3 the pointer's colours
+ * (VDU 19,n,25 / OS_Word 12, VIDC registers 17-19, or SpriteOp 36 from the
+ * sprite's palette). A pointer pixel is a pixel of the screen mode. */
+struct pointer_def pointer_defs[16];
+uint32_t pointer_rgb[4] = {0, 0x000000, 0x00FFFF, 0xFFFFFF};   /* (until set: assumed) */
+int pointer_gen;
+static void pointer_colour(int n, uint32_t rgb)
+{
+    if (n >= 1 && n <= 3 && pointer_rgb[n] != rgb) { pointer_rgb[n] = rgb; pointer_gen++; }
+}
+
 int video_os_word(uint32_t r0, uint8_t *blk)
 {
     if (r0 == 21 && (blk[0] == 4 || blk[0] == 6)) {     /* read the mouse (unbuffered) or pointer */
@@ -519,6 +535,18 @@ int video_os_word(uint32_t r0, uint8_t *blk)
         if (rg_interactive) display_set_mouse(x, y);
         else { mouse_x = x; mouse_y = y; }
     }
+    if (r0 == 21 && blk[0] == 0) {                      /* define a pointer shape: number, width */
+        struct pointer_def *d = &pointer_defs[blk[1] & 15];   /* (bytes), height, active point, data */
+        uint32_t data = blk[6] | blk[7] << 8 | blk[8] << 16 | (uint32_t)blk[9] << 24;
+        d->w = blk[2] > 8 ? 32 : blk[2] * 4; d->h = blk[3] > 64 ? 64 : blk[3];
+        d->ax = blk[4]; d->ay = blk[5];
+        for (int y = 0; y < d->h; y++)
+            for (int x = 0; x < d->w; x++)
+                d->pix[y * 32 + x] = MEM[data + y * blk[2] + x / 4] >> 2 * (x % 4) & 3;
+        pointer_gen++;
+    }
+    if (r0 == 12 && blk[1] == 25)                       /* pointer colour: R, G, B */
+        pointer_colour(blk[0], (uint32_t)blk[2] << 16 | (uint32_t)blk[3] << 8 | blk[4]);
     if (r0 == 21 && blk[0] == 1)                        /* define the pointer's bounding box */
         for (int k = 0; k < 4; k++) mbox[k] = (int16_t)(blk[1 + 2 * k] | blk[2 + 2 * k] << 8);
     if ((r0 == 11 || r0 == 12) && full_palette()) {
@@ -533,7 +561,7 @@ int video_os_word(uint32_t r0, uint8_t *blk)
         blk[1] = 16;
         blk[2] = (uint8_t)((v & 0xF) * 17); blk[3] = (uint8_t)((v >> 4 & 0xF) * 17); blk[4] = (uint8_t)((v >> 8 & 0xF) * 17);
     }
-    if (r0 == 12) {                                     /* write palette: colour, mode, R, G, B */
+    if (r0 == 12 && blk[1] != 25) {                     /* write palette: colour, mode, R, G, B */
         unsigned colour = blk[0] & 0xF;
         vidc_palette[colour] = (blk[2] >> 4) | (uint32_t)(blk[3] >> 4) << 4 | (uint32_t)(blk[4] >> 4) << 8;
     }

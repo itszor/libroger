@@ -137,6 +137,10 @@ extern uint8_t gamma_tab[3][256];         /* VIDC20 gamma tables (PaletteV 9), i
 extern int gamma_set;             /* the VDU stream so far */
 extern int mbox[4];                       /* OS_Word 21,1 mouse bounding box */
 extern int pointer_shape;                 /* OS_Byte 106: the OS pointer shown (1-4), or 0 off */
+struct pointer_def { int w, h, ax, ay; uint8_t pix[32 * 64]; };   /* pixels 0-3, 32 a row; */
+extern struct pointer_def pointer_defs[16];      /* w 0: not defined (by shape number) */
+extern uint32_t pointer_rgb[4];                  /* its colours 1-3 (0xRRGGBB) */
+extern int pointer_gen;                          /* changes when a shape or colour does */
 
 /* vdu.c: the VDU drivers (interactive runs) */
 extern unsigned vdu_unhandled;

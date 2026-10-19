@@ -598,7 +598,7 @@ int vdu_schoose(const char *name)
     return chosen_sprite != 0;
 }
 
-/* OS_SpriteOp 9/24/28/34 on a user area or the system area: 1 if handled */
+/* OS_SpriteOp 9/24/28/34/36 on a user area or the system area: 1 if handled */
 int sprite_op_full(void)
 {
     uint32_t op = R[0] & 0xFF, area = sprite_area();
@@ -631,6 +631,32 @@ int sprite_op_full(void)
     case 34:                                     /* put sprite at user coordinates */
         if (spr && rg_full_os) put_sprite(spr, (int32_t)R[3], (int32_t)R[4], R[5]);
         return 1;
+    case 36: {                                   /* set pointer shape: R3 bits 0-3 the shape, */
+        /* bit 4 set: not selected (OS_Byte 106), 5: not its palette, 6: not its pixels; R4, R5
+         * the active point. Pixel values beyond 3 (more than 2 bits a pixel) keep their low bits */
+        struct pointer_def *d = &pointer_defs[R[3] & 15];
+        if (!(R[3] & 0x40)) {
+            const struct rg_mode *m = mode_info(rd32(spr + 40));
+            int bpp = m ? m->bpp : 1, stride = (rd32(spr + 16) + 1) * 4, first = rd32(spr + 24);
+            uint32_t bits = (rd32(spr + 16) + 1) * 32 - first - (31 - rd32(spr + 28));
+            d->w = bits / bpp > 32 ? 32 : bits / bpp;
+            d->h = rd32(spr + 20) + 1 > 64 ? 64 : rd32(spr + 20) + 1;
+            d->ax = R[4]; d->ay = R[5];
+            for (int y = 0; y < d->h; y++)
+                for (int x = 0; x < d->w; x++) {
+                    int b = first + x * bpp;
+                    d->pix[y * 32 + x] = MEM[spr + rd32(spr + 32) + y * stride + b / 8] >> b % 8 & 3;
+                }
+        }
+        if (!(R[3] & 0x20) && rd32(spr + 32) > 44)   /* its palette's colours 1-3 */
+            for (int k = 1; k < 4; k++) {
+                uint32_t e = rd32(spr + 44 + 8 * k);
+                pointer_rgb[k] = (e >> 8 & 0xFF) << 16 | (e >> 16 & 0xFF) << 8 | e >> 24;
+            }
+        pointer_gen++;
+        if (!(R[3] & 0x10)) pointer_shape = R[3] & 15;
+        return 1;
+    }
     case 52:                                     /* put sprite scaled: R6 factors, R7 table */
         if (spr && rg_full_os) put_sprite_scaled(spr, (int32_t)R[3], (int32_t)R[4], R[5], R[6], R[7]);
         return 1;
