@@ -164,6 +164,7 @@ int video_set_mode(uint32_t m)
     mbox[3] = (current.height << current.yeig) - 1;
     if (rg_full_os) vdu_mode_reset();
     if (rg_desktop) desktop_mode_changed();
+    modules_service_call(0x46, screen_mode);  /* Service_ModeChange */
     return 1;
 }
 uint32_t mode_bytes(const struct rg_mode *m) { return (uint32_t)m->width * m->height * m->bpp / 8; }
@@ -349,6 +350,29 @@ static uint32_t vidc1_rgb(const uint32_t *pal, uint8_t p)
         b = (b & 7) | (p >> 7 & 1) << 3;
     }
     return (uint32_t)(r * 17) << 16 | (uint32_t)(g * 17) << 8 | (uint32_t)(b * 17);
+}
+
+/* A colour of the current mode's palette as it is now (0xRRGGBB) */
+uint32_t video_colour(uint8_t p)
+{
+    if (full_palette()) return vidc20_pal[p];
+    return vidc1_rgb(vidc_palette, p);
+}
+
+/* A colour of a mode's default palette (0xRRGGBB): 2, 4, 16 or 256 colours */
+uint32_t video_default_colour(int bpp, uint8_t p)
+{
+    static const uint32_t two[2] = {0, 0xFFFFFF}, four[4] = {0, 0xFF0000, 0xFFFF00, 0xFFFFFF};
+    if (bpp == 1) return two[p & 1];
+    if (bpp == 2) return four[p & 3];
+    uint32_t v;
+    if (bpp == 8) {
+        int t = p & 3, r = ((p >> 2 & 1) << 2 | t) | (p >> 4 & 1) << 3, g = t | (p >> 5 & 1) << 2 | (p >> 6 & 1) << 3,
+            b = ((p >> 3 & 1) << 2 | t) | (p >> 7 & 1) << 3;
+        return (uint32_t)(r * 17) << 16 | (uint32_t)(g * 17) << 8 | (uint32_t)(b * 17);
+    }
+    v = std16[p & 15];
+    return (uint32_t)((v & 0xF) * 17) << 16 | (uint32_t)((v >> 4 & 0xF) * 17) << 8 | (uint32_t)((v >> 8 & 0xF) * 17);
 }
 
 /* The palette a mode change sets up: the standard 16 colours, or for

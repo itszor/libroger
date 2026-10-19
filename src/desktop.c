@@ -1715,12 +1715,49 @@ static void keys(void)
 }
 
 /* ---------------------------------------------------------------- the user */
+/* Button changes as the vsyncs saw them (irq.c), in order, so that a
+ * click pressed and released between two Wimp_Polls still counts - as
+ * RISC OS's mouse buffer has it */
+#define BQLEN 16
+static struct { int x, y, b; } bq[BQLEN];
+static int nbq;
+void desktop_buttons_changed(int x, int y, int b)
+{
+    if (nbq < BQLEN) { bq[nbq].x = x; bq[nbq].y = y; bq[nbq].b = b; nbq++; }
+}
+
+/* Pointer_Entering_Window / Pointer_Leaving_Window (reasons 5 and 4) as
+ * the pointer goes from one window to another - a menu counts as none of
+ * the program's; not while dragging */
+static uint32_t ptr_win = 0xFFFFFFFF;              /* the window the pointer was over, -1 none */
+static void pointer_crossing(int x, int y)
+{
+    int item, region, icon;
+    uint32_t now = 0xFFFFFFFF;
+    if (level_at(x, y, &item) < 0) {
+        struct win *w = window_at(x, y, &region, &icon);
+        if (w) now = w->handle;
+    }
+    if (now == ptr_win) return;
+    if (ptr_win != 0xFFFFFFFF && wimp_window(ptr_win) && !filer_owns(ptr_win)) event(4, &ptr_win, 1);
+    ptr_win = now;
+    if (now != 0xFFFFFFFF && !filer_owns(now)) event(5, &now, 1);
+}
+
+static void buttons(int x, int y, int b);
 void desktop_input(void)
 {
     fit_window();
     filer_tick();
-    int x = mouse_x, y = mouse_y, b = mouse_buttons;
     keys();
+    for (int k = 0; k < nbq; k++) buttons(bq[k].x, bq[k].y, bq[k].b);
+    nbq = 0;
+    if (!ubox.type && !pr.kind) pointer_crossing(mouse_x, mouse_y);
+    buttons(mouse_x, mouse_y, mouse_buttons);
+}
+
+static void buttons(int x, int y, int b)
+{
     if (ubox.type) { drag_box_input(x, y, b); prev_buttons = b; return; }
     if (nlv && !b) menu_hover(x, y);
     int down = b & ~prev_buttons, up = prev_buttons & ~b;

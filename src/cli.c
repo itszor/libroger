@@ -409,6 +409,24 @@ int cli_command(const char *line, int x)
         save_file(name, start, end - start);
         return 1;
     }
+    if ((p = word_at(s, "RMEnsure"))) {
+        /* *RMEnsure title version [command]: the command (or an error, if
+         * there's none) unless the module is there at that version or
+         * later. RISC OS's own modules are as libroger stands in for them */
+        static const struct { const char *title; int version; } os[] = {   /* (without headers) */
+            {"FontManager", 287}, {"SoundDMA", 125}, {"SoundChannels", 127}, {"SoundScheduler", 113},
+            {"FileCore", 274}, {"ADFS", 299}, {NULL, 0}};
+        char ver[64];
+        arg(&p, name, sizeof name);
+        arg(&p, ver, sizeof ver);
+        int have = modules_version(name);
+        for (int k = 0; have <= 0 && os[k].title; k++) if (!strcasecmp(os[k].title, name)) have = os[k].version;
+        if (have >= version_hundredths(ver)) return 1;
+        p = skip(p);
+        if (*p) return cli_command(p, x) || 1;
+        if (x) os_error(0x107, have < 0 ? "Module not found" : "Module version too old");
+        return 1;
+    }
     if ((p = word_at(s, "RMLoad")) || (p = word_at(s, "RMRun"))) {
         arg(&p, name, sizeof name);
         if (!modules_rmload(name)) {
@@ -542,7 +560,7 @@ static void read_var(int x)
     char name[256];
     cstr(R[0], name, 1);
     const char *v = R[3] ? NULL : roger_getvar(name);
-    if (!v) { R[2] = 0; if (x) VF = 1; return; }
+    if (!v) { R[2] = 0; if (x) os_error(0x124, "System variable not found"); return; }
     if (var_is_number(name) && R[4] != 3) {
         if ((int32_t)R[2] < 0) { R[2] = ~4u; return; }
         if (R[2] < 4) { if (x) VF = 1; return; }
@@ -552,7 +570,7 @@ static void read_var(int x)
     }
     uint32_t l = (uint32_t)strlen(v);
     if ((int32_t)R[2] < 0) { R[2] = ~l; return; }
-    if (l > R[2]) { if (x) VF = 1; return; }          /* "Buffer overflow" */
+    if (l > R[2]) { if (x) os_error(0x1E4, "Buffer overflow"); return; }
     memcpy(MEM + R[1], v, l);
     R[2] = l; R[3] = R[0]; R[4] = 0;
 }

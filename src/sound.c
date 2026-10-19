@@ -185,8 +185,9 @@ static void channel_fill(uint32_t buf, uint32_t len)
 
 /* The scheduler (Sound_QSchedule): calls to make after a number of beats,
  * at Sound_QTempo's tempo (&1000: a beat a centisecond) - a scheduled
- * Sound_ControlPacked (R1 0), or another sound SWI given by number, with
- * R2/R3 as its R0/R1 */
+ * Sound_ControlPacked (R1 0), or a SWI given by number (or as &0F000000
+ * plus the number, as SFX_Handler schedules its music: any SWI, then),
+ * with R2/R3 as its R0/R1 */
 #define QMAX 64
 static struct { uint64_t at; uint32_t swi, r0, r1; } q[QMAX];
 static int nq;
@@ -199,7 +200,14 @@ static void q_call(uint32_t swi, uint32_t r0, uint32_t r1)
     uint32_t saved[4] = {R[0], R[1], R[2], R[3]};
     R[0] = r0; R[1] = r1;
     if (!swi) control((int)(r0 & 0xFFFF), (int16_t)(r0 >> 16), r1 & 0xFFFF, r1 >> 16);
-    else { roger_log_sound_swi(swi); sound_impl(swi); }
+    else if ((swi & ~0x2003Fu) == 0x40140 || (swi & ~0x2003Fu) == 0x40180) { roger_log_sound_swi(swi); sound_impl(swi & ~0x20000u); }
+    else {                                    /* another module's SWI */
+        uint32_t all[16], f[4] = {NF, ZF, CF, VF};
+        memcpy(all, R, sizeof all);
+        roger_swi(swi | 0x20000);
+        memcpy(R, all, sizeof all);
+        NF = f[0]; ZF = f[1]; CF = f[2]; VF = f[3];
+    }
     memcpy(R, saved, sizeof saved);
 }
 
@@ -445,8 +453,8 @@ static int sound_impl(uint32_t b)
         return 1;
     case 0x401C0: nq = 0; return 1;        /* Sound_QInit */
     case 0x401C1: {                        /* Sound_QSchedule: R0 beats from now, R1 0 or a SWI, R2/R3 */
-        uint32_t swi = R[1] & 0x20000 ? R[1] & ~0x20000u : R[1];
-        if (swi && (swi & ~0x3Fu) != 0x40140 && (swi & ~0x3Fu) != 0x40180) { R[0] = (uint32_t)-1; return 1; }
+        uint32_t swi = R[1] >> 24 == 0x0F ? R[1] & 0xFFFFFF : R[1] & 0x20000 ? R[1] & ~0x20000u : R[1];
+        if (swi && R[1] >> 24 != 0x0F && (swi & ~0x3Fu) != 0x40140 && (swi & ~0x3Fu) != 0x40180) { R[0] = (uint32_t)-1; return 1; }
         int32_t beats = (int32_t)R[0];
         if (beats <= 0) { q_call(swi, R[2], R[3]); R[0] = 0; return 1; }
         if (nq == QMAX) { R[0] = (uint32_t)-1; return 1; }
@@ -511,6 +519,15 @@ static int sound_impl(uint32_t b)
                                               R1 duration << 16 | pitch */
         control((int)(R[0] & 0xFFFF), (int16_t)(R[0] >> 16), R[1] & 0xFFFF, R[1] >> 16);
         return 1;
+    case 0x4018B: case 0x4018C: {          /* Sound_ReadControlBlock / WriteControlBlock: R0 channel
+                                              1-8, R1 offset, R2 the new value -> R2 the old; R0 0
+                                              if either is out of range */
+        if (R[0] < 1 || R[0] > 8 || R[1] > 0xFC) { R[0] = 0; return 1; }
+        uint32_t a = SCCB_AREA + (R[0] - 1) * 0x100 + R[1], old = RD32(a);
+        if (b == 0x4018C) WR32(a, R[2]);
+        R[2] = old;
+        return 1;
+    }
     case 0x4018A: {                        /* Sound_AttachNamedVoice: R0 channel, R1 name */
         char want[16], have[16];
         int k;

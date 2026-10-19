@@ -140,9 +140,26 @@ static void frame_irq(void)
 }
 
 /* ---------------------------------------------------------------- SWIs */
+/* ticker events (OS_CallAfter, OS_CallEvery: see centisecond) */
+#define MAXTICKER 32
+static struct { uint32_t left, every, code, r12; } ticker[MAXTICKER];
+static int nticker;
+
 int irq_swi(uint32_t b)
 {
     switch (b) {
+    case 0x3B: case 0x3C:                        /* OS_CallAfter / OS_CallEvery */
+        if (!R[0] || R[0] >= 0xFFFFFC00u) { os_error(0x1F7, "Invalid time interval"); return 1; }
+        if (nticker == MAXTICKER) { os_error(0x101, "No room for another ticker event"); return 1; }
+        ticker[nticker].left = b == 0x3B ? R[0] : R[0] + 1;
+        ticker[nticker].every = b == 0x3B ? 0 : R[0] + 1;
+        ticker[nticker].code = R[1] & 0x3FFFFFC; ticker[nticker++].r12 = R[2];
+        ev(b == 0x3B ? "OS_CallAfter" : "OS_CallEvery", "iii", R[0], R[1], R[2]);
+        return 1;
+    case 0x3D:                                   /* OS_RemoveTickerEvent */
+        for (int k = 0; k < nticker; k++)
+            if (ticker[k].code == (R[0] & 0x3FFFFFC) && ticker[k].r12 == R[1]) ticker[k--] = ticker[--nticker];
+        return 1;
     case 0x4B: case 0x4C:                        /* OS_ClaimDeviceVector / OS_ReleaseDeviceVector */
         ev(b == 0x4B ? "OS_ClaimDeviceVector" : "OS_ReleaseDeviceVector", "iii", R[0], R[1], R[2]);
         if (R[0] < 16) {
@@ -163,12 +180,35 @@ int irq_swi(uint32_t b)
 }
 
 /* ---------------------------------------------------------------- the clock */
+/* Ticker events: OS_CallAfter (R0 centiseconds, then once) and OS_CallEvery
+ * (every R0 + 1: callers give one less), R1 the routine, R2 its R12;
+ * OS_RemoveTickerEvent (R0, R1 as given). Called in SVC mode, interrupts
+ * disabled, as RISC OS's TickEvents does, each centisecond tick */
+
+static void ticker_events(void)
+{
+    for (int k = 0; k < nticker; k++) {
+        if (--ticker[k].left) continue;
+        uint32_t code = ticker[k].code, r12 = ticker[k].r12;
+        if (ticker[k].every) ticker[k].left = ticker[k].every;
+        else { ticker[k--] = ticker[--nticker]; }
+        uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
+        memcpy(saved, R, sizeof R);
+        R[12] = r12;
+        call_code(code, MODE_SVC | 0x08000000u, HANDLER_RET | MODE_SVC | 0x08000000u);
+        memcpy(R, saved, sizeof R);
+        NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+        npc = snpc;
+    }
+}
+
 static void centisecond(void)
 {
     sound_dma_advance(10000);                    /* 1 cs of sound DMA */
     sound_tick();
     if (rg->centisecond) rg->centisecond();
     call_vector(0x1C, 0, 0);                     /* TickerV */
+    if (nticker) ticker_events();
 }
 
 /* Event 11 (key transition): R1 0 up / 1 down, R2 the low-level key
@@ -233,6 +273,7 @@ static void mouse_and_shots(void)
         ev("mouse", "iii", mouse_x, mouse_y, mouse_buttons);
         uint32_t m[5] = {10, mouse_x, mouse_y, mouse_buttons, monotonic};   /* event 10: mouse */
         call_vector(0x10, 5, m);
+        if (rg_desktop) desktop_buttons_changed(mouse_x, mouse_y, mouse_buttons);
     }
     if (screenshot_requested) {
         char fn[64];

@@ -34,10 +34,12 @@
 #define ERROR_BUF    0x017FC400u          /* the error block a failing SWI returns (os_error) */
 #define BEEP_VOICE   0x017FC500u          /* WaveSynth-Beep's voice header (sound.c) */
 #define MOD_PRIVATE  0x017FFFFCu          /* module k's private word: MOD_PRIVATE - 4k */
+#define MOD_POSTFIX  0x017FFE00u          /* "Base": every module's one incarnation (OS_Module 12) */
 #define ROM_MODULES  0x03800000u          /* RISC OS modules' stand-ins (disc.c), where the ROM is */
-#define ROM_MODULES_END 0x03801000u
+#define ROM_MODULES_END 0x03803000u
 #define RMA_BASE     0x01800000u
 #define RMA_HEAP     0x01810000u
+#define SCREEN_BASE_MIN 0x01E00000u       /* the RMA may grow to here (screen memory is above) */
 #define IOC          0x3200000u
 #define MODE_SVC     ROGER_MODE_SVC
 #define MODE_IRQ     ROGER_MODE_IRQ
@@ -121,6 +123,14 @@ void video_set_bank(int which, uint32_t b);
 void video_set_screen_size(uint32_t size);   /* OS_ChangeDynamicArea 2 */
 uint32_t vidc_rgb(int line, uint8_t pixel);   /* host colour of a pixel on an output line */
 void video_default_palette(void);         /* the palette a mode change sets */
+uint32_t video_colour(uint8_t p);         /* the current mode's colour p now (0xRRGGBB) */
+uint32_t video_default_colour(int bpp, uint8_t p);   /* a default palette's (0xRRGGBB) */
+int  colourtrans_swi(uint32_t b);
+int  buffers_swi(uint32_t b);             /* buffers.c: the Buffer Manager */
+int  heap_swi(uint32_t b);                /* heap.c: OS_Heap */
+int  dynarea_swi(uint32_t b);             /* dynarea.c: OS_DynamicArea (a Risc PC's) */
+int  dynarea_read_change(uint32_t b);     /* ...OS_Read/ChangeDynamicArea on its areas */
+int  buffers_os_byte(uint32_t op);        /* ...OS_Byte 138, 145, 152, 153, 21 on its buffers */
 void video_save_vdu(FILE *f);
 int  video_palettev(void);                /* PaletteV's default handler: 1 if handled */
 extern uint8_t gamma_tab[3][256];         /* VIDC20 gamma tables (PaletteV 9), if gamma_set */
@@ -178,6 +188,15 @@ int  sprite_file(uint32_t area, const char *name, int merge);   /* *SLoad / *SMe
 int  sprite_file_host(uint32_t area, const char *path, int merge);   /* ...a host file */
 int  files_swi(uint32_t b);
 
+/* resourcefs.c: ResourceFS (Resources:$) */
+int  resourcefs_swi(uint32_t b);
+const char *resourcefs_name(const char *n, const char **hostdir);   /* a Resources: name: the rest */
+int  resourcefs_file(const char *name, uint32_t *data, uint32_t *len);   /* a registered file in memory */
+void resourcefs_remove(void);             /* at exit: its host directory goes */
+
+/* messagetrans.c: MessageTrans */
+int  messagetrans_swi(uint32_t b, int x);
+
 /* disc.c */
 void disc_init(void);
 int  disc_swi(uint32_t b);
@@ -203,6 +222,12 @@ int  modules_swi_number(const char *name, uint32_t *n);   /* a loaded module's S
 int  modules_gap(uint32_t a);             /* an untranslated address in a module */
 int  modules_command(const char *cmd, const char *tail, int x);   /* a module's *command: 1 if found */
 int  modules_service(void);               /* service call R1 (R0-R9 as set): 1 if claimed */
+void modules_service_call(uint32_t reason, uint32_t r2);   /* ...the OS's own, registers kept */
+int  modules_version(const char *title);  /* a module's version in hundredths, -1: none */
+void modules_init(void);                  /* the OS's own modules' headers (OS_Module 18) */
+uint32_t rma_size(void);                  /* the RMA's extent so far */
+void rom_module(uint32_t base, const char *title, const char *help, uint32_t chunk, const char *const *swis);
+int  version_hundredths(const char *v);   /* "1.36" -> 136 */
 
 /* cli.c: OS_CLI and system variables */
 void cli_init(void);
@@ -216,6 +241,7 @@ int  pressed(int inkey);
 /* wimp.c: the Window Manager, the application slot, the screen's dynamic area */
 uint32_t ram_limit(void);                 /* &8000 + the application slot */
 int  wimp_swi(uint32_t b);
+int  wimp_version(void);                  /* what Wimp_Initialise reports, 316 for 3.16 */
 
 /* Windows and icons as the program defines them (wimp.c keeps them,
  * desktop.c draws them): a window is its Wimp_CreateWindow block (88 bytes:
@@ -286,6 +312,7 @@ void desktop_init(void);
 void desktop_enter(void);                 /* the program is (back) in the desktop */
 void desktop_mode_changed(void);          /* ...and has left it for a screen of its own */
 void desktop_input(void);                 /* in Wimp_Poll: the user's actions, as events */
+void desktop_buttons_changed(int x, int y, int b);   /* a vsync saw the mouse buttons change */
 void desktop_wait(void);                  /* ...nothing for the program yet: time passes */
 void desktop_present(void);
 void desktop_screenshot(const char *path);

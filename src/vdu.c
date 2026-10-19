@@ -503,6 +503,64 @@ static void put_sprite_at(const uint8_t *sp, int x, int y, int action)
 }
 static void put_sprite(uint32_t s, int x, int y, int action) { put_sprite_at(MEM + s, x, y, action); }
 
+/* a sprite's pixel depth and eigen factors, from its mode word: a mode
+ * number, or a RISC OS 3.5 sprite type (bits 27-31) with its dpi */
+static void sprite_mode(uint32_t mw, int *bpp, int *xe, int *ye)
+{
+    static const int type_bpp[8] = {0, 1, 2, 4, 8, 16, 32, 0};
+    if (mw < 256) {
+        const struct rg_mode *m = mode_info(mw);
+        if (!m) m = md();
+        *bpp = m->bpp; *xe = m->xeig; *ye = m->yeig;
+        return;
+    }
+    *bpp = type_bpp[(mw >> 27) & 7] ? type_bpp[(mw >> 27) & 7] : 8;
+    *xe = ((mw >> 1) & 0x1FFF) <= 45 ? 2 : ((mw >> 1) & 0x1FFF) <= 90 ? 1 : 0;
+    *ye = ((mw >> 14) & 0x1FFF) <= 45 ? 2 : ((mw >> 14) & 0x1FFF) <= 90 ? 1 : 0;
+}
+
+/* OS_SpriteOp 52 (put sprite scaled): at x, y (OS units), a sprite pixel
+ * to a screen pixel scaled by the factors at fac (x mul, y mul, x div, y
+ * div; 0: none), and its colours through the table at tab (one byte a
+ * colour; 0: none), from a sprite of any depth to the screen's */
+static void put_sprite_scaled(uint32_t s, int x, int y, int action, uint32_t fac, uint32_t tab)
+{
+    const uint8_t *sp = MEM + s;
+    int sbpp, sxe, sye, bpp = md()->bpp;
+    sprite_mode(rdp(sp + 40), &sbpp, &sxe, &sye);
+    int wwords = rdp(sp + 16) + 1, h = rdp(sp + 20) + 1, first = rdp(sp + 24), last = rdp(sp + 28);
+    const uint8_t *img = sp + rdp(sp + 32), *mask = sp + rdp(sp + 36);
+    int hasmask = mask != img && (action & 8);
+    int w = (wwords * 32 - first - (31 - last)) / sbpp, skip = first / sbpp;
+    if (wwords <= 0 || wwords > 4096 || h <= 0 || h > 4096 || w <= 0
+        || s + rdp(sp + 32) + (uint32_t)(wwords * 4 * h) > MEMSIZE) {
+        ev("put_sprite_scaled_bad", "iiii", s, (uint32_t)wwords, (uint32_t)h, rdp(sp + 40));
+        return;
+    }
+    int64_t xm = 1, ym = 1, xd = 1, yd = 1;
+    if (fac) { xm = rd32(fac); ym = rd32(fac + 4); xd = rd32(fac + 8); yd = rd32(fac + 12); }
+    if (xd <= 0 || yd <= 0 || xm <= 0 || ym <= 0) return;
+    int dw = (int)((int64_t)w * xm / xd), dh = (int)((int64_t)h * ym / yd);   /* (screen pixels: the
+                                                    factors allow for the modes, as Wimp_ReadPixTrans's do) */
+    int left = tox(x + ox), top = toy(y + oy) - (dh - 1);
+    for (int r = 0; r < dh; r++) {
+        int yy = top + r;
+        if (yy < wb || yy > wt) continue;
+        int sr = (int)((int64_t)r * h / dh);
+        const uint8_t *src = img + sr * wwords * 4, *msk = mask + sr * wwords * 4;
+        uint8_t *dst = bankmem() + yy * line_bytes();
+        for (int c = 0; c < dw; c++) {
+            int xx = left + c;
+            if (xx < wl || xx > wr) continue;
+            int sc = skip + (int)((int64_t)c * w / dw);
+            if (hasmask && !get_px(msk, sc, sbpp)) continue;
+            int v = get_px(src, sc, sbpp);
+            if (tab && sbpp <= 8) v = MEM[tab + v];
+            put_px(dst, xx, bpp, apply(action, get_px(dst, xx, bpp), v & ((1 << bpp) - 1), bpp));
+        }
+    }
+}
+
 /* *ScreenLoad (OS_SpriteOp 3): a sprite file's first sprite, in its own
  * mode (changed to if it isn't the current one), with its palette if it
  * has one (the first flash colours; 16 at most, as VIDC has), at the
@@ -572,6 +630,9 @@ int sprite_op_full(void)
         return 1;
     case 34:                                     /* put sprite at user coordinates */
         if (spr && rg_full_os) put_sprite(spr, (int32_t)R[3], (int32_t)R[4], R[5]);
+        return 1;
+    case 52:                                     /* put sprite scaled: R6 factors, R7 table */
+        if (spr && rg_full_os) put_sprite_scaled(spr, (int32_t)R[3], (int32_t)R[4], R[5], R[6], R[7]);
         return 1;
     default:
         return 0;

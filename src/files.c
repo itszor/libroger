@@ -174,6 +174,34 @@ int set_csd(const char *name)
     return 1;
 }
 
+/* A path variable's name ("System:Modules.X", System$Path set): each of
+ * its elements in turn ("!System.310.,!System."), as FileSwitch tries them;
+ * -1 if the name doesn't start with one */
+int hostpath(const char *name, char *out);
+static int path_var(const char *x, char *out)
+{
+    static int depth;
+    const char *c = x;
+    while (isalnum((unsigned char)*c) || *c == '_') c++;
+    if (*c != ':' || c == x || c - x > 60) return -1;
+    char var[80];
+    snprintf(var, sizeof var, "%.*s$Path", (int)(c - x), x);
+    const char *v = roger_getvar(var);
+    if (!v || depth > 8) return -1;
+    char list[1100], full[2200];
+    snprintf(list, sizeof list, "%s", v);
+    depth++;
+    int ok = 0;
+    for (const char *l = list; *l && !ok; ) {
+        size_t n = strcspn(l, ",");
+        snprintf(full, sizeof full, "%.*s%s", (int)n, l, c + 1);
+        ok = hostpath(full, out);
+        l += n + (l[n] == ',');
+    }
+    depth--;
+    return ok;
+}
+
 /* A RISC OS filename -> the host file: under the application directory
  * (or the RAM disc); "HostFS:" followed by a host path names that host
  * file (e.g. a file given on the command line) */
@@ -186,9 +214,12 @@ static int hostpath_top(const char *name, char *out)
         snprintf(out, 2048, "%s", x + 7);
         return stat(out, &st) == 0;
     }
-    const char *n = strip_prefixes(x), *r = ram_name(x);     /* (a variable's value may start with one) */
-    strcpy(out, rg_appdir);
+    int pv = path_var(x, out);
+    if (pv >= 0) return pv;
+    const char *n = strip_prefixes(x), *r = ram_name(x), *rd, *rs = resourcefs_name(x, &rd);
+    strcpy(out, rg_appdir);                                  /* (a variable's value may start with one) */
     if (r) { strcpy(out, ramdir); n = r; }
+    if (rs) { strcpy(out, rd); n = rs; }
     return lookup_in(n, out);
 }
 int hostpath(const char *name, char *out)
@@ -336,6 +367,12 @@ static void os_file(void)
         if (op == 1 || op == 2) load = R[2];
         if (op == 1 || op == 3) exec = R[3];
         if (op != 4 && !set_info(name, load, exec) && swi_x) VF = 1;   /* (4: attributes, ignored) */
+        return;
+    }
+    if (op == 8) {                                               /* create a directory (in the save */
+        char p[2048];                                            /* directory, as files written are) */
+        save_path(name, p, 1);
+        mkdir(p, 0777);
         return;
     }
     int ok;
@@ -687,7 +724,18 @@ int sprite_file_host(uint32_t area, const char *path, int merge)
     uint32_t count = buf[0] | buf[1] << 8 | buf[2] << 16 | (uint32_t)buf[3] << 24;
     uint32_t first = buf[4] | buf[5] << 8 | buf[6] << 16 | (uint32_t)buf[7] << 24;
     uint32_t free_ = buf[8] | buf[9] << 8 | buf[10] << 16 | (uint32_t)buf[11] << 24;
-    if (!merge) { WR32(area + 4, 0); WR32(area + 12, RD32(area + 8)); }
+    if (!merge) {                                 /* load: the file is the area without its size */
+        /* (an area whose size word was never set - 0: a program that
+         * relied on what its memory happened to hold - is taken as big
+         * enough, as it was where the program was written) */
+        if (!RD32(area)) ev("sprite_load_unsized_area", "i", area);
+        if ((RD32(area) && n + 4 > RD32(area)) || first < 16 || free_ < first || free_ - 4 > n) {
+            fprintf(stderr, "sprite file %s doesn't fit (%u bytes, area %08x of %u)\n", name, (unsigned)n, area, RD32(area));
+            return 1;
+        }
+        memcpy(MEM + area + 4, buf, n);
+        return 1;
+    }
     uint32_t at = RD32(area + 12), len = free_ - first;
     if (first < 4 || free_ < first || free_ - 4 > n || at + len > RD32(area)) {
         fprintf(stderr, "sprite file %s doesn't fit\n", name);
@@ -711,6 +759,32 @@ void sprite_op(void)
         char name[1100];
         cstr(R[2], name, 1);
         if (!screen_load(name)) os_error(0xD6, "File not found");
+        return;
+    }
+    if (op == 15) {                               /* create sprite: R2 name, R3 bit 0 a palette, */
+        const struct rg_mode *m = mode_info(R[6]);   /* R4/R5 width, height (pixels), R6 its mode */
+        if (!m) { os_error(0x1E6, "Bad mode"); return; }
+        char name[16] = {0};
+        for (int k = 0; k < 12 && MEM[R[2] + k] > 32; k++) name[k] = (char)tolower(MEM[R[2] + k]);
+        uint32_t bits = R[4] * m->bpp, words = (bits + 31) / 32, colours = m->bpp <= 4 ? 1u << m->bpp : 16;
+        uint32_t pal = R[3] & 1 ? 8 * colours : 0, size = 44 + pal + 4 * words * R[5];
+        uint32_t free = RD32(area + 12);
+        if (free + size > RD32(area)) { os_error(0x82, "No room to get sprite"); return; }
+        uint32_t sp = area + free;
+        WR32(sp, size);
+        memset(MEM + sp + 4, 0, 12);
+        memcpy(MEM + sp + 4, name, strlen(name));
+        WR32(sp + 16, words - 1); WR32(sp + 20, R[5] - 1);
+        WR32(sp + 24, 0); WR32(sp + 28, (bits + 31) % 32);
+        WR32(sp + 32, 44 + pal); WR32(sp + 36, 44 + pal); WR32(sp + 40, R[6]);
+        for (uint32_t k = 0; k < colours && pal; k++) {
+            uint32_t c = video_default_colour(m->bpp, (uint8_t)k);
+            uint32_t e = (c & 0xFF) << 24 | (c >> 8 & 0xFF) << 16 | (c >> 16) << 8;
+            WR32(sp + 44 + 8 * k, e); WR32(sp + 48 + 8 * k, e);
+        }
+        memset(MEM + sp + 44 + pal, 0, size - 44 - pal);
+        WR32(area + 4, RD32(area + 4) + 1);
+        WR32(area + 12, free + size);
         return;
     }
     if (op == 10 || op == 11) {                   /* load / merge sprite file */

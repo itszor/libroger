@@ -19,9 +19,12 @@
 #include <string.h>
 #include "internal.h"
 
-#define WIMP_VERSION (rg->vidc20 ? 350 : 316)   /* RISC OS 3.5 on a Risc PC, else 3.1 */
+#define WIMP_VERSION (rg->wimp_version ? rg->wimp_version : rg->vidc20 ? 350 : 316)   /* RISC OS 3.5 on
+                                                 a Risc PC, else 3.1 - unless a nested Wimp was loaded */
 #define TASK_HANDLE  0x4B534154u          /* any non-zero handle */
 #define SLOT_MAX     (DMA_BUF - LOAD)     /* the application slot can't grow into the runtime's workspace */
+
+int wimp_version(void) { return WIMP_VERSION; }
 
 /* ---------------------------------------------------------------- memory */
 static uint32_t slot;                     /* application slot, bytes from &8000 */
@@ -40,13 +43,31 @@ static void slot_size(void)               /* Wimp_SlotSize: R0 current (-1 read)
     R[0] = slot; R[1] = slot; R[2] = SLOT_MAX - slot;
 }
 
-/* OS_ReadDynamicArea / OS_ChangeDynamicArea, area 2 (screen) only. The
- * screen's memory ends at &2000000 (unless the game placed it), so it
- * grows downwards into what would be free RAM. */
+/* OS_ReadDynamicArea: RISC OS 3.1's areas - 0 the system heap (none
+ * here), 1 the RMA, 2 the screen, 3 the system sprite area, 4 the font
+ * cache (none), 5 the RAM disc. OS_ChangeDynamicArea, area 2 only: the
+ * screen's memory ends at &2000000 (unless the game placed it), so it grows
+ * downwards into what would be free RAM. */
 #define SCREEN_MAX 0x200000u
 static int dynamic_area(uint32_t b)
 {
-    if ((R[0] & ~0x80u) != 2) { VF = 1; return 1; }
+    if (dynarea_read_change(b)) return 1;
+    uint32_t area = R[0] & ~0x80u;
+    if (b == 0x5C && area != 2) {
+        uint32_t base = 0, size = 0, max = 0;
+        switch (area) {
+        case 0: base = 0x01C00000; break;
+        case 1: base = RMA_BASE; size = rma_size(); max = SCREEN_BASE_MIN - RMA_BASE; break;
+        case 3: base = sys_sprites(); size = RD32(base); max = SYS_SPRITES_MAX; break;
+        case 4: base = 0x01E00000; break;
+        case 5: base = 0x01000000; size = max = rg->ramfs_size; break;
+        default: os_error(0x1E6, "Unknown dynamic area"); return 1;
+        }
+        if (R[0] & 0x80) R[2] = max;
+        R[0] = base; R[1] = size;
+        return 1;
+    }
+    if (area != 2) { os_error(0x1E6, "Unknown dynamic area"); return 1; }
     if (b == 0x5C) {                      /* R2 the maximum size only if asked for (bit 7) */
         if (R[0] & 0x80) R[2] = SCREEN_MAX;
         R[0] = screen_base(); R[1] = screen_size();
@@ -65,6 +86,20 @@ static int dynamic_area(uint32_t b)
 /* ---------------------------------------------------------------- events */
 #define QLEN 16
 static struct { uint32_t reason, n, block[64]; } queue[QLEN];
+
+/* A recorded message (User_Message_Recorded, 18) nobody replies to comes
+ * back to its sender as User_Message_Acknowledge (19): the bounce is queued
+ * after it, and dropped if a reply to it (your_ref its my_ref) is sent
+ * first */
+#define NREPLIED 16
+static uint32_t replied[NREPLIED];
+static unsigned nreplied;
+static int bounce_answered(unsigned k)
+{
+    if (queue[k].reason != 19) return 0;
+    for (unsigned i = 0; i < NREPLIED; i++) if (replied[i] && replied[i] == queue[k].block[2]) return 1;
+    return 0;
+}
 static unsigned qhead, qtail;
 
 void roger_wimp_event(uint32_t reason, const uint32_t *block, int nwords)
@@ -191,7 +226,7 @@ static void load_template(void)
         MEM[R[5] + l] = 13;
         uint32_t need = template_data(w, fixed, size, nicons, 0, 0);
         if ((int32_t)R[1] <= 0) { R[1] = fixed; R[2] = need; return; }
-        if (R[2] + need > R[3]) { VF = 1; return; }                 /* workspace too small */
+        if (R[2] + need > R[3]) { os_error(0x2C1, "Template workspace full"); return; }
         memcpy(MEM + R[1], w, fixed);
         R[2] += template_data(w, fixed, size, nicons, R[1], R[2]);
         ev("Wimp_LoadTemplate", "s", ename, l);
@@ -227,6 +262,7 @@ static uint32_t w32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (
 static void s32(uint8_t *p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
 uint32_t wimp_rd(const uint8_t *p) { return w32(p); }
 
+static struct win *last_opened;            /* the window opened last, while it's open */
 int wimp_stack(struct win **out)
 {
     memcpy(out, stack, nstack * sizeof *stack);
@@ -308,6 +344,7 @@ void wimp_open(struct win *w, const uint8_t *open, uint32_t behind)
     s32(w->blk + 24, behind);
     s32(w->blk + 28, w32(w->blk + 28) | WIN_OPEN);
     if (!was) { char t[1100]; title_of(w, t); ev("Wimp_OpenWindow", "is", w->handle, t, (int)strlen(t)); }
+    last_opened = w;
     if (!rg_desktop) return;
     if (!(w32(w->blk + 28) & 0x10) && memcmp(w->back_vis, w->blk, 24)) w->redraw = 1;
     struct win *over = behind == 0xFFFFFFFE ? NULL : win_of(behind);
@@ -328,6 +365,7 @@ void wimp_close(struct win *w)
     char t[1100]; title_of(w, t);
     ev("Wimp_CloseWindow", "is", w->handle, t, (int)strlen(t));
     unstack(w);
+    if (last_opened == w) last_opened = NULL;
     w->redraw = 0;
     if (rg_desktop) desktop_window_gone(w);
 }
@@ -336,7 +374,7 @@ void wimp_close(struct win *w)
 static void open_window(void)
 {
     struct win *w = win_of(RD32(R[1]));
-    if (!w || w == &iconbar) { VF = 1; return; }
+    if (!w || w == &iconbar) { os_error(0x288, "Illegal window handle"); return; }
     wimp_open(w, MEM + R[1] + 4, RD32(R[1] + 28));
 }
 
@@ -344,7 +382,7 @@ static void open_window(void)
 static void window_state(uint32_t blk, int outline)
 {
     struct win *w = win_of(RD32(blk));
-    if (!w || w == &iconbar) { VF = 1; return; }
+    if (!w || w == &iconbar) { os_error(0x288, "Illegal window handle"); return; }
     if (outline) {                        /* Wimp_GetWindowOutline: the visible area and its borders */
         if (rg_desktop) {                 /* as the desktop draws it */
             int32_t o[4];
@@ -372,6 +410,11 @@ static void window_state(uint32_t blk, int outline)
  * indirected text buffer (0 if it has none) - for game code standing in
  * for the user (wimp_idle) */
 int32_t roger_wimp_menu_window(void) { return (int32_t)menu_window; }
+int32_t roger_wimp_top_window(void)      /* (no desktop: the last opened that's still open) */
+{
+    if (rg_desktop) return nstack ? (int32_t)stack[nstack - 1]->handle : 0;
+    return last_opened ? (int32_t)last_opened->handle : 0;
+}
 uint32_t roger_wimp_icon_buffer(int32_t window, int icon)
 {
     struct win *w = win_of((uint32_t)window);
@@ -472,6 +515,7 @@ static int pop_event(uint32_t mask, uint32_t blk)
     while (qhead != qtail) {
         unsigned k = qhead++ % QLEN;
         uint32_t r = queue[k].reason;
+        if (bounce_answered(k)) continue;
         if (r < 32 && (mask >> r & 1)) {
             struct win *w = win_of(queue[k].block[0]);
             if (r == 2 && w && w != &iconbar) wimp_open(w, (uint8_t *)(queue[k].block + 1), queue[k].block[7]);
@@ -485,7 +529,44 @@ static int pop_event(uint32_t mask, uint32_t blk)
     return 0;
 }
 
+/* Wimp_RegisterFilter (R0 the type, R1 the routine or 0, R2 its R12): the
+ * Filter Manager's hooks. 0 pre-filter, called as Wimp_Poll is entered (R0
+ * the mask, R1 the block, R2 the task: it may change the mask); 1
+ * post-filter, called with the event about to be returned (R0 its reason,
+ * R1 the block, R2 the task: it may change it, or claim it - R0 -1 - and
+ * the Wimp polls again); 2 Wimp_BlockCopy's, 3 Wimp_GetRectangle's (kept,
+ * not called: there's nothing they could change here). In SVC mode, the
+ * other registers kept. */
+static uint32_t filter[6][2];
+
+static uint32_t call_filter(int type, uint32_t r0, uint32_t r1)
+{
+    uint32_t saved[16], f[4] = {NF, ZF, CF, VF}, snpc = npc;
+    memcpy(saved, R, sizeof saved);
+    R[0] = r0; R[1] = r1; R[2] = TASK_HANDLE; R[12] = filter[type][1];
+    call_code(filter[type][0], MODE_SVC, HANDLER_RET | MODE_SVC);
+    uint32_t out = R[0];
+    memcpy(R, saved, sizeof saved);
+    NF = f[0]; ZF = f[1]; CF = f[2]; VF = f[3];
+    npc = snpc;
+    return out;
+}
+
+static void poll_raw(uint32_t b);
 static void poll(uint32_t b)              /* Wimp_Poll: R0 mask, R1 block (Wimp_PollIdle: R2 time) */
+{
+    uint32_t mask = R[0], blk = R[1], until = R[2];
+    for (;;) {
+        if (filter[0][0]) mask = call_filter(0, mask, blk);
+        R[0] = mask; R[1] = blk; R[2] = until;
+        poll_raw(b);
+        if (!filter[1][0]) return;
+        uint32_t r = call_filter(1, R[0], blk);
+        if (r != 0xFFFFFFFFu) { R[0] = r; R[1] = blk; return; }
+    }
+}
+
+static void poll_raw(uint32_t b)
 {
     filer_polled();
     if (rg_desktop) {
@@ -507,6 +588,7 @@ static void poll(uint32_t b)              /* Wimp_Poll: R0 mask, R1 block (Wimp_
         return;
     }
     unsigned k = qhead++ % QLEN;
+    if (bounce_answered(k)) { R[0] = 0; return; }        /* (a null event in its place) */
     memcpy(MEM + R[1], queue[k].block, queue[k].n * 4);
     R[0] = queue[k].reason;
     filer_delivered(R[0], queue[k].block);
@@ -610,7 +692,7 @@ int wimp_swi(uint32_t b)
     case 0x400C2: {                                         /* Wimp_CreateIcon: R1 window, icon block */
         struct win *w = win_of(RD32(R[1]));
         int i = w ? add_icon(w, MEM + R[1] + 4) : -1;
-        if (i < 0) { VF = 1; return 1; }
+        if (i < 0) { os_error(w ? 0x28D : 0x288, w ? "Too many icons" : "Illegal window handle"); return 1; }
         if (w == &iconbar) {                                /* on the icon bar: -2 left, -1 right */
             ev("Wimp_CreateIcon", "ii", RD32(R[1]), i);
             wimp_bar_side[i] = RD32(R[1]) == 0xFFFFFFFE ? -2 : -1;
@@ -643,12 +725,13 @@ int wimp_swi(uint32_t b)
     case 0x400CB: window_state(R[1], 0); return 1;         /* Wimp_GetWindowState */
     case 0x400E0: window_state(R[1], 1); return 1;         /* Wimp_GetWindowOutline */
     case 0x400CC: {                                         /* Wimp_GetWindowInfo: R1 -> handle */
-        struct win *w = win_of(RD32(R[1]));
-        if (!w || w == &iconbar) { VF = 1; return 1; }
-        memcpy(MEM + R[1] + 4, w->blk, 88);
-        WR32(R[1] + 4 + 84, w->nicons);
-        if (!(R[1] & 1))                                    /* bit 0 set: the header only */
-            for (int i = 0; i < w->nicons; i++) memcpy(MEM + R[1] + 92 + 32 * i, w->icon[i], 32);
+        uint32_t b = R[1] & ~3u;                            /* bit 0 set: the header only */
+        struct win *w = win_of(RD32(b));
+        if (!w || w == &iconbar) { os_error(0x288, "Illegal window handle"); return 1; }
+        memcpy(MEM + b + 4, w->blk, 88);
+        WR32(b + 4 + 84, w->nicons);
+        if (!(R[1] & 1))
+            for (int i = 0; i < w->nicons; i++) memcpy(MEM + b + 92 + 32 * i, w->icon[i], 32);
         return 1;
     }
     case 0x400CD: {                                         /* Wimp_SetIconState: R1 -> window, icon, EOR, clear */
@@ -660,14 +743,14 @@ int wimp_swi(uint32_t b)
     case 0x400CE: {                                         /* Wimp_GetIconState: R1 -> window, icon; +8 the icon */
         uint32_t h = RD32(R[1]), i = RD32(R[1] + 4);
         struct win *w = icon_of(h, i);
-        if (!w) { VF = 1; return 1; }
+        if (!w) { os_error(0x28E, "Illegal icon handle"); return 1; }
         memcpy(MEM + R[1] + 8, w->icon[i], 32);
         return 1;
     }
     case 0x400D6: which_icon(); return 1;
     case 0x400D7: {                                         /* Wimp_SetExtent: R0 window, R1 work area extent */
         struct win *w = win_of(R[0]);
-        if (!w || w == &iconbar) { VF = 1; return 1; }
+        if (!w || w == &iconbar) { os_error(0x288, "Illegal window handle"); return 1; }
         memcpy(w->blk + 40, MEM + R[1], 16);
         return 1;
     }
@@ -701,8 +784,14 @@ int wimp_swi(uint32_t b)
     case 0x400E7: {                                         /* Wimp_SendMessage: R0 reason, R1 block, R2 task */
         ev("Wimp_SendMessage", "iii", R[0], RD32(R[1] + 16), R[2]);
         WR32(R[1] + 4, TASK_HANDLE);
-        if (R[0] >= 17 && R[0] <= 19) WR32(R[1] + 8, ++msg_ref);
-        if (R[2] == TASK_HANDLE) roger_wimp_event(R[0], (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);
+        if (R[0] >= 17 && R[0] <= 19) {
+            WR32(R[1] + 8, ++msg_ref);
+            if (RD32(R[1] + 12)) replied[nreplied++ % NREPLIED] = RD32(R[1] + 12);   /* a reply */
+        }
+        if (R[2] == TASK_HANDLE || (R[2] == 0 && R[0] >= 17 && R[0] <= 18)) {   /* (a broadcast: every */
+            roger_wimp_event(R[0], (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);  /* task, the sender too) */
+            if (R[0] == 18) roger_wimp_event(19, (uint32_t *)(MEM + R[1]), RD32(R[1]) / 4);
+        }
         else if (R[2] == FILER_WINDOW || R[2] == FILER_TASK || filer_owns(R[2])) filer_message(R[1], R[2]);
         else if (R[2] == 0xFFFFFFFE && filer_bar_icon() >= 0 && R[3] == (uint32_t)filer_bar_icon())
             filer_message(R[1], FILER_BAR);                 /* (a save dropped on its icon bar icon) */
@@ -713,8 +802,30 @@ int wimp_swi(uint32_t b)
         return 1;
     case 0x5C: case 0x2A: return dynamic_area(b);
     case 0x400EC: slot_size(); return 1;
+    case 0x400FC: {                                          /* Wimp_ResizeIcon: R0 window, R1 icon, */
+        struct win *w = icon_of(R[0], R[1]);                 /* R2-R5 its new bounding box */
+        if (!w) { os_error(0x28E, "Illegal icon handle"); return 1; }
+        for (int k = 0; k < 4; k++) s32(w->icon[R[1]] + 4 * k, R[2 + k]);
+        if (w->redraw >= 0 && (w32(w->blk + 28) & WIN_OPEN)) w->redraw = 1;
+        return 1;
+    }
+    case 0x400F5:                                            /* Wimp_RegisterFilter */
+        if (R[0] < 6) { filter[R[0]][0] = R[1] & 0x3FFFFFC; filter[R[0]][1] = R[2]; }
+        ev("Wimp_RegisterFilter", "ii", R[0], R[1]);
+        return 1;
+    case 0x400F9:                                            /* Wimp_TextOp: 1, the width of R1's */
+        if (R[0] == 1) {                                     /* first R2 characters (0: all), in */
+            uint32_t n = 0;                                  /* the system font, 16 OS units each */
+            while (MEM[R[1] + n] >= 32 && (!R[2] || n < R[2])) n++;
+            R[0] = n * 16;
+        }                                                    /* (0 colours, 2 paint: nothing shown) */
+        return 1;
     case 0x400C0:                                            /* Wimp_Initialise */
         ev("Wimp_Initialise", "i", R[0]);
+        {   /* the first task: the Wimp sets the desktop's mode (here, the one it's in) */
+            static int started;
+            if (!started++) modules_service_call(0x46, screen_mode);
+        }
         R[0] = WIMP_VERSION; R[1] = TASK_HANDLE;
         if (rg_desktop) desktop_enter();
         return 1;
@@ -750,7 +861,7 @@ int wimp_swi(uint32_t b)
         return 1;
     case 0x400D9: {                                          /* Wimp_OpenTemplate */
         char name[1100]; cstr(R[1], name, 1);
-        if (!hostpath(name, template_path)) { template_path[0] = 0; VF = 1; }
+        if (!hostpath(name, template_path)) { template_path[0] = 0; os_error(0xD6, "File not found"); }
         return 1;
     }
     case 0x400DA: template_path[0] = 0; return 1;           /* Wimp_CloseTemplate */

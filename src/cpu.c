@@ -196,6 +196,20 @@ void call_addr(uint32_t a)
     }
     if (SMC_DIRTY(a) && smc_stale(a)) { interp_step(); return; }   /* self-modified: as it is now */
     fn_t f = 0;
+    static uint32_t dbg_lo = 1, dbg_hi;           /* ROGER_INTERP=from:to (hex): interpret that range,
+                                                    to tell a translation fault from the program's */
+    if (dbg_lo == 1) {
+        const char *e = getenv("ROGER_INTERP");
+        dbg_lo = e ? (uint32_t)strtoul(e, NULL, 16) : 0;
+        dbg_hi = e && strchr(e, ':') ? (uint32_t)strtoul(strchr(e, ':') + 1, NULL, 16) : 0;
+    }
+    if (a >= dbg_lo && a < dbg_hi) {
+        static uint32_t peek = 1;                 /* ROGER_PEEKPC=addr (hex, in that range): the
+                                                     registers each time it's reached */
+        if (peek == 1) { const char *e = getenv("ROGER_PEEKPC"); peek = e ? (uint32_t)strtoul(e, NULL, 16) : 0; }
+        if (a == peek) fprintf(stderr, "PEEK %llu pc=%x r0=%x r1=%x r2=%x r3=%x r4=%x r5=%x r6=%x\n", (unsigned long long)icount, a, R[0], R[1], R[2], R[3], R[4], R[5], R[6]);
+        interp_step(); return;
+    }
     if (!interp_only) {
         struct loaded *l = nextra || !(a >= img_base && a < img_end) ? owner(a) : &prog;
         if (l) f = l->tab[(a - l->img->base) >> 2];
@@ -214,14 +228,15 @@ void call_addr(uint32_t a)
     }
     struct loaded *l = owner(a);              /* the program's code: its image, or an overlay */
     int program = l && (l == &prog || l->overlay);
-    if (l && !program) {
+    if (l && !program && !rg_trace_gaps) {
         /* module code should be fully translated: report the gap and end
-         * this call rather than the whole run */
+         * this call rather than the whole run (with --trace-gaps it is
+         * interpreted, as the program's is, while its roots are found) */
         if (!cpu_seen_gap(a)) cpu_log_gap(a);
         npc = HANDLER_RET;
         return;
     }
-    if (in_handler && (!rg_trace_gaps || !program)) {
+    if (in_handler && (!rg_trace_gaps || (!program && !l))) {
         /* an interrupt handler the runtime called landed somewhere it can't
          * follow: end that call (the next interrupt tries again). With
          * --trace-gaps only untranslated code in the program is followed: a

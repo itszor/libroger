@@ -209,39 +209,10 @@ void disc_load(const char *path)
 #define ADFS_INSTANCE (ROM_MODULES + 0x804)    /* ADFS's FileCore instance word */
 #define ADFS_WORD     (ROM_MODULES + 0x808)    /* ADFS's private word */
 
-static void rom_module(uint32_t base, const char *title, uint32_t chunk, const char *const *swis)
-{
-    memset(MEM + base, 0, 0x400);
-    WR32(base + 0x10, 0x30);                         /* title */
-    strcpy((char *)MEM + base + 0x30, title);
-    WR32(base + 0x1C, chunk);
-    WR32(base + 0x20, 0x40);                         /* SWI handler */
-    WR32(base + 0x40, 0xE92D4000);                   /* stmfd sp!, {lr} */
-    WR32(base + 0x44, 0xE08FF18B);                   /* add pc, pc, r11, lsl #3 */
-    WR32(base + 0x48, 0xE1A00000);                   /* nop */
-    uint32_t exit = base + 0x4C + 8 * 64;
-    for (uint32_t n = 0; n < 64; n++) {
-        uint32_t b = base + 0x50 + 8 * n;
-        WR32(b - 4, 0xEF000000 | (chunk + n) | 0x20000);
-        WR32(b, 0xEA000000 | (((exit - (b + 8)) >> 2) & 0xFFFFFF));   /* b exit */
-    }
-    WR32(exit, 0xE8BD4000);                          /* ldmfd sp!, {lr} */
-    WR32(exit + 4, 0x639EF201);                      /* orrvss pc, lr, #&10000000 */
-    WR32(exit + 8, 0xE3DEF201);                      /* bics pc, lr, #&10000000 */
-    uint32_t p = exit + 12;                          /* the SWI decoding table */
-    WR32(base + 0x24, p - base);
-    for (const char *const *s = swis; ; s++) {
-        size_t l = *s ? strlen(*s) : 0;
-        memcpy(MEM + p, *s ? *s : "", l + 1);
-        p += l + 1;
-        if (!*s) break;
-    }
-}
-
 void disc_init(void)
 {
-    rom_module(ROM_FILECORE, "FileCore", 0x40540, (const char *const[]){"FileCore", "DiscOp", NULL});
-    rom_module(ROM_ADFS, "ADFS", 0x40240, (const char *const[]){"ADFS", "DiscOp", "HDC", "Drives",
+    rom_module(ROM_FILECORE, "FileCore", NULL, 0x40540, (const char *const[]){"FileCore", "DiscOp", NULL});
+    rom_module(ROM_ADFS, "ADFS", NULL, 0x40240, (const char *const[]){"ADFS", "DiscOp", "HDC", "Drives",
                "FreeSpace", "Retries", NULL});
     WR32(FILECORE_WORD, 0);
     WR32(ADFS_INSTANCE, 0);

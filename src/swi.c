@@ -15,6 +15,9 @@ uint32_t env[17][3];                             /* OS_ChangeEnvironment's handl
  * headless runs the scripted keys */
 int pressed(int inkey)
 {
+    /* the mouse buttons are keys too (INKEY -10 Select, -11 Menu, -12
+     * Adjust; their transitions low-level keys &70-&72) */
+    if (inkey >= 10 && inkey <= 12 && (mouse_buttons & (4 >> (inkey - 10)))) return 1;
     if (inkey >= 1 && inkey <= 128 && key_held(inkey - 1)) return 1;   /* (headless: --script keys) */
     if (rg_interactive) return 0;
     for (unsigned k = 0; k < rg->nkeys; k++)
@@ -27,6 +30,7 @@ static int clamp_i(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v
 static void os_byte(void)
 {
     uint32_t op = R[0] & 0xFF;
+    if (buffers_os_byte(op)) return;
     if (op == 134 || op == 165) {                      /* the text cursor (134), the output cursor */
         int x, y;                                      /* (165, the same here): R1 x, R2 y, in the */
         vdu_text_cursor(&x, &y);                       /* text window (BASIC's POS, VPOS) */
@@ -340,7 +344,81 @@ void os_error(uint32_t num, const char *msg)
     VF = 1;
 }
 
+/* Territory_ReadSymbols: R0 the territory (-1 the current: the UK's), R1
+ * what: 0 decimal point, 1 thousands separator, 2 their grouping, 3
+ * international currency symbol, 4 currency symbol, 5 its decimal point, 6
+ * its thousands separator, 7 its grouping, 8 positive sign, 9 negative
+ * sign, 10 international fractional digits, 11 fractional digits, 12-15
+ * currency before positive/negative, separated by a space: 1, 0, 1, 0;
+ * 16/17 sign position: 1 -> R0 (a string, or a value) */
+static void territory_symbols(void)
+{
+    static const char *const str[] = {".", ",", "\3", "GBP ", "\xA3", ".", ",", "\3", "", "-"};
+    static const uint32_t val[] = {2, 2, 1, 0, 1, 0, 1, 1};
+    if (R[1] < 10) {
+        uint32_t a = MOD_POSTFIX + 8 + 8 * R[1];
+        strcpy((char *)MEM + a, str[R[1]]);
+        R[0] = a;
+    } else if (R[1] < 18) R[0] = val[R[1] - 10];
+    else os_error(0x43062, "Unknown symbol");
+}
+
+/* OS_CRC: R0 the CRC so far, R1/R2 the block [start, end), R3 the step
+ * between the bytes taken -> R0. The CRC-16 of the BBC's cassette and ROM
+ * filing systems, which RISC OS keeps: polynomial &1021, top bit first. */
+static void os_crc(void)
+{
+    uint32_t crc = R[0] & 0xFFFF;
+    int32_t step = (int32_t)R[3] ? (int32_t)R[3] : 1;
+    for (uint32_t a = R[1]; step > 0 ? a < R[2] : a > R[2]; a += step) {
+        crc ^= (uint32_t)MEM[a & 0x3FFFFFF] << 8;
+        for (int k = 0; k < 8; k++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+    }
+    R[0] = crc;
+}
+
+/* Transient callbacks (OS_AddCallBack: R0 the routine, R1 its R12;
+ * OS_RemoveCallBack: the same), run when a SWI returns to USR mode with
+ * interrupts enabled - in SVC mode, interrupts disabled, returning with
+ * MOV PC,R14 - the caller's registers kept */
+#define MAXCALLBACK 16
+static uint32_t callback[MAXCALLBACK][2];
+static int ncallback;
+
+static void swi_body(uint32_t n, uint32_t nextpc);
+
 void swi(uint32_t n, uint32_t nextpc)
+{
+    int user = (MODEBITS & 3) == 0;
+    static int trace = -1;                       /* ROGER_SWITRACE=1: each SWI to stderr, and its error */
+    if (trace < 0) trace = getenv("ROGER_SWITRACE") != NULL;
+    uint32_t in[4] = {R[0], R[1], R[2], R[3]};
+    swi_body(n, nextpc);
+    if (trace) {
+        fprintf(stderr, "%llu swi %06x from %08x (%08x %08x %08x %08x)", (unsigned long long)icount, n, nextpc - 4, in[0], in[1], in[2], in[3]);
+        if (VF && R[0] < MEMSIZE - 256) fprintf(stderr, " -> error %x %.80s", RD32(R[0]), (char *)MEM + R[0] + 4);
+        else fprintf(stderr, " -> %08x %08x %08x %08x", R[0], R[1], R[2], R[3]);
+        if ((n & ~0x20000u) == 0x400C7 || (n & ~0x20000u) == 0x400E1 || (n & ~0x20000u) == 0x400E7 || (n & ~0x20000u) == 0x400CB)
+            for (int k = 0; k < 8; k++) fprintf(stderr, " %x", RD32(R[1] + 4 * k));
+        if ((n & ~0x20000u) == 7)                                       /* OS_Word: the block */
+            for (int k = 0; k < 9; k++) fprintf(stderr, " %02x", MEM[R[1] + k]);
+        fputc('\n', stderr);
+    }
+    while (ncallback && user && !(MODEBITS & 0x08000000u)) {
+        uint32_t a = callback[0][0], r12 = callback[0][1];
+        memmove(callback, callback + 1, --ncallback * sizeof *callback);
+        uint32_t saved[16], f[4] = {NF, ZF, CF, VF}, snpc = npc;
+        memcpy(saved, R, sizeof saved);
+        ev("callback", "ii", a, r12);
+        R[12] = r12;
+        call_code(a, MODE_SVC | 0x08000000u, HANDLER_RET | MODE_SVC | 0x08000000u);
+        memcpy(R, saved, sizeof saved);
+        NF = f[0]; ZF = f[1]; CF = f[2]; VF = f[3];
+        npc = snpc;
+    }
+}
+
+static void swi_body(uint32_t n, uint32_t nextpc)
 {
     uint32_t x = n & 0x20000, b = n & ~0x20000u;
     VF = 0;
@@ -419,12 +497,16 @@ void swi(uint32_t n, uint32_t nextpc)
         }
         return;
     }
-    case 0x1D: return;                           /* OS_RemoveCursors (old number): no cursor to hide */
     case 0x58:                                   /* OS_ReadSysInfo */
         if (R[0] == 2) {                         /* 2: the hardware - R0 its chips (bits 8-15 the I/O */
             R[0] = rg->vidc20 ? 0x01010100u : 0; /* controller, 16-23 the memory controller, 24-31 the */
             R[1] = R[2] = R[3] = R[4] = 0;       /* video controller: IOC, MEMC1, VIDC1 0, IOMD, */
             return;                              /* VIDC20 1), no 82C710, no LCD, no machine ID */
+        }
+        if (R[0] == 0) { R[0] = rg->screen_size ? rg->screen_size : 0x14000; return; }   /* 0: configured screen size */
+        if (R[0] == 1) {                         /* 1: configured mode, monitor type, sync (0 separate) */
+            R[0] = rg->initial_mode; R[1] = rg->monitor_type; R[2] = 0;
+            return;
         }
         break;
     case 0x13: MODEBITS &= ~0x08000000u; return; /* OS_IntOn / OS_IntOff: the caller's I bit */
@@ -514,9 +596,27 @@ void swi(uint32_t n, uint32_t nextpc)
     }
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
-    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || disc_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b) || fonts_swi(b)) return;
+    if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || disc_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b) || fonts_swi(b)
+        || resourcefs_swi(b) || messagetrans_swi(b, x != 0) || colourtrans_swi(b) || buffers_swi(b) || heap_swi(b)
+        || (rg->vidc20 && dynarea_swi(b))) return;
+    if (b == 0x43040) { R[0] = 1; return; }     /* Territory_Number: the UK */
+    if (b == 0x4305E) { territory_symbols(); return; }
+    if (b == 0x5B) { os_crc(); return; }
+    if (b == 0x54) {                             /* OS_AddCallBack */
+        if (ncallback < MAXCALLBACK) { callback[ncallback][0] = R[0] & 0x3FFFFFC; callback[ncallback++][1] = R[1]; }
+        return;
+    }
+    if (b == 0x5F) {                             /* OS_RemoveCallBack */
+        for (int k = 0; k < ncallback; k++)
+            if (callback[k][0] == (R[0] & 0x3FFFFFC) && callback[k][1] == R[1]) {
+                memmove(callback + k, callback + k + 1, (--ncallback - k) * sizeof *callback);
+                break;
+            }
+        return;
+    }
+    if (b == 0x6E) return;                       /* OS_SynchroniseCodeAreas: stores to code are seen anyway */
     char name[48]; sprintf(name, "unhandled_SWI_%x", n);
     ev(name, "iii", R[0], R[1], R[2]);
     if (!x) finish("unhandled SWI");
-    VF = 1;
+    os_error(0x1E6, "SWI not known");
 }

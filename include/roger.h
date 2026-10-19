@@ -190,6 +190,10 @@ struct roger_config {
     void (*wimp_idle)(void);              /* Wimp_Poll has no event to return: queue some
                                              (roger_wimp_click() &c.), standing in for the
                                              user at the desktop */
+    int wimp_version;                     /* the Window Manager's version (Wimp_Initialise,
+                                             *RMEnsure WindowManager), e.g. 398: a program that
+                                             needs the "nested" Wimp RISC OS 3.1 machines loaded
+                                             from !System (default: the OS's, 316 or 350) */
     void (*filer_run)(const char *name);  /* on the desktop, a directory viewer's application,
                                              or a file the program didn't load, double-clicked:
                                              what *Run would do with it (there's only the one
@@ -242,6 +246,7 @@ void roger_wimp_click(int32_t window, int32_t icon, uint32_t buttons);   /* Mous
 void roger_wimp_menu(const int *items);                /* Menu_Selection: item indices, ending -1 */
 void roger_wimp_quit(void);                            /* Message_Quit */
 int32_t roger_wimp_menu_window(void);                  /* the dialogue box open as a menu, or 0 */
+int32_t roger_wimp_top_window(void);                   /* the open window at the front, or 0 */
 void roger_wimp_save_to(const char *path);             /* the next save dragged out goes to path
                                                           (a Filer under the pointer; "" none) */
 int  roger_filer_open(const char *dir);                /* on the desktop, a directory viewer

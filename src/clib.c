@@ -1,14 +1,14 @@
 /* The Shared C Library (SharedCLibrary, SWIs &80680-&80684), on the host's.
  *
  * A C program linked with the library's stubs (o.stubs, AIF) starts with
- * SharedCLibrary_LibInitAPCS_R: r0 points to a list of chunk descriptors
+ * SharedCLibrary_LibInitAPCS_R: r0 points to a list of cl->chunk descriptors
  * {id, vector start, vector end, static data start, static data end}, id
- * -1 ending it. The library fills each chunk's entry vector - one word per
+ * -1 ending it. The library fills each cl->chunk's entry vector - one word per
  * function, in the order the library defines - with branches to itself and
  * initialises the static data the client keeps for it (the C library's
  * starts with errno, the 16 FILEs of __iob and the __ctype table, which the
  * client's getc/putc/isxxx macros read directly). Chunk 1 is the kernel
- * (_kernel_*), chunk 2 the C library proper.
+ * (_kernel_*), cl->chunk 2 the C library proper.
  *
  * Here the vector words are marked self-modified, so translated code
  * leaves through the dispatcher at them, and call_addr() routes them to the
@@ -22,7 +22,7 @@
  * are the runtime's), the console through the VDU.
  *
  * Not provided: floating point arithmetic in the client (no FP emulator),
- * stack extension (one large root chunk instead: overflow ends the run),
+ * stack extension (one large root cl->chunk instead: overflow ends the run),
  * signals raised asynchronously (Escape), modules linked with the library
  * (LibInitModule), locales other than "C". A function not implemented here
  * ends the run naming it. */
@@ -34,9 +34,10 @@
 #include <ctype.h>
 #include "internal.h"
 
-#define LIB_VERSION   5                   /* LibInit's R6: the library's interface version */
-#define ROOT_STACK    0x10000u            /* the root stack chunk (no extension) */
-#define SC_SLOFFSET   560                 /* sl = chunk base + this (APCS-R stack chunk) */
+#define LIB_VERSION   6                   /* LibInit's R6: the library's interface version (stubs
+                                             check for at least theirs: 6 for 1990s Acorn C 5) */
+#define ROOT_STACK    0x10000u            /* the root stack cl->chunk (no extension) */
+#define SC_SLOFFSET   560                 /* sl = cl->chunk base + this (APCS-R stack cl->chunk) */
 #define SL_LIB_OFFSET (-540)              /* [sl-540], [sl-536]: static data relocations */
 
 /* ------------------------------------------------------------ entry tables */
@@ -138,9 +139,6 @@ static const char *const kernel_names[] = {KERNEL_ENTRIES(X)};
 static const char *const clib_names[] = {CLIB_ENTRIES(X)};
 #undef X
 
-/* the client's vectors and static data */
-static struct { uint32_t vec, n, data, dlen; } chunk[3];   /* [1] kernel, [2] C library */
-static int inited;
 
 /* the C library's static data: offsets of what clients use directly */
 #define D_ERRNO   0
@@ -167,8 +165,32 @@ static int inited;
 /* the kernel's static data: its error buffer (errorNumber, errorString) */
 #define K_ERROR   240
 
-static uint32_t heap_lo, heap_hi;         /* the C heap, between the root stack and the workspace end */
-static uint32_t stack_base, stack_top;
+/* The clients: the program (LibInitAPCS_R) and each module linked with the
+ * library (LibInitModule) - a Toolbox application has several. Each has its
+ * own vectors, static data and library state; a call is served for the
+ * client whose vector it came through (cl). A module's static data is its
+ * copy in its workspace: the chunks' addresses here are where the copy
+ * holds them, and its heap is the RMA. */
+#define MAXCLIENTS 24
+struct blk { uint32_t a, n; int used; };
+struct client {
+    struct { uint32_t vec, n, data, dlen; } chunk[3];   /* [1] kernel, [2] C library */
+    int module;
+    uint32_t heap_lo, heap_hi;            /* the C heap, between the root stack and the workspace end */
+    uint32_t stack_base, stack_top;
+    struct blk *blk;
+    int nblk, cblk;
+    struct { int open, ungot, line_len, line_pos; char line[260]; } fs[NFILES];
+    uint32_t atexit_fn[34];
+    int natexit;
+    uint32_t signal_handler[NSIG];        /* 0: SIG_DFL */
+    uint32_t strtok_next;
+    uint32_t static_buf;                  /* the library's own results: asctime, strerror, tmpnam... */
+};
+static struct client clients[MAXCLIENTS], *cl = clients;
+static int nclients;
+static uint32_t vec_lo = ~0u, vec_hi;     /* every client's vectors lie in [vec_lo, vec_hi) */
+
 
 /* ---------------------------------------------------------- the CPU side */
 static inline char *P(uint32_t a) { return (char *)MEM + (a & 0x3FFFFFF); }
@@ -210,9 +232,9 @@ static uint32_t do_swi(uint32_t n, int nonx)
     roger_swi(nonx ? n & ~0x20000u : n | 0x20000u);
     npc = snpc;
     if (VF) {                             /* keep a copy for _kernel_last_oserror */
-        if (chunk[1].data && R[0] && R[0] < MEMSIZE - 256) {
-            memcpy(P(chunk[1].data + K_ERROR), P(R[0]), 252);
-            MEM[chunk[1].data + K_ERROR + 251] = 0;
+        if (cl->chunk[1].data && R[0] && R[0] < MEMSIZE - 256) {
+            memcpy(P(cl->chunk[1].data + K_ERROR), P(R[0]), 252);
+            MEM[cl->chunk[1].data + K_ERROR + 251] = 0;
         }
         return R[0];
     }
@@ -269,64 +291,91 @@ static uint32_t copy_str(uint32_t d, uint32_t s, uint32_t n, int pad)
 static uint32_t sign(int c) { return c < 0 ? (uint32_t)-1 : c > 0; }
 
 /* ------------------------------------------------------------- the heap */
-/* First fit over [heap_lo, heap_hi); blocks are kept host-side, sorted. */
-static struct blk { uint32_t a, n; int used; } *blk;
-static int nblk, cblk;
+/* First fit over [heap_lo, heap_hi); blocks are kept host-side, sorted. A
+ * module's heap is the RMA (OS_Module 6, 7 and 13), as the library's is for
+ * a module. */
 
 static void heap_init(void)
 {
-    free(blk);
-    cblk = 64; nblk = 1;
-    blk = malloc(cblk * sizeof *blk);
-    blk[0] = (struct blk){heap_lo, heap_hi - heap_lo, 0};
+    free(cl->blk);
+    cl->cblk = 64; cl->nblk = 1;
+    cl->blk = malloc(cl->cblk * sizeof *cl->blk);
+    cl->blk[0] = (struct blk){cl->heap_lo, cl->heap_hi - cl->heap_lo, 0};
 }
 static uint32_t c_malloc(uint32_t n)
 {
+    if (cl->module) { R[0] = 6; R[3] = n ? n : 1; return do_swi(0x1E, 0) ? 0 : R[2]; }
     n = (n + 7) & ~7u;
     if (!n) n = 8;
-    for (int k = 0; k < nblk; k++)
-        if (!blk[k].used && blk[k].n >= n) {
-            if (blk[k].n > n) {
-                if (nblk == cblk) blk = realloc(blk, (cblk *= 2) * sizeof *blk);
-                memmove(blk + k + 2, blk + k + 1, (nblk - k - 1) * sizeof *blk);
-                blk[k + 1] = (struct blk){blk[k].a + n, blk[k].n - n, 0};
-                blk[k].n = n;
-                nblk++;
+    for (int k = 0; k < cl->nblk; k++)
+        if (!cl->blk[k].used && cl->blk[k].n >= n) {
+            if (cl->blk[k].n > n) {
+                if (cl->nblk == cl->cblk) cl->blk = realloc(cl->blk, (cl->cblk *= 2) * sizeof *cl->blk);
+                memmove(cl->blk + k + 2, cl->blk + k + 1, (cl->nblk - k - 1) * sizeof *cl->blk);
+                cl->blk[k + 1] = (struct blk){cl->blk[k].a + n, cl->blk[k].n - n, 0};
+                cl->blk[k].n = n;
+                cl->nblk++;
             }
-            blk[k].used = 1;
-            return blk[k].a;
+            cl->blk[k].used = 1;
+            return cl->blk[k].a;
         }
+    /* none big enough: the heap grows at its top, the application slot
+     * extended as the library does it for a program on the desktop
+     * (Wimp_SlotSize), if there's room */
+    uint32_t top_free = cl->nblk && !cl->blk[cl->nblk - 1].used ? cl->blk[cl->nblk - 1].n : 0;
+    uint32_t grow = (n - top_free + 0x7FFF) & ~0x7FFFu, old = cl->heap_hi;
+    uint32_t sr[3] = {R[0], R[1], R[2]};
+    R[0] = old + grow - 0x8000; R[1] = (uint32_t)-1;
+    roger_swi(0x600EC);
+    uint32_t now = VF ? old : 0x8000 + R[0];
+    R[0] = sr[0]; R[1] = sr[1]; R[2] = sr[2]; VF = 0;
+    if (now >= old + grow) {
+        cl->heap_hi = now;
+        if (top_free) cl->blk[cl->nblk - 1].n += now - old;
+        else {
+            if (cl->nblk == cl->cblk) cl->blk = realloc(cl->blk, (cl->cblk *= 2) * sizeof *cl->blk);
+            cl->blk[cl->nblk++] = (struct blk){old, now - old, 0};
+        }
+        ev("clib_heap_grown", "i", now);
+        return c_malloc(n);
+    }
     ev("clib_malloc_failed", "i", n);
     return 0;
 }
 static int blk_find(uint32_t a)
 {
-    for (int k = 0; k < nblk; k++) if (blk[k].a == a && blk[k].used) return k;
+    for (int k = 0; k < cl->nblk; k++) if (cl->blk[k].a == a && cl->blk[k].used) return k;
     return -1;
 }
 static void c_free(uint32_t a)
 {
+    if (cl->module) { if (a) { R[0] = 7; R[2] = a; do_swi(0x1E, 0); } return; }
     int k = blk_find(a);
     if (k < 0) return;
-    blk[k].used = 0;
-    if (k + 1 < nblk && !blk[k + 1].used) {
-        blk[k].n += blk[k + 1].n;
-        memmove(blk + k + 1, blk + k + 2, (nblk - k - 2) * sizeof *blk);
-        nblk--;
+    cl->blk[k].used = 0;
+    if (k + 1 < cl->nblk && !cl->blk[k + 1].used) {
+        cl->blk[k].n += cl->blk[k + 1].n;
+        memmove(cl->blk + k + 1, cl->blk + k + 2, (cl->nblk - k - 2) * sizeof *cl->blk);
+        cl->nblk--;
     }
-    if (k > 0 && !blk[k - 1].used) {
-        blk[k - 1].n += blk[k].n;
-        memmove(blk + k, blk + k + 1, (nblk - k - 1) * sizeof *blk);
-        nblk--;
+    if (k > 0 && !cl->blk[k - 1].used) {
+        cl->blk[k - 1].n += cl->blk[k].n;
+        memmove(cl->blk + k, cl->blk + k + 1, (cl->nblk - k - 1) * sizeof *cl->blk);
+        cl->nblk--;
     }
 }
 static uint32_t c_realloc(uint32_t a, uint32_t n)
 {
     if (!a) return c_malloc(n);
+    if (cl->module) {
+        if (!n) { c_free(a); return 0; }
+        R[0] = 13; R[2] = a; R[3] = n - (RD32(a - 4) - 4);
+        return do_swi(0x1E, 0) ? 0 : R[2];
+    }
     int k = blk_find(a);
     if (k < 0) return 0;
     if (!n) { c_free(a); return 0; }
-    uint32_t old = blk[k].n;
+    uint32_t old = cl->blk[k].n;
     if (((n + 7) & ~7u) <= old) return a;
     uint32_t b = c_malloc(n);
     if (b) { memmove(P(b), P(a), old); c_free(a); }
@@ -334,12 +383,11 @@ static uint32_t c_realloc(uint32_t a, uint32_t n)
 }
 
 /* ---------------------------------------------------------------- stdio */
-static struct { int open, ungot, line_len, line_pos; char line[260]; } fs[NFILES];
 
-static uint32_t file_addr(int k) { return chunk[2].data + D_IOB + FILE_SIZE * k; }
+static uint32_t file_addr(int k) { return cl->chunk[2].data + D_IOB + FILE_SIZE * k; }
 static int file_index(uint32_t f)
 {
-    uint32_t b = chunk[2].data + D_IOB;
+    uint32_t b = cl->chunk[2].data + D_IOB;
     if (f < b || f >= b + NFILES * FILE_SIZE || (f - b) % FILE_SIZE) return -1;
     return (f - b) / FILE_SIZE;
 }
@@ -354,7 +402,7 @@ static void console_put(int c)
 /* stdin: a line at a time, read with OS_ReadC and echoed (as OS_ReadLine) */
 static int console_get(void)
 {
-    if (fs[0].line_pos >= fs[0].line_len) {
+    if (cl->fs[0].line_pos >= cl->fs[0].line_len) {
         int n = 0;
         for (;;) {
             if (do_swi(4, 0) || CF) return -1;      /* OS_ReadC; C: Escape */
@@ -362,22 +410,22 @@ static int console_get(void)
             if (c == 13 || c == 10) { console_put('\n'); break; }
             if (c == 8 || c == 127) { if (n) { n--; console_put(127); } continue; }
             if (c < 32 || n >= 255) continue;
-            fs[0].line[n++] = c;
+            cl->fs[0].line[n++] = c;
             console_put(c);
         }
-        fs[0].line[n++] = '\n';
-        fs[0].line_len = n;
-        fs[0].line_pos = 0;
+        cl->fs[0].line[n++] = '\n';
+        cl->fs[0].line_len = n;
+        cl->fs[0].line_pos = 0;
     }
-    return (unsigned char)fs[0].line[fs[0].line_pos++];
+    return (unsigned char)cl->fs[0].line[cl->fs[0].line_pos++];
 }
 
 static int file_getc(uint32_t f)
 {
     int k = file_index(f);
-    if (k < 0 || !fs[k].open) return -1;
+    if (k < 0 || !cl->fs[k].open) return -1;
     WR32(f + F_ICNT, 0);
-    if (fs[k].ungot >= 0) { int c = fs[k].ungot; fs[k].ungot = -1; return c; }
+    if (cl->fs[k].ungot >= 0) { int c = cl->fs[k].ungot; cl->fs[k].ungot = -1; return c; }
     int c;
     if (k == 0) c = console_get();
     else {
@@ -391,7 +439,7 @@ static int file_getc(uint32_t f)
 static int file_putc(int c, uint32_t f)
 {
     int k = file_index(f);
-    if (k < 0 || !fs[k].open) return -1;
+    if (k < 0 || !cl->fs[k].open) return -1;
     WR32(f + F_OCNT, 0);
     if (k == 1 || k == 2) { console_put(c); return c & 0xFF; }
     R[0] = c & 0xFF; R[1] = RD32(f + F_FILE);
@@ -407,7 +455,7 @@ static uint32_t c_fopen(uint32_t name, uint32_t mode)
 {
     const char *m = P(mode);
     int k;
-    for (k = 3; k < NFILES && fs[k].open; k++) ;
+    for (k = 3; k < NFILES && cl->fs[k].open; k++) ;
     if (k == NFILES) return 0;
     int plus = strchr(m, '+') != 0;
     /* OS_Find: &40 read, &80 create, &C0 update; +8: an error for a directory */
@@ -426,25 +474,25 @@ static uint32_t c_fopen(uint32_t name, uint32_t mode)
         R[0] = 2; R[1] = h; do_swi(9, 0);
         R[0] = 1; R[1] = h; do_swi(9, 0);
     }
-    fs[k].open = 1; fs[k].ungot = -1;
+    cl->fs[k].open = 1; cl->fs[k].ungot = -1;
     return f;
 }
 static int c_fclose(uint32_t f)
 {
     int k = file_index(f);
-    if (k < 0 || !fs[k].open) return -1;
-    if (k >= 3) { R[0] = 0; R[1] = RD32(f + F_FILE); do_swi(0x0D, 0); fs[k].open = 0; WR32(f + F_FLAG, 0); }
+    if (k < 0 || !cl->fs[k].open) return -1;
+    if (k >= 3) { R[0] = 0; R[1] = RD32(f + F_FILE); do_swi(0x0D, 0); cl->fs[k].open = 0; WR32(f + F_FLAG, 0); }
     return 0;
 }
 static uint32_t c_fread(uint32_t buf, uint32_t size, uint32_t n, uint32_t f)
 {
     int k = file_index(f);
-    if (k < 0 || !fs[k].open || !size) return 0;
+    if (k < 0 || !cl->fs[k].open || !size) return 0;
     uint32_t total = size * n, got = 0;
     if (k == 0) {
         for (; got < total; got++) { int c = file_getc(f); if (c < 0) break; MEM[buf + got] = c; }
     } else {
-        if (fs[k].ungot >= 0 && total) { MEM[buf] = fs[k].ungot; fs[k].ungot = -1; got = 1; }
+        if (cl->fs[k].ungot >= 0 && total) { MEM[buf] = cl->fs[k].ungot; cl->fs[k].ungot = -1; got = 1; }
         R[0] = 4; R[1] = RD32(f + F_FILE); R[2] = buf + got; R[3] = total - got;
         if (do_swi(0x0C, 0)) set_flag(f, IOERR, 0);                     /* OS_GBPB 4 */
         else got = total - R[3];
@@ -455,7 +503,7 @@ static uint32_t c_fread(uint32_t buf, uint32_t size, uint32_t n, uint32_t f)
 static uint32_t c_fwrite(uint32_t buf, uint32_t size, uint32_t n, uint32_t f)
 {
     int k = file_index(f);
-    if (k < 0 || !fs[k].open || !size) return 0;
+    if (k < 0 || !cl->fs[k].open || !size) return 0;
     uint32_t total = size * n;
     if (k == 1 || k == 2) { file_puts(f, P(buf), total); return n; }
     R[0] = 2; R[1] = RD32(f + F_FILE); R[2] = buf; R[3] = total;
@@ -465,13 +513,13 @@ static uint32_t c_fwrite(uint32_t buf, uint32_t size, uint32_t n, uint32_t f)
 static uint32_t c_fseek(uint32_t f, int32_t off, int whence)
 {
     int k = file_index(f);
-    if (k < 3 || !fs[k].open) return (uint32_t)-1;
+    if (k < 3 || !cl->fs[k].open) return (uint32_t)-1;
     uint32_t h = RD32(f + F_FILE);
     if (whence == 1) { R[0] = 0; R[1] = h; do_swi(9, 0); off += R[2]; }     /* OS_Args 0: pointer */
     if (whence == 2) { R[0] = 2; R[1] = h; do_swi(9, 0); off += R[2]; }     /* OS_Args 2: extent */
     R[0] = 1; R[1] = h; R[2] = off;
     if (do_swi(9, 0)) return (uint32_t)-1;
-    fs[k].ungot = -1;
+    cl->fs[k].ungot = -1;
     set_flag(f, 0, IOEOF);
     return 0;
 }
@@ -563,7 +611,7 @@ static int c_format(struct sink *s, uint32_t fmt, struct args *a)
         if (n > (int)sizeof out - 1) n = sizeof out - 1;
         sink_put(s, out, n);
     }
-    if (s->buf) MEM[s->buf + s->n] = 0;
+    if (s->buf) MEM[(s->buf + s->n) & 0x3FFFFFF] = 0;
     return s->n;
 }
 
@@ -700,13 +748,8 @@ static uint32_t c_rand(void)
     return t & 0x7FFFFFFF;
 }
 
-static uint32_t atexit_fn[34];
-static int natexit;
-static uint32_t signal_handler[NSIG];     /* 0: SIG_DFL */
-static uint32_t strtok_next;
-static uint32_t static_buf;               /* the library's own results: asctime, strerror, tmpnam... */
 
-static uint32_t entry_addr(int k) { return k < (int)chunk[2].n ? chunk[2].vec + 4 * k : 0; }
+static uint32_t entry_addr(int k) { return k < (int)cl->chunk[2].n ? cl->chunk[2].vec + 4 * k : 0; }
 #define SIG_DFL entry_addr(C___default_signal_handler)
 #define SIG_IGN entry_addr(C___ignore_signal_handler)
 #define SIG_ERR entry_addr(C___error_signal_marker)
@@ -714,8 +757,8 @@ static uint32_t entry_addr(int k) { return k < (int)chunk[2].n ? chunk[2].vec + 
 static void c_exit(uint32_t status) __attribute__((noreturn));
 static void c_exit(uint32_t status)
 {
-    while (natexit > 0) call_client(atexit_fn[--natexit], 0, 0, 0, 0);
-    for (int k = 3; k < NFILES; k++) if (fs[k].open) c_fclose(file_addr(k));
+    while (cl->natexit > 0) call_client(cl->atexit_fn[--cl->natexit], 0, 0, 0, 0);
+    for (int k = 3; k < NFILES; k++) if (cl->fs[k].open) c_fclose(file_addr(k));
     ev("clib_exit", "i", status);
     R[0] = 0; R[1] = 0x58454241; R[2] = status;                 /* "ABEX" and the return code */
     roger_swi(0x11);                                            /* OS_Exit */
@@ -724,14 +767,14 @@ static void c_exit(uint32_t status)
 
 static void c_raise(uint32_t sig)
 {
-    uint32_t h = sig < NSIG ? signal_handler[sig] : 0;
+    uint32_t h = sig < NSIG ? cl->signal_handler[sig] : 0;
     if (h && h == SIG_IGN) return;
     if (!h || h == SIG_DFL || h == SIG_ERR) {
         fprintf(stderr, "SharedCLibrary: signal %u, default action: exit\n", sig);
         ev("clib_signal", "i", sig);
         c_exit(1);
     }
-    signal_handler[sig] = 0;                                    /* reset to SIG_DFL, as ANSI C */
+    cl->signal_handler[sig] = 0;                                    /* reset to SIG_DFL, as ANSI C */
     call_client(h, sig, 0, 0, 0);
 }
 
@@ -741,7 +784,7 @@ static time_t host_time(void)
 }
 static uint32_t put_tm(const struct tm *t)
 {
-    uint32_t a = static_buf + 128;
+    uint32_t a = cl->static_buf + 128;
     int v[9] = {t->tm_sec, t->tm_min, t->tm_hour, t->tm_mday, t->tm_mon, t->tm_year, t->tm_wday,
                 t->tm_yday, t->tm_isdst};
     for (int k = 0; k < 9; k++) WR32(a + 4 * k, v[k]);
@@ -775,7 +818,7 @@ static int kernel_call(int k)
     switch (k) {
     case K__kernel_init: {
         /* r0: kernel init block {image base, language descriptions start,
-         * end}; r1/r2: root stack chunk base and top; r3: module?; r4:
+         * end}; r1/r2: root stack cl->chunk base and top; r3: module?; r4:
          * workspace end. Set up the stack, call each language's Init (it
          * returns the main program's entry, if it has one), then run that. */
         uint32_t blkp = A[0], base = A[1], top = A[2];
@@ -797,6 +840,16 @@ static int kernel_call(int k)
         npc = mainp & 0x3FFFFFC;
         return 0;
     }
+    case K__kernel_moduleinit:
+        /* a module's, after LibInitModule (r0 the kernel init block, r1 the
+         * stack chunk LibInitModule gave): sl in that chunk; the library's
+         * allocator is then the RMA. It returns as it was branched to, from
+         * the stub that pushed the return address: ldr pc,[sp],#4 */
+        cl->module = 1;
+        R[10] = A[1] + SC_SLOFFSET;
+        npc = RD32(R[13]) & 0x3FFFFFC;
+        R[13] += 4;
+        return 0;
     case K__kernel_exit: c_exit(0);
     case K__kernel_setreturncode: return 1;
     case K__kernel_procname: case K__kernel_language: R[0] = 0; return 1;
@@ -842,7 +895,7 @@ static int kernel_call(int k)
     case K__kernel_oscli: R[0] = do_swi(5, 0) ? (uint32_t)-2 : 1; return 1;
     case K__kernel_system: R[0] = do_swi(5, 0) ? (uint32_t)-2 : 0; return 1;
     case K__kernel_last_oserror:
-        R[0] = chunk[1].data + K_ERROR;
+        R[0] = cl->chunk[1].data + K_ERROR;
         if (!RD32(R[0]) && !MEM[R[0] + 4]) R[0] = 0;
         return 1;
     case K__kernel_getenv: {                                    /* (name, buf, size) */
@@ -912,6 +965,7 @@ static int clib_call(int k)
     }
     case C__exit: case C_exit: c_exit(A[0]);
     case C__clib_initialise: return 1;                          /* (done at LibInit) */
+    case C__clib_finalisemodule: return 1;                      /* (the module frees its workspace) */
     case C__printf: case C_printf: a.k = 1; sk.f = file_addr(1); R[0] = c_format(&sk, A[0], &a); return 1;
     case C__fprintf: case C_fprintf: a.k = 2; sk.f = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
     case C__sprintf: case C_sprintf: a.k = 2; sk.buf = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
@@ -931,8 +985,8 @@ static int clib_call(int k)
         else { time_t tt = (int32_t)RD32(A[0]); localtime_r(&tt, &t); }
         char b[64];
         asctime_r(&t, b);
-        strcpy(P(static_buf), b);
-        R[0] = static_buf;
+        strcpy(P(cl->static_buf), b);
+        R[0] = cl->static_buf;
         return 1;
     }
     case C_gmtime: case C_localtime: {
@@ -964,17 +1018,17 @@ static int clib_call(int k)
     case C_strlen: R[0] = strlen(P(A[0])); return 1;
     case C_strxfrm: { size_t l = strlen(P(A[1])); if (l < A[2]) copy_str(A[0], A[1], 0xFFFFFFFFu, 0); R[0] = l; return 1; }
     case C_strtok: {
-        uint32_t p = A[0] ? A[0] : strtok_next;
+        uint32_t p = A[0] ? A[0] : cl->strtok_next;
         R[0] = 0;
         if (!p) return 1;
         p += strspn(P(p), P(A[1]));
-        if (!MEM[p]) { strtok_next = 0; return 1; }
+        if (!MEM[p]) { cl->strtok_next = 0; return 1; }
         uint32_t e = p + strcspn(P(p), P(A[1]));
-        if (MEM[e]) { MEM[e] = 0; strtok_next = e + 1; } else strtok_next = 0;
+        if (MEM[e]) { MEM[e] = 0; cl->strtok_next = e + 1; } else cl->strtok_next = 0;
         R[0] = p;
         return 1;
     }
-    case C_strerror: snprintf(P(static_buf), 120, "%s", strerror((int)A[0])); R[0] = static_buf; return 1;
+    case C_strerror: snprintf(P(cl->static_buf), 120, "%s", strerror((int)A[0])); R[0] = cl->static_buf; return 1;
     case C_atof: ret_double(atof(P(A[0]))); return 1;
     case C_atoi: case C_atol: R[0] = (uint32_t)(int32_t)atol(P(A[0])); return 1;
     case C_strtod: { char *e; double d = strtod(P(A[0]), &e); if (A[1]) WR32(A[1], at(A[0], e)); ret_double(d); return 1; }
@@ -992,9 +1046,9 @@ static int clib_call(int k)
     case C_malloc: R[0] = c_malloc(A[0]); return 1;
     case C_realloc: R[0] = c_realloc(A[0], A[1]); return 1;
     case C_abort: c_raise(SIGABRT); c_exit(1);
-    case C_atexit: if (natexit < 34) { atexit_fn[natexit++] = A[0]; R[0] = 0; } else R[0] = 1; return 1;
+    case C_atexit: if (cl->natexit < 34) { cl->atexit_fn[cl->natexit++] = A[0]; R[0] = 0; } else R[0] = 1; return 1;
     case C_getenv: {
-        uint32_t buf = static_buf + 256;
+        uint32_t buf = cl->static_buf + 256;
         R[1] = buf; R[2] = 255; R[3] = 0; R[4] = 3;
         if (do_swi(0x23, 0)) R[0] = 0;                          /* OS_ReadVarVal */
         else { MEM[buf + R[2]] = 0; R[0] = buf; }
@@ -1044,7 +1098,7 @@ static int clib_call(int k)
     case C_ungetc: {
         int i = file_index(A[1]);
         if (i < 0 || A[0] == (uint32_t)-1) { R[0] = (uint32_t)-1; return 1; }
-        fs[i].ungot = A[0] & 0xFF;
+        cl->fs[i].ungot = A[0] & 0xFF;
         set_flag(A[1], 0, IOEOF);
         R[0] = A[0] & 0xFF;
         return 1;
@@ -1056,7 +1110,7 @@ static int clib_call(int k)
     case C_ftell: {
         int i = file_index(A[0]);
         R[0] = 0; R[1] = i >= 3 ? RD32(A[0] + F_FILE) : 0;
-        R[0] = i < 3 || do_swi(9, 0) ? (uint32_t)-1 : R[2] - (fs[i].ungot >= 0);
+        R[0] = i < 3 || do_swi(9, 0) ? (uint32_t)-1 : R[2] - (cl->fs[i].ungot >= 0);
         return 1;
     }
     case C_clearerr: set_flag(A[0], 0, IOEOF | IOERR); return 1;
@@ -1065,7 +1119,7 @@ static int clib_call(int k)
     case C_perror: {
         char m[300];
         const char *pre = A[0] && MEM[A[0]] ? P(A[0]) : "";
-        snprintf(m, sizeof m, "%s%s%s\n", pre, *pre ? ": " : "", strerror(RD32(chunk[2].data + D_ERRNO)));
+        snprintf(m, sizeof m, "%s%s%s\n", pre, *pre ? ": " : "", strerror(RD32(cl->chunk[2].data + D_ERRNO)));
         file_puts(file_addr(2), m, strlen(m));
         return 1;
     }
@@ -1073,8 +1127,8 @@ static int clib_call(int k)
     case C___default_signal_handler: case C___error_signal_marker: c_raise(A[0]); return 1;
     case C_signal: {                                            /* (sig, handler) */
         if (A[0] >= NSIG || !A[0]) { R[0] = SIG_ERR; return 1; }
-        uint32_t old = signal_handler[A[0]] ? signal_handler[A[0]] : SIG_DFL;
-        signal_handler[A[0]] = A[1] == SIG_DFL ? 0 : A[1];
+        uint32_t old = cl->signal_handler[A[0]] ? cl->signal_handler[A[0]] : SIG_DFL;
+        cl->signal_handler[A[0]] = A[1] == SIG_DFL ? 0 : A[1];
         R[0] = old;
         return 1;
     }
@@ -1095,9 +1149,37 @@ static int clib_call(int k)
     }
     case C_tmpnam: case C___old_tmpnam: {
         static int n;
-        uint32_t b = A[0] ? A[0] : static_buf + 512;
+        uint32_t b = A[0] ? A[0] : cl->static_buf + 512;
         snprintf(P(b), 32, "<Wimp$ScrapDir>.x%08d", n++);
         R[0] = b;
+        return 1;
+    }
+    case C__swi: case C__swix: {
+        /* (swi, mask, ...) as RISC_OSLib's swis.h: the inputs (mask bits
+         * 0-9: R0-R9) from the arguments, then pointers for the outputs
+         * (bits 31-22: R0-R9, bit 21: the flags); bit 11: the register in
+         * bits 12-15 points to the arguments after those (as they lie on
+         * the stack). _swix: the X form, the error or 0; _swi: the register
+         * in bits 16-19 (15: the flags). R4-R9 not given are the caller's. */
+        uint32_t n = A[0] | (k == C__swix ? 0x20000u : 0), m = A[1], in[10], outp[11] = {0};
+        a.k = 2;
+        for (int i = 0; i < 10; i++) in[i] = i < 4 ? A[i] : R[i];
+        for (int i = 0; i < 10; i++) if (m & (1u << i)) in[i] = arg_word(&a);
+        for (int i = 0; i < 10; i++) if (m & (1u << (31 - i))) outp[i] = arg_word(&a);
+        if (m & (1u << 21)) outp[10] = arg_word(&a);
+        if (m & 0x800) {
+            if (a.k < 4) { WR32(SP - 8, A[2]); WR32(SP - 4, A[3]); }   /* (as the library pushes them) */
+            in[(m >> 12) & 15] = a.k < 4 ? SP - 8 + 4 * (a.k - 2) : SP + 4 * (a.k - 4);
+        }
+        for (int i = 0; i < 10; i++) R[i] = in[i];
+        uint32_t e = do_swi(n, !(n & 0x20000));
+        if (e) { R[0] = e; return 1; }
+        uint32_t out[11];
+        for (int i = 0; i < 10; i++) out[i] = R[i];
+        out[10] = PSR();
+        for (int i = 0; i < 11; i++) if (outp[i]) WR32(outp[i], out[i]);
+        uint32_t ret = (m >> 16) & 15;
+        R[0] = k == C__swix ? (ret ? out[0] : 0) : ret == 15 ? out[10] : out[ret];
         return 1;
     }
     }
@@ -1108,10 +1190,10 @@ static int clib_call(int k)
 /* ------------------------------------------------------------------ LibInit */
 static void init_static(void)
 {
-    if (chunk[1].data) memset(P(chunk[1].data), 0, chunk[1].dlen);
-    uint32_t d = chunk[2].data;
+    if (cl->chunk[1].data) memset(P(cl->chunk[1].data), 0, cl->chunk[1].dlen);
+    uint32_t d = cl->chunk[2].data;
     if (!d) return;
-    memset(P(d), 0, chunk[2].dlen);
+    memset(P(d), 0, cl->chunk[2].dlen);
     for (int c = 0; c < 128; c++) {                             /* the "C" locale's classes */
         uint8_t v = 0;
         if (isspace(c)) v |= 1;                                 /* __S */
@@ -1124,55 +1206,116 @@ static void init_static(void)
         if (isxdigit(c) && !isdigit(c)) v |= 128;               /* __X */
         MEM[d + D_CTYPE + c] = v;
     }
-    if (chunk[2].dlen >= D_HUGEVAL + 8) { WR32(d + D_HUGEVAL, 0x7FEFFFFF); WR32(d + D_HUGEVAL + 4, 0xFFFFFFFF); }
-    memset(fs, 0, sizeof fs);
+    if (cl->chunk[2].dlen >= D_HUGEVAL + 8) { WR32(d + D_HUGEVAL, 0x7FEFFFFF); WR32(d + D_HUGEVAL + 4, 0xFFFFFFFF); }
+    memset(cl->fs, 0, sizeof cl->fs);
     for (int k = 0; k < 3; k++) {                               /* stdin, stdout, stderr */
         WR32(file_addr(k) + F_FLAG, (k == 0 ? IOREAD : IOWRITE) | IONBF);
-        fs[k].open = 1; fs[k].ungot = -1;
+        cl->fs[k].open = 1; cl->fs[k].ungot = -1;
     }
+}
+
+/* The client a chunk list is for: the one whose vectors it gives (the same
+ * program or module initialising again), else a new one */
+static struct client *client_for(uint32_t list)
+{
+    uint32_t vec = 0;
+    for (uint32_t d = list; RD32(d) != 0xFFFFFFFFu; d += 20) if (RD32(d) == 2) vec = RD32(d + 4);
+    for (int k = 0; k < nclients; k++) if (clients[k].chunk[2].vec == vec) return &clients[k];
+    if (nclients == MAXCLIENTS) finish("SharedCLibrary: too many clients");
+    return &clients[nclients++];
+}
+
+/* the chunk list's vectors (filled: each word leaves through the dispatcher)
+ * and static data, at rel from where the list places it */
+static void take_chunks(uint32_t list, uint32_t rel)
+{
+    memset(cl->chunk, 0, sizeof cl->chunk);
+    for (uint32_t d = list; RD32(d) != 0xFFFFFFFFu; d += 20) {
+        uint32_t id = RD32(d);
+        if (id < 1 || id > 2) { ev("clib_unknown_chunk", "i", id); continue; }
+        cl->chunk[id].vec = RD32(d + 4);
+        cl->chunk[id].n = (RD32(d + 8) - cl->chunk[id].vec) / 4;
+        cl->chunk[id].data = RD32(d + 12) + rel;
+        cl->chunk[id].dlen = RD32(d + 16) - RD32(d + 12);
+        uint32_t limit = id == 1 ? NKERNEL : NCLIB;
+        if (cl->chunk[id].n > limit) { ev("clib_vector_too_long", "ii", id, cl->chunk[id].n); cl->chunk[id].n = limit; }
+        for (uint32_t k = 0; k < cl->chunk[id].n; k++) {
+            uint32_t a = cl->chunk[id].vec + 4 * k;
+            if (cpu_translated(a)) smc_write(a);                /* translated code leaves at it */
+            WR32(a, 0xE1B0F00Eu);                               /* (MOVS PC, R14: never run) */
+        }
+        if (cl->chunk[id].vec < vec_lo) vec_lo = cl->chunk[id].vec;
+        if (cl->chunk[id].vec + 4 * cl->chunk[id].n > vec_hi) vec_hi = cl->chunk[id].vec + 4 * cl->chunk[id].n;
+    }
+}
+
+static void client_reset(void)
+{
+    init_static();
+    cl->natexit = 0; rnd_seeded = 0; cl->strtok_next = 0;
+    memset(cl->signal_handler, 0, sizeof cl->signal_handler);
+    cl->static_buf = c_malloc(1024);
 }
 
 int clib_swi(uint32_t b)
 {
     if (b < 0x80680 || b > 0x80684) return 0;
-    if (b != 0x80680 && b != 0x80681) {
+    if (b == 0x80680 || b == 0x80683 || b == 0x80684) {
+        /* APCS-A (withdrawn), and the APCS-32 calling standard of a 32-bit
+         * library: a 26-bit library hasn't them, and APCS-32 stubs then try
+         * LibInitAPCS_R */
         ev("clib_libinit_unsupported", "i", b);
-        fprintf(stderr, "SharedCLibrary: SWI &%x (modules, 32-bit clients) not supported\n", b);
-        finish("SharedCLibrary SWI not supported");
+        os_error(0x1E6, "SWI value out of range for module SharedCLibrary");
+        return 1;
     }
-    /* LibInitAPCS_A/R: r0 the chunk list, r1/r2 the workspace (from the
+    struct client *prev = cl;
+    cl = client_for(R[0]);
+    if (b == 0x80682) {
+        /* LibInitModule (RISC_OSLib's s.initmodule documents it): r0 the
+         * chunk list, r1/r2 the workspace, r3 the start of the zero-
+         * initialised statics, r4/r5 the client's statics (in the module:
+         * the template). The statics are copied to the workspace and the
+         * zero-initialised part cleared; the offset from template to copy
+         * goes in the stack chunk header - the base of the SVC stack, at its
+         * 1M boundary - as [sl, #SL_Client_Offset] and, the library's
+         * statics being in the same copy, [sl, #SL_Lib_Offset]. Out: r0 the
+         * workspace end, r1 the stack base, r2 the end of the copy, r6 the
+         * library version. */
+        uint32_t lo = R[1], hi = R[2], zi = R[3], s0 = R[4], s1 = R[5];
+        uint32_t len = s1 > s0 ? s1 - s0 : 0, base = R[13] & ~0xFFFFFu;
+        if (lo + len > hi) { cl = prev; os_error(0x800E81, "Not enough memory for C library"); return 1; }
+        uint32_t rel = 0;
+        if (len) {
+            memmove(P(lo), P(s0), zi - s0);
+            memset(P(lo + (zi - s0)), 0, s1 - zi);
+            rel = lo - s0;
+        }
+        WR32(base + SC_SLOFFSET + SL_LIB_OFFSET + 4, rel);      /* SL_Client_Offset */
+        WR32(base + SC_SLOFFSET + SL_LIB_OFFSET, rel);          /* SL_Lib_Offset */
+        cl->module = 1;
+        take_chunks(R[0], rel);
+        client_reset();
+        ev("clib_libinitmodule", "iii", lo, rel, cl->chunk[2].n);
+        R[0] = hi; R[1] = base; R[2] = lo + len; R[6] = LIB_VERSION;
+        cl = prev;
+        return 1;
+    }
+    /* LibInitAPCS_R: r0 the chunk list, r1/r2 the workspace (from the
      * end of the image to the RAM limit), r6 the root stack size in K (top
      * half). Out: r0 the workspace limit, r1/r2 the root stack chunk's base
      * and top, r6 the library version. */
-    memset(chunk, 0, sizeof chunk);
-    for (uint32_t d = R[0]; RD32(d) != 0xFFFFFFFFu; d += 20) {
-        uint32_t id = RD32(d);
-        if (id < 1 || id > 2) { ev("clib_unknown_chunk", "i", id); continue; }
-        chunk[id].vec = RD32(d + 4);
-        chunk[id].n = (RD32(d + 8) - chunk[id].vec) / 4;
-        chunk[id].data = RD32(d + 12);
-        chunk[id].dlen = RD32(d + 16) - chunk[id].data;
-        uint32_t limit = id == 1 ? NKERNEL : NCLIB;
-        if (chunk[id].n > limit) { ev("clib_vector_too_long", "ii", id, chunk[id].n); chunk[id].n = limit; }
-        for (uint32_t k = 0; k < chunk[id].n; k++) {
-            uint32_t a = chunk[id].vec + 4 * k;
-            if (cpu_translated(a)) smc_write(a);                /* translated code leaves at it */
-            WR32(a, 0xE1B0F00Eu);                               /* (MOVS PC, R14: never run) */
-        }
-    }
+    cl->module = 0;
+    take_chunks(R[0], 0);
     uint32_t ws = (R[1] + 7) & ~7u, limit = R[2], want = (R[6] >> 16) << 10;
-    stack_base = ws;
-    stack_top = ws + (want > ROOT_STACK ? want : ROOT_STACK);
-    heap_lo = stack_top; heap_hi = limit;
-    if (heap_hi < heap_lo + 0x2000) finish("SharedCLibrary: no room for the stack and heap (WimpSlot)");
+    cl->stack_base = ws;
+    cl->stack_top = ws + (want > ROOT_STACK ? want : ROOT_STACK);
+    cl->heap_lo = cl->stack_top; cl->heap_hi = limit;
+    if (cl->heap_hi < cl->heap_lo + 0x2000) finish("SharedCLibrary: no room for the stack and heap (WimpSlot)");
     heap_init();
-    init_static();
-    natexit = 0; rnd_seeded = 0; strtok_next = 0;
-    memset(signal_handler, 0, sizeof signal_handler);
-    static_buf = c_malloc(1024);
-    inited = 1;
-    ev("clib_libinit", "iiii", stack_base, stack_top, heap_hi, chunk[2].n);
-    R[0] = limit; R[1] = stack_base; R[2] = stack_top; R[6] = LIB_VERSION;
+    client_reset();
+    ev("clib_libinit", "iiii", cl->stack_base, cl->stack_top, cl->heap_hi, cl->chunk[2].n);
+    R[0] = limit; R[1] = cl->stack_base; R[2] = cl->stack_top; R[6] = LIB_VERSION;
+    cl = prev;
     return 1;
 }
 
@@ -1180,19 +1323,29 @@ int clib_swi(uint32_t b)
  * and the stack; R4-R14 are as at the call when it returns (APCS). */
 int clib_dispatch(uint32_t a)
 {
-    if (!inited) return 0;
-    for (int id = 1; id <= 2; id++)
-        if (a >= chunk[id].vec && a < chunk[id].vec + 4 * chunk[id].n) {
-            int k = (a - chunk[id].vec) / 4;
-            uint32_t save[16];
-            memcpy(save, R, sizeof save);
-            memcpy(A, R, sizeof A);
-            SP = R[13];
-            if (id == 1 ? kernel_call(k) : clib_call(k)) {
-                memcpy(R + 4, save + 4, 11 * sizeof *R);
-                SETPC(R[14], 1);
+    if (a < vec_lo || a >= vec_hi) return 0;
+    for (int c = 0; c < nclients; c++)
+        for (int id = 1; id <= 2; id++)
+            if (a >= clients[c].chunk[id].vec && a < clients[c].chunk[id].vec + 4 * clients[c].chunk[id].n) {
+                /* (re-entrant: a SWI made for the client may run another
+                 * client's code - a module's - that calls the library) */
+                struct client *prev = cl;
+                uint32_t outer_a[4], outer_sp = SP;
+                memcpy(outer_a, A, sizeof A);
+                cl = &clients[c];
+                int k = (a - cl->chunk[id].vec) / 4;
+                uint32_t save[16];
+                memcpy(save, R, sizeof save);
+                memcpy(A, R, sizeof A);
+                SP = R[13];
+                if (id == 1 ? kernel_call(k) : clib_call(k)) {
+                    memcpy(R + 4, save + 4, 11 * sizeof *R);
+                    SETPC(R[14], 1);
+                }
+                cl = prev;
+                memcpy(A, outer_a, sizeof A);
+                SP = outer_sp;
+                return 1;
             }
-            return 1;
-        }
     return 0;
 }

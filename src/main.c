@@ -141,6 +141,7 @@ void finish(const char *why)
     }
     if (rg->finish) rg->finish();
     ramfs_remove();
+    resourcefs_remove();
     fclose(evlog);
     snprintf(fn, sizeof fn, "%s.vdu", outprefix);
     FILE *f = fopen(fn, "wb"); video_save_vdu(f); fclose(f);
@@ -341,6 +342,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     if (cfg->image->base + n != cfg->image->end) fprintf(stderr, "warning: image size differs from compiled image\n");
     bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
     disc_init();
+    modules_init();
     modules_load();
     if (cfg->init) cfg->init();
     R[13] = cfg->stack ? cfg->stack : ram_limit(); R[14] = RETURN_TO_OS; R[12] = 0;
