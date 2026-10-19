@@ -882,6 +882,7 @@ int wimp_swi(uint32_t b)
             break;
         }
         case 7: R[0] = WIMP_VERSION; break;
+        case 9: R[0] = R[1] = wimp_sprites(); break;        /* the ROM and RAM pools: here one */
         default: ev("Wimp_ReadSysInfo", "i", R[0]); R[0] = 0; break;
         }
         return 1;

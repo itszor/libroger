@@ -37,6 +37,10 @@ static void os_byte(void)
         R[1] = (uint32_t)x; R[2] = (uint32_t)y;
         return;
     }
+    if (op == 71) {                                    /* the alphabet (R1 < 128) or keyboard: */
+        R[1] = R[1] & 0x80 ? 1 : 101;                  /* the UK's and Latin1, read or the old one */
+        return;                                        /* (Star Fighter 3000's Keyboards.1 names) */
+    }
     if (op == 129) {                                   /* INKEY */
         if (R[2] == 0xFF && (R[1] & 0xFF) == 0) {      /* the OS version: 3.1, or 3.5 on a Risc PC */
             R[1] = rg->vidc20 ? 0xA5 : 0xA4; R[2] = 0;

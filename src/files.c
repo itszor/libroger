@@ -680,12 +680,30 @@ uint32_t sys_sprites(void)
     }
     return SYS_SPRITES;
 }
-/* The Wimp's sprite pool (*IconSprites fills it; Wimp_SpriteOp reads it) */
+/* The Wimp's sprite pool (*IconSprites fills it; Wimp_SpriteOp reads it).
+ * It starts with the window furniture's tool sprites, as the RISC OS 3.5+
+ * Wimp's ROM pool (and !System's Wimp's) does: programs measure the
+ * furniture by them (Star Fighter 3000 its scroll bars, by sicon, through
+ * Wimp_ReadSysInfo 9). Blank, 20x20 pixels in mode 18: 40 OS units, the
+ * size of desktop.c's (which draws its own). */
 uint32_t wimp_sprites(void)
 {
     if (!RD32(WIMP_SPRITES)) {
+        static const char *const tools[] = {"bicon", "cicon", "ticon", "sicon", "uicon", "dicon", "licon", "ricon"};
         WR32(WIMP_SPRITES, SYS_SPRITES_MAX); WR32(WIMP_SPRITES + 4, 0);
-        WR32(WIMP_SPRITES + 8, 16); WR32(WIMP_SPRITES + 12, 16);
+        WR32(WIMP_SPRITES + 8, 16);
+        uint32_t s = WIMP_SPRITES + 16;
+        for (unsigned k = 0; k < sizeof tools / sizeof tools[0]; k++, s += 44 + 80) {
+            memset(MEM + s, 0, 44 + 80);
+            WR32(s, 44 + 80);
+            memcpy(MEM + s + 4, tools[k], strlen(tools[k]));
+            WR32(s + 16, 0); WR32(s + 20, 19);  /* width - 1 (words), height - 1 */
+            WR32(s + 24, 0); WR32(s + 28, 19);  /* first and last bits used */
+            WR32(s + 32, 44); WR32(s + 36, 44); /* the image; no mask */
+            WR32(s + 40, 18);
+        }
+        WR32(WIMP_SPRITES + 4, sizeof tools / sizeof tools[0]);
+        WR32(WIMP_SPRITES + 12, s - WIMP_SPRITES);
     }
     return WIMP_SPRITES;
 }
