@@ -12,12 +12,22 @@
 #include "internal.h"
 
 uint32_t monotonic, events_enabled;
-static uint64_t next_tick = TICK_STEPS, next_vsync = VSYNC_STEPS;
+uint64_t tick_steps = 20000;
+static uint64_t next_tick = 20000, next_vsync = 40000;
 static uint64_t next_tick_ns, next_vsync_ns;
 static unsigned click_i;
 volatile uint64_t rg_last_service_ns;      /* watchdog: last time rt_service() ran a vsync */
 
 void irq_start_clock(uint64_t now) { next_tick_ns = next_vsync_ns = now; }
+
+/* Headless runs: the CPU's speed, n million instructions a second (before
+ * the program starts) */
+void irq_headless_mips(float n)
+{
+    tick_steps = (uint64_t)(n * 10000.0f + 0.5f);
+    if (tick_steps < 100) tick_steps = 100;
+    next_tick = TICK_STEPS; next_vsync = VSYNC_STEPS;
+}
 
 void recompute_irq(void)
 {

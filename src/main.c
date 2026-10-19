@@ -21,6 +21,7 @@ static const char *outprefix = "recomp";
 static FILE *evlog;
 extern volatile uint64_t rg_last_service_ns;
 void irq_start_clock(uint64_t now);
+void irq_headless_mips(float n);
 
 int roger_interactive(void) { return rg_interactive; }
 
@@ -226,6 +227,7 @@ static void usage(const char *prog)
            "  --headless        headless with the default limit\n"
            "  --script=...      scripted input (see src/main.c)\n"
            "  --mips=N          the CPU's speed, interactive (0: unthrottled; default: the game's)\n"
+           "  --headless-mips=N the CPU's speed in headless runs (default: the game's, or 2)\n"
            "  --mouse-sens=N    a captured mouse: OS units per host pixel (default: the game's, or 2)\n"
            "  --trace-gaps      interpret untranslated code, logging it to untranslated.log\n"
            "  --full-os         VDU and sprite drivers in headless runs too\n"
@@ -257,7 +259,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     int scale = 4, headless = 0, no_sound = 0, no_title = 0;
     const char *pad_opt = NULL, *pad2_opt = NULL;
     const char *fs = NULL, *wavpath = NULL, *shader = NULL;
-    float mips_opt = -1, sens_opt = -1;
+    float mips_opt = -1, sens_opt = -1, hmips_opt = -1;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
     rg_floppy = cfg->floppy;
     for (int k = 1; k < argc; k++)
@@ -275,6 +277,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         }
         else if (!strcmp(argv[k], "--windowed-games")) rg_windowed_games = 1;
         else if (!strncmp(argv[k], "--mips=", 7)) mips_opt = (float)atof(argv[k] + 7);
+        else if (!strncmp(argv[k], "--headless-mips=", 16)) hmips_opt = (float)atof(argv[k] + 16);
         else if (!strncmp(argv[k], "--mouse-sens=", 13)) sens_opt = (float)atof(argv[k] + 13);
         else if (!strcmp(argv[k], "--trace-gaps")) rg_trace_gaps = 1;
         else if (!strcmp(argv[k], "--no-title")) no_title = 1;
@@ -305,6 +308,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     if (!pad_setup(pad_opt, pad2_opt)) exit(1);
     if (!rg_interactive) joystick_start(0);      /* (headless: only with --joystick) */
     rg_mips = mips_opt >= 0 ? mips_opt : cfg->mips;
+    if (hmips_opt > 0 || cfg->headless_mips > 0) irq_headless_mips(hmips_opt > 0 ? hmips_opt : cfg->headless_mips);
     rg_mouse_sens = sens_opt > 0 ? sens_opt : cfg->mouse_sens > 0 ? cfg->mouse_sens : 2.0f;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);

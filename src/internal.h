@@ -45,8 +45,10 @@
 #define MODE_IRQ     ROGER_MODE_IRQ
 
 /* headless runs advance emulated time by instruction count */
-#define TICK_STEPS   20000                /* instructions per centisecond */
-#define VSYNC_STEPS  40000                /* instructions per frame (50Hz) */
+extern uint64_t tick_steps;              /* headless runs: instructions per centisecond (20000,
+                                            2 MIPS, unless roger_config.headless_mips) */
+#define TICK_STEPS   tick_steps
+#define VSYNC_STEPS  (2 * tick_steps)     /* instructions per frame (50Hz) */
 #define CS_NS        10000000ull
 
 extern const struct roger_config *rg;     /* the game's configuration */

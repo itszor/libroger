@@ -93,7 +93,8 @@ controllers, below), `--joystick` and `--joystick=off`, `--fullscreen[=WxH@Hz]`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
 
 Determinism: headless runs (`--limit`) advance time by instruction count
-(a centisecond per 20000, a frame per 40000) and write the event log,
+(a centisecond per 20000, a frame per 40000: 2 MIPS, or the game's
+roger_config.headless_mips, or --headless-mips=N) and write the event log,
 VDU stream, screen memory and registers, so two builds of a game can be
 compared byte for byte. `ROGER_INTERPRET=1` interprets everything, to
 compare a translation's behaviour with the interpreter's.

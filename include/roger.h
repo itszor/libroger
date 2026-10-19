@@ -119,6 +119,11 @@ struct roger_config {
                                              runs it). For games that don't wait for the
                                              frame and so run at the speed of the machine:
                                              an 8MHz ARM2 is about 4.5. --mips=N overrides */
+    float headless_mips;                  /* headless runs (--limit): the CPU's speed in emulated
+                                             time, millions of instructions a second (0: 2, a
+                                             centisecond per 20000). For a game whose scripts
+                                             must keep up with its timers, as on a real machine.
+                                             --headless-mips=N overrides */
     int desktop_pointer;                  /* started from the desktop with its pointer on (shape
                                              1) and relying on it: it stays on through mode
                                              changes (otherwise a mode change turns the pointer
