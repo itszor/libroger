@@ -314,6 +314,7 @@ void vidc_write(uint32_t v)
     if (reg == 37) vidc_hber = val >> 14;
     if (reg == 42) vidc_vbsr = val >> 14;
     if (reg == 45) vidc_vber = val >> 14;
+    if (reg == 48 || (reg >= 24 && reg <= 31)) sound_vidc(reg, val);   /* sound frequency, stereo images */
     static uint32_t last[64];
     if ((val != 0 && val != last[reg]) || vidc_seen[reg] < 8) {   /* vidc.log: the first few of each, */
         vidc_seen[reg]++;                                         /* then non-zero changes */
@@ -408,9 +409,17 @@ void memc_write(uint32_t a)
     case 1: memc_vstart = v; break;
     case 2: memc_vend = v; break;
     case 4: case 5: case 6: sound_memc((a >> 17) & 7, v); break;   /* Sstart, SendN, Sptr */
-    default: break;                     /* Cinit, control register */
+    case 7: memc_control = a & 0x1FFF; break;   /* the control register: its value is address bits 0-12 */
+    default: break;                     /* Cinit */
     }
 }
+
+/* MEMC's control register: page size (bits 2-3: 32K), ROM speeds, DRAM
+ * refresh, video DMA (bit 10), sound DMA (bit 11), OS mode (12), as
+ * RISC OS 3.1 leaves it with sound on. Bit 11 stops and starts the sound
+ * DMA (sound.c); the rest change nothing here. Written directly, or with
+ * OS_UpdateMEMC (R0 the new bits, R1 which; R0 returns the old value). */
+uint32_t memc_control = 0xD0C;
 
 /* Horizontally, output pixel x of the window is raster pixel start + x
  * (pixels from the start of sync): where a standard mode's display starts,

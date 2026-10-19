@@ -382,14 +382,49 @@ static void os_crc(void)
 }
 
 /* Transient callbacks (OS_AddCallBack: R0 the routine, R1 its R12;
- * OS_RemoveCallBack: the same), run when a SWI returns to USR mode with
- * interrupts enabled - in SVC mode, interrupts disabled, returning with
- * MOV PC,R14 - the caller's registers kept */
+ * OS_RemoveCallBack: the same), run when a SWI or an interrupt returns to
+ * USR mode with interrupts enabled - in SVC mode, interrupts disabled,
+ * returning with MOV PC,R14 - the caller's registers kept (a ticker event
+ * that adds one, to do its work outside the interrupt, has it run as soon
+ * as the interrupt is over, whatever the program is doing) */
 #define MAXCALLBACK 16
 static uint32_t callback[MAXCALLBACK][2];
 static int ncallback;
 
+void run_callbacks(void)
+{
+    while (ncallback && (MODEBITS & 3) == 0 && !(MODEBITS & 0x08000000u)) {
+        uint32_t a = callback[0][0], r12 = callback[0][1];
+        memmove(callback, callback + 1, --ncallback * sizeof *callback);
+        uint32_t saved[16], f[4] = {NF, ZF, CF, VF}, snpc = npc;
+        memcpy(saved, R, sizeof saved);
+        ev("callback", "ii", a, r12);
+        R[12] = r12;
+        call_code(a, MODE_SVC | 0x08000000u, HANDLER_RET | MODE_SVC | 0x08000000u);
+        memcpy(R, saved, sizeof saved);
+        NF = f[0]; ZF = f[1]; CF = f[2]; VF = f[3];
+        npc = snpc;
+    }
+}
+
 static void swi_body(uint32_t n, uint32_t nextpc);
+
+/* The physical memory, as MEMC sees it (OS_ReadMemMapEntries): 128 pages
+ * of 32K. Screen memory is physical memory from 0 (video DMA starts
+ * there), the page at &78000 holds the OS's sound buffers, logical
+ * &1F00000 (sound.c's DMA), and the application slot takes the pages
+ * after those; the rest are unused, mapped past the sound page */
+static uint32_t page_logical(uint32_t page, uint32_t *ppl)
+{
+    uint32_t phys = page * 0x8000, first_app = (screen_size() + 0x7FFF) / 0x8000;
+    *ppl = 0;
+    if (phys == 0x78000) { *ppl = 1; return 0x1F00000; }
+    if (phys < screen_size()) return screen_base() + phys;
+    if (first_app <= 15) first_app = 16;
+    if (page >= first_app && LOAD + (page - first_app) * 0x8000 < ram_limit()) return LOAD + (page - first_app) * 0x8000;
+    *ppl = 3;
+    return 0x1F08000;
+}
 
 void swi(uint32_t n, uint32_t nextpc)
 {
@@ -408,18 +443,7 @@ void swi(uint32_t n, uint32_t nextpc)
             for (int k = 0; k < 9; k++) fprintf(stderr, " %02x", MEM[R[1] + k]);
         fputc('\n', stderr);
     }
-    while (ncallback && user && !(MODEBITS & 0x08000000u)) {
-        uint32_t a = callback[0][0], r12 = callback[0][1];
-        memmove(callback, callback + 1, --ncallback * sizeof *callback);
-        uint32_t saved[16], f[4] = {NF, ZF, CF, VF}, snpc = npc;
-        memcpy(saved, R, sizeof saved);
-        ev("callback", "ii", a, r12);
-        R[12] = r12;
-        call_code(a, MODE_SVC | 0x08000000u, HANDLER_RET | MODE_SVC | 0x08000000u);
-        memcpy(R, saved, sizeof saved);
-        NF = f[0]; ZF = f[1]; CF = f[2]; VF = f[3];
-        npc = snpc;
-    }
+    if (user) run_callbacks();
 }
 
 static void swi_body(uint32_t n, uint32_t nextpc)
@@ -496,6 +520,9 @@ static void swi_body(uint32_t n, uint32_t nextpc)
         ev("OS_ChangeEnvironment", "iiii", R[0], R[1], R[2], R[3]);
         if (R[0] <= 16) {
             uint32_t *e = env[R[0]], old[3] = {e[0], e[1], e[2]};
+            /* MemoryLimit (0) and ApplicationSpace (14) hold addresses: the
+               end of the application slot (the RAM limit), unless set */
+            if ((R[0] == 0 || R[0] == 14) && !old[0]) old[0] = ram_limit();
             for (int k = 0; k < 3; k++) if (R[1 + k]) e[k] = R[1 + k];
             R[1] = old[0]; R[2] = old[1]; R[3] = old[2];
         }
@@ -513,9 +540,25 @@ static void swi_body(uint32_t n, uint32_t nextpc)
             return;
         }
         break;
+    case 0x1A: {                                 /* OS_UpdateMEMC: R0 bits, R1 mask; R0 the old value */
+        uint32_t old = memc_control;
+        memc_control = (old & ~R[1]) | (R[0] & R[1] & 0x1FFF);
+        R[0] = old;
+        return;
+    }
     case 0x13: MODEBITS &= ~0x08000000u; return; /* OS_IntOn / OS_IntOff: the caller's I bit */
     case 0x14: MODEBITS |= 0x08000000u; return;
     case 0x51: R[0] = 0x8000; R[1] = 128; return;   /* OS_ReadMemMapInfo: 128 pages of 32K (4MB) */
+    case 0x52:                                   /* OS_ReadMemMapEntries: R0 entries {physical page, */
+        /* logical address, protection}, ending with -1 - or with any number
+           that isn't one of the 128 pages (Desktop Tracker passes a single
+           entry, on its stack, unterminated) */
+        for (uint32_t b = R[0]; RD32(b) < 128; b += 12) {
+            uint32_t ppl;
+            WR32(b + 4, page_logical(RD32(b), &ppl));
+            WR32(b + 8, ppl);
+        }
+        return;
     case 0x56: ev("OS_SetECFOrigin", "ii", R[0], R[1]); return;
     case 0x16: set_psr_mode((MODEBITS & ~3u) | 3); return;   /* OS_EnterOS: caller continues in SVC mode */
     case 0x2C: CF = rg_interactive ? escape_pressed : 0; return;   /* OS_ReadEscapeState */

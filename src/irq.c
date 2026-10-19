@@ -202,8 +202,27 @@ static void ticker_events(void)
     }
 }
 
+/* IOC timer 0 is the OS's centisecond ticker: counting down at 2MHz from
+ * 20000 (RISC OS's latch, &4E20), interrupting and reloading as it reaches
+ * zero. A program reads its count by writing the latch command (&320004C)
+ * and then &3200040 (low) and &3200044 (high): the time since the last
+ * tick, at a finer grain (Desktop Tracker times its music by it). Each
+ * tick also counts in RISC OS 3's zero page word at &A38, which such
+ * programs read alongside (their OS_Byte 129 says RISC OS 3) */
+#define ZP_CENTISECONDS 0xA38u
+static uint32_t centiseconds;
+void ioc_latch_timer0(void)
+{
+    uint64_t t = rg_interactive ? (display_ticks_ns() + CS_NS - next_tick_ns) / 500     /* (2MHz: 500ns) */
+                                : (icount + TICK_STEPS - next_tick) * 20000 / TICK_STEPS;
+    uint32_t count = t >= 20000 ? 0 : 20000 - (uint32_t)t;
+    MEM[IOC + 0x40] = (uint8_t)count;
+    MEM[IOC + 0x44] = (uint8_t)(count >> 8);
+}
+
 static void centisecond(void)
 {
+    WR32(ZP_CENTISECONDS, ++centiseconds);
     sound_dma_advance(10000);                    /* 1 cs of sound DMA */
     sound_tick();
     if (rg->centisecond) rg->centisecond();
@@ -343,6 +362,7 @@ void irq_point(void)
         rt_service(0);
         throttle();
         irq_next = icount + 20000;
+        run_callbacks();
         return;
     }
     if (icount >= rg_limit) finish("instruction limit");
@@ -362,6 +382,7 @@ void irq_point(void)
         uint32_t r[5] = {10, x, y, b, monotonic};
         call_vector(0x10, 5, r);
     }
+    run_callbacks();
     recompute_irq();
 }
 

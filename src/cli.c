@@ -429,7 +429,7 @@ int cli_command(const char *line, int x)
     }
     if ((p = word_at(s, "RMLoad")) || (p = word_at(s, "RMRun"))) {
         arg(&p, name, sizeof name);
-        if (!modules_rmload(name)) {
+        if (!modules_rmload(name, skip(p))) {
             fprintf(stderr, "*RMLoad: module file not configured %s\n", name);
             return cli_error(x);
         }
@@ -524,7 +524,7 @@ int cli_command(const char *line, int x)
             file_info(path, &load, &exec);
             if ((load >> 20) == 0xFFF && ((load >> 8) & 0xFFF) == 0xFF7) return print_file(path);
             if ((load >> 20) == 0xFFF && ((load >> 8) & 0xFFF) == 0xFFA) {
-                if (modules_rmload(f)) return 1;
+                if (modules_rmload(f, skip(p ? p : s))) return 1;
                 fprintf(stderr, "*RMRun: module file not configured %s\n", f);
                 return cli_error(x);
             }

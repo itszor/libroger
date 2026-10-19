@@ -38,6 +38,7 @@ static void slot_size(void)               /* Wimp_SlotSize: R0 current (-1 read)
         if (want > SLOT_MAX) want = SLOT_MAX;
         if (want > slot) memset(MEM + LOAD + slot, 0, want - slot);
         slot = want;
+        env[0][0] = env[14][0] = 0;              /* MemoryLimit and ApplicationSpace: the new end */
         ev("Wimp_SlotSize", "i", slot);
     }
     R[0] = slot; R[1] = slot; R[2] = SLOT_MAX - slot;

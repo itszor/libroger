@@ -70,6 +70,7 @@ extern int in_handler, interp_only, in_loader;
 extern uint32_t g_cur_pc;
 extern uint64_t interp_count, smc_count;
 void call_code(uint32_t addr, uint32_t mode, uint32_t r14);
+void run_callbacks(void);                 /* transient callbacks due, if in USR mode with IRQs on */
 void call_swi_code(uint32_t addr, uint32_t mode, uint32_t r14);   /* interruptible (a SWI handler) */
 void run_until(uint32_t stop);
 void interp_step(void);
@@ -162,6 +163,8 @@ void sound_dma_advance(uint32_t us);
 void sound_tick(void);                    /* every centisecond */
 int  sound_swi(uint32_t b);
 void sound_memc(int reg, uint32_t v);     /* MEMC sound DMA registers: 4 Sstart, 5 SendN, 6 Sptr */
+void sound_vidc(unsigned reg, uint32_t val);   /* VIDC1's sound registers, written directly */
+extern uint32_t memc_control;           /* MEMC's control register (bit 11: sound DMA on) */
 
 /* audio.c: host audio */
 int  audio_init_device(void);
@@ -218,7 +221,7 @@ void sprite_op(void);
 
 /* modules.c */
 void modules_load(void);
-int  modules_rmload(const char *name);   /* 0: not a configured module file */
+int  modules_rmload(const char *name, const char *args);   /* (args NULL: the configuration's) 0: not a configured module file */
 int  modules_rmkill(const char *title);
 void modules_rmclear(void);                 /* *RMClear: every module killed */
 int  modules_swi(uint32_t b, int x);

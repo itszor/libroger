@@ -95,7 +95,8 @@ controllers, below), `--joystick` and `--joystick=off`, `--fullscreen[=WxH@Hz]`,
 Determinism: headless runs (`--limit`) advance time by instruction count
 (a centisecond per 20000, a frame per 40000) and write the event log,
 VDU stream, screen memory and registers, so two builds of a game can be
-compared byte for byte.
+compared byte for byte. `ROGER_INTERPRET=1` interprets everything, to
+compare a translation's behaviour with the interpreter's.
 
 The emulated machine
 --------------------
@@ -194,7 +195,10 @@ Implemented:
 - sound: DMA at the configured rate with VIDC log samples and stereo
   positions; a program that drives the DMA itself (MEMC Sstart/SendN,
   the device 9 interrupt, the OS's buffers at &1F06000/&1F07000 as RISC
-  OS 3.1 maps them); a program's own Level 1 handler, or the OS's channel handler
+  OS 3.1 maps them - OS_ReadMemMapEntries finds that page, physical
+  &78000 - and VIDC1's sound frequency and stereo image registers once it
+  writes them); MEMC's control register (written directly or with
+  OS_UpdateMEMC: bit 11 stops and starts the sound DMA); a program's own Level 1 handler, or the OS's channel handler
   running voice generators (install, attach by number or name, Instantiate/
   Free, GateOn/Fill/Update/GateOff as SoundChannels 1.27 sequences them,
   durations - 0 leaves a playing note's alone, so a note can be re-pitched
@@ -236,14 +240,21 @@ Implemented:
   the text cursor), OS_Word (character definitions, palette, pointer - its shape, bounding
   box, and the mouse and pointer position, set and read - display
   start, the real-time clock: the host's, or fixed in headless runs),
-  OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB), OS_ReadSysInfo 2 (the
+  OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB) and OS_ReadMemMapEntries
+  (screen memory from physical 0, the sound page, the application slot), OS_ReadSysInfo 2 (the
   hardware: IOC/MEMC1/VIDC1, or a Risc PC's IOMD/VIDC20), OS_ServiceCall,
-  OS_ChangeEnvironment, OS_EnterOS, OS_ReadVduVariables,
+  OS_ChangeEnvironment (MemoryLimit and ApplicationSpace: the end of the
+  slot, as the C library's heap reads them), OS_EnterOS, OS_ReadVduVariables,
   OS_ReadModeVariable, OS_ReadMonotonicTime, conversions (numbers, and
   dates: OS_ConvertDateAndTime, OS_ConvertStandardDateAndTime), OS_CLI (logged),
   modules' SWI chunks, OS_Module claims and look-ups by name (18),
   OS_CheckModeValid, the undefined instruction trap (OS_ChangeEnvironment
-  1's handler: an ARM2's answer to an ARM3 cache-controller MRC),
+  1's handler: an ARM2's answer to an ARM3 cache-controller MRC; or a
+  branch the program put in the vector at &4 itself),
+  transient callbacks (OS_AddCallBack) as a SWI or an interrupt returns
+  to USR mode, IOC timer 0 as the centisecond ticker (its count, latched by
+  &320004C) and RISC OS 3's centisecond counter at &A38, modules'
+  parameters (R10) at initialisation (roger_module.args),
   OS_SWINumberFromString (a few names programs probe for); key transition
   events (event 11, low-level key numbers, once a frame); Hourglass
   (nothing shown); OS_SpriteOp select, read sprite information and area

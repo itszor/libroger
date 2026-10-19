@@ -49,6 +49,8 @@ struct roger_module {
     const char *path;                     /* host path, relative to the working directory */
     const struct roger_image *image;
     int on_demand;
+    const char *args;                     /* its parameters, as *RMLoad or *RMRun gives them after
+                                             the name (R10 for its initialisation; NULL: none) */
 };
 
 /* An image that copies itself and runs from the copy: while `image` is the

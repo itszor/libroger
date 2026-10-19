@@ -150,7 +150,7 @@ static void module_kill(int k)
     while (mods[k].m) inc_kill(k, mods[k].ninc - 1);
 }
 
-static int module_load(const struct roger_module *m)
+static int module_load(const struct roger_module *m, const char *args)
 {
     uint32_t base = m->image->base;
     FILE *f = fopen(m->path, "rb");
@@ -185,7 +185,9 @@ static int module_load(const struct roger_module *m)
     WR32(pw, 0);
     uint32_t init = RD32(base + 4);
     uint32_t e;
-    if (init && (e = module_entry(base + init, 0, pw)))
+    /* R10: the parameters (the environment string), as RISC OS gives them */
+    if (!args) args = m->args ? m->args : "";
+    if (init && (e = module_entry(base + init, roger_scratch(args), pw)))
         fprintf(stderr, "module %s: initialisation returned an error: %s\n", m->path, error_text(e));
     return 1;
 }
@@ -201,19 +203,20 @@ void modules_load(void)
         if (end > rma_next) rma_next = end;
     }
     for (const struct roger_module *m = rg->modules; m->path; m++)
-        if (!m->on_demand) module_load(m);
+        if (!m->on_demand) module_load(m, NULL);
 }
 
-/* *RMLoad / *RMRun / OS_Module 0, 1: a RISC OS filename; 0 if no
- * configured module is that file */
-int modules_rmload(const char *name)
+/* *RMLoad / *RMRun / OS_Module 0, 1: a RISC OS filename and the
+ * parameters after it (NULL: the configuration's); 0 if no configured
+ * module is that file */
+int modules_rmload(const char *name, const char *args)
 {
     char path[2048];
     struct stat a, b;
     if (!rg->modules || !hostpath(name, path) || stat(path, &b) != 0) return 0;
     for (const struct roger_module *m = rg->modules; m->path; m++)
         if (stat(m->path, &a) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
-            return module_load(m);
+            return module_load(m, args);
     return 0;
 }
 
@@ -438,7 +441,10 @@ int modules_swi(uint32_t b, int x)
         if (R[0] == 13) { R[2] = rma_extend(R[2], (int32_t)R[3]); return 1; }   /* extend: R2 by R3 */
         if (R[0] <= 1) {                                 /* run / load: R1 filename */
             cstr(R[1], s, 1);
-            if (!modules_rmload(s)) { if (x) VF = 1; else finish("OS_Module: module file not configured"); }
+            char *params = s + strcspn(s, " ");          /* (the filename, then its parameters) */
+            if (*params) *params++ = 0;
+            while (*params == ' ') params++;
+            if (!modules_rmload(s, params)) { if (x) VF = 1; else finish("OS_Module: module file not configured"); }
         } else if (R[0] == 4) {                          /* delete: R1 title (%postfix: the incarnation) */
             int k, i;
             cstr(R[1], s, 1);

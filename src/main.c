@@ -343,6 +343,9 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
     disc_init();
     modules_init();
+    /* ROGER_INTERPRET=1: interpret everything (debugging: a translation's
+       behaviour against the interpreter's) */
+    if (getenv("ROGER_INTERPRET")) interp_only = 1;
     modules_load();
     if (cfg->init) cfg->init();
     R[13] = cfg->stack ? cfg->stack : ram_limit(); R[14] = RETURN_TO_OS; R[12] = 0;

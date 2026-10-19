@@ -98,6 +98,8 @@ void trace_insn(uint32_t a);
  * mode, with banked R13/R14 (and R8-R12 in FIQ) - see set_psr_mode(). */
 extern uint32_t MODEBITS;
 void set_psr_mode(uint32_t m);           /* m: new I/F + mode bits; banks registers */
+uint32_t user_reg(int k);                /* USR mode's R[k], from any mode (LDM/STM ^) */
+void set_user_reg(int k, uint32_t v);
 #define PSR()      ((NF << 31) | (ZF << 30) | (CF << 29) | (VF << 28) | MODEBITS)
 #define SETNZ(r)   do { NF = (r) >> 31; ZF = (r) == 0; } while (0)
 #define SETPSR(v)  do { uint32_t _p = (v); NF = _p >> 31; ZF = (_p >> 30) & 1; \
@@ -145,6 +147,7 @@ static inline uint32_t RD8(uint32_t a) { COV_RD(a & 0x3FFFFFF, 1); return MEM[a 
         (codemap[((a) - img_base) >> 5] >> ((((a) - img_base) >> 2) & 7) & 1)) smc_write(a); } while (0)
 void vidc_write(uint32_t v);           /* video.c: physical VIDC register writes, &3400000 */
 void memc_write(uint32_t addr);        /* video.c: MEMC registers, &3600000 (address only) */
+void ioc_latch_timer0(void);           /* irq.c: IOC timer 0's latch command, &320004C */
 static inline void WR32(uint32_t a, uint32_t v)
 {
     /* VIDC occupies &3400000-&35FFFFF: the register is in the data, the
@@ -152,6 +155,7 @@ static inline void WR32(uint32_t a, uint32_t v)
     if ((a & 0x3E00000) == 0x3400000) { vidc_write(v); return; }
     if ((a & 0x3E00000) == 0x3600000) { memc_write(a); return; }
     a &= 0x3FFFFFC;
+    if (a == 0x320004C) ioc_latch_timer0();
     COV_WR(a, 4);
     CODECHK(a);
     *(uint32_t *)(MEM + a) = v;
@@ -160,6 +164,7 @@ static inline void WR8(uint32_t a, uint32_t v)
 {
     a &= 0x3FFFFFF;
     if ((a & 0x3E00000) == 0x3600000) { memc_write(a); return; }
+    if ((a & ~3u) == 0x320004C) ioc_latch_timer0();
     COV_WR(a, 1);
     CODECHK(a & ~3u);
     MEM[a] = (uint8_t)v;
@@ -272,6 +277,7 @@ static inline uint32_t SHRC(uint32_t v, int typ, uint32_t amt) { uint32_t c; shr
  * rely on it (e.g. block copies of halfword-aligned data). */
 #define LDM_BEGIN(start)  do { uint32_t _m = (start) & ~3u;
 #define LDM_R(k)          R[k] = RD32(_m); _m += 4;
+#define LDM_RU(k)         set_user_reg(k, RD32(_m)); _m += 4;   /* ^: the user bank */
 #define LDM_PC(s)         { uint32_t _v = RD32(_m); _m += 4; npc = _v & 0x3FFFFFC; if (s) SETPSR(_v); }
 #define STM_BEGIN(start)  do { uint32_t _m = (start);
 #define STM_V(v)          WR32(_m, (v)); _m += 4;

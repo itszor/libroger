@@ -46,6 +46,25 @@ void set_psr_mode(uint32_t m)
     MODEBITS = m & 0x0C000003;
 }
 
+/* The USR mode registers, from a privileged mode (LDM/STM with the S bit
+ * and no PC: "^" transfers the user bank): R13-R14 banked in every other
+ * mode, R8-R12 in FIQ mode too */
+uint32_t user_reg(int k)
+{
+    uint32_t m = MODEBITS & 3;
+    if (!m || k < 8 || k == 15 || (k < 13 && m != 1)) return R[k];
+    return k == 13 ? bank_r13[0] : k == 14 ? bank_r14[0] : bank_r8[k - 8];
+}
+
+void set_user_reg(int k, uint32_t v)
+{
+    uint32_t m = MODEBITS & 3;
+    if (!m || k < 8 || k == 15 || (k < 13 && m != 1)) R[k] = v;
+    else if (k == 13) bank_r13[0] = v;
+    else if (k == 14) bank_r14[0] = v;
+    else bank_r8[k - 8] = v;
+}
+
 /* ---------------------------------------------------------------- images
  * The program image (where &8000-based code is dispatched; replaced when a
  * chain-loaded program takes over) plus any others, e.g. modules in the
@@ -315,6 +334,20 @@ void bad_entry(uint32_t fn, uint32_t e)
  * handler, the run stops. */
 void undefined_insn(uint32_t a, uint32_t w)
 {
+    /* the ARM's undefined instruction vector, &4: RISC OS's leads to the
+       OS_ChangeEnvironment 1 handler; a program may put its own branch
+       there (Desktop Tracker does, to get from IRQ to SVC mode) */
+    uint32_t v = RD32(4), to = 0;
+    if ((v & 0xFF000000u) == 0xEA000000u) to = (12 + ((int32_t)(v << 8) >> 6)) & 0x3FFFFFC;
+    else if ((v & 0xFFFFF000u) == 0xE59FF000u) to = RD32(12 + (v & 0xFFF)) & 0x3FFFFFC;
+    if (to) {
+        uint32_t ret = ((a + 4) & 0x3FFFFFC) | PSR();
+        ev("undefined_instruction", "ii", a, w);
+        set_psr_mode(0x08000000u | 3);
+        R[14] = ret;
+        npc = to;
+        return;
+    }
     if (env[1][0]) {
         uint32_t ret = ((a + 4) & 0x3FFFFFC) | PSR();
         ev("undefined_instruction", "ii", a, w);
@@ -521,6 +554,9 @@ static int exec_word(uint32_t pc, uint32_t i)
         if (opc >= 8 && opc <= 11) return 0;
         if (rd == 15) { setpc_i(res, s); return 1; }
         R[rd] = res;
+    } else if (op == 3 && (i & 0x10)) {                       /* the undefined instruction space */
+        undefined_insn(pc, i);
+        return 1;
     } else if (op <= 3) {                                      /* LDR/STR */
         uint32_t p = (i >> 24) & 1, u = (i >> 23) & 1, bb = (i >> 22) & 1, w = (i >> 21) & 1,
                  l = (i >> 20) & 1, rn = (i >> 16) & 15, rd = (i >> 12) & 15, off, dummy;
@@ -543,16 +579,18 @@ static int exec_word(uint32_t pc, uint32_t i)
         else { start = base - 4 * n + (p ? 0 : 4); wbv = base - 4 * n; }
         uint32_t a = start & ~3u;                              /* LDM/STM ignore address bits 0-1 */
         int jumped = 0;
+        int user = s && !(l && (i & 0x8000));                  /* ^ without a PC load: the user bank */
         if (l) {
             if (w && rn != 15) R[rn] = wbv;
             for (int k = 0; k < 16; k++) if (i & (1 << k)) {
                 uint32_t v2 = RD32(a);
-                if (k == 15) { setpc_i(v2, s); jumped = 1; } else R[k] = v2;
+                if (k == 15) { setpc_i(v2, s); jumped = 1; }
+                else if (user) set_user_reg(k, v2); else R[k] = v2;
                 a += 4;
             }
         } else {
             for (int k = 0; k < 16; k++) if (i & (1 << k)) {
-                WR32(a, k == 15 ? ((pc + 12) & 0x3FFFFFC) | PSR() : R[k]);
+                WR32(a, k == 15 ? ((pc + 12) & 0x3FFFFFC) | PSR() : user ? user_reg(k) : R[k]);
                 a += 4;
             }
             if (w && rn != 15) R[rn] = wbv;

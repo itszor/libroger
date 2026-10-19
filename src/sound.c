@@ -249,11 +249,16 @@ int sound_channel_voice(int chan, const char *voice)
 
 /* VIDC log bytes (snd_nchan interleaved channels) at buf to the host:
  * 16-bit stereo */
-static void sound_out(uint32_t buf, uint32_t len)
+static void linear_init(void)
 {
     if (!snd_linear[127])
         for (int m = 0; m < 128; m++)                       /* VIDC log: 3-bit chord, 4-bit step */
             snd_linear[m] = (int16_t)((((2 * (m & 15) + 33) << (m >> 4)) - 33) * 4);
+}
+
+static void sound_out(uint32_t buf, uint32_t len)
+{
+    linear_init();
     static int16_t out[2 * 2048];
     uint32_t frames = len / snd_nchan;
     if (frames > 2048) frames = 2048;
@@ -272,6 +277,43 @@ static void sound_out(uint32_t buf, uint32_t len)
         out[2 * f + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
     }
     roger_audio_out(out, (int)frames, (int)(1000000 / snd_period));
+}
+
+/* VIDC1's own sound registers, for a program that drives the sound DMA
+ * itself (below) and programs VIDC as SoundDMA would: the sound frequency
+ * register (a byte every SFR + 2 us) and the eight stereo image registers,
+ * applied to the bytes in turn (1 left ... 4 centre ... 7 right). Until it
+ * writes the frequency register, Sound_Configure's settings apply. */
+static uint32_t vidc_sfr;
+static int vidc_sir[8] = {4, 4, 4, 4, 4, 4, 4, 4};
+
+void sound_vidc(unsigned reg, uint32_t val)
+{
+    if (reg == 48) vidc_sfr = (val & 0xFF) + 2;                    /* &C0: the byte period, us */
+    else if (reg >= 24 && reg <= 31) vidc_sir[(reg - 24 + 7) & 7] = val & 7;   /* &64 is image 0, &60 image 7 */
+}
+
+static void sound_out_vidc(uint32_t buf, uint32_t len)
+{
+    linear_init();
+    static int16_t out[2 * 2048];
+    uint32_t frames = len / 8;
+    if (frames > 2048) frames = 2048;
+    for (uint32_t f = 0; f < frames; f++) {
+        int l = 0, r = 0;
+        for (int c = 0; c < 8; c++) {
+            uint8_t b = MEM[buf + f * 8 + c];
+            int v = snd_linear[b >> 1], sir = vidc_sir[c] ? vidc_sir[c] : 4;
+            if (b & 1) v = -v;
+            int pan = (sir - 4) * 127 / 3;
+            l += v * (pan <= 0 ? 127 : 127 - pan) / 127;
+            r += v * (pan >= 0 ? 127 : 127 + pan) / 127;
+        }
+        l /= 8; r /= 8;
+        out[2 * f] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
+        out[2 * f + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
+    }
+    roger_audio_out(out, (int)frames, (int)(1000000 / (8 * vidc_sfr)));
 }
 
 static void sound_dma_fill(void)
@@ -328,7 +370,7 @@ static uint32_t level0_len(void)              /* the current buffer's length (Se
 static void sound_level0(void)
 {
     uint32_t len = level0_len(), a = sound_phys(cur_start);
-    if (len && a && snd_enabled == 2) sound_out(a, len);
+    if (len && a && snd_enabled == 2) { if (vidc_sfr) sound_out_vidc(a, len); else sound_out(a, len); }
     cur_start = memc_sstart; cur_end = memc_sendn;
     irq_sound();
 }
@@ -336,9 +378,11 @@ static void sound_level0(void)
 /* Advance the sound DMA clock by `us` of emulated time. */
 void sound_dma_advance(uint32_t us)
 {
+    if (!(memc_control & 0x800)) { snd_acc_us = 0; return; }   /* MEMC's sound DMA off */
     for (;;) {
         int level0 = irq_sound_claimed();
-        uint64_t buf_us = level0 ? (uint64_t)(level0_len() / snd_nchan) * snd_period
+        uint64_t buf_us = level0 ? (vidc_sfr ? (uint64_t)level0_len() * vidc_sfr
+                                             : (uint64_t)(level0_len() / snd_nchan) * snd_period)
                                  : (uint64_t)snd_samples * snd_period;
         if (!buf_us) buf_us = (uint64_t)snd_samples * snd_period;
         if (!buf_us) return;
