@@ -448,7 +448,11 @@ static void control(int chan, int32_t amp, uint32_t pitch, uint32_t dur)
     int logamp;
     if (amp >= 0x100 && amp <= 0x1FF) logamp = amp & 0xFF;
     else if (amp == 0) logamp = 0;
-    else if (amp < 0 && amp >= -15) logamp = 0x7F ^ (((amp - 1) & 15) << 2);
+    /* a BBC amplitude, -15 to -1 - or below, taken by its low four bits as
+       here: the sound still starts (Gods' intro starts its tracker voice
+       with -21; how RISC OS treats these isn't checked against its
+       sources) */
+    else if (amp < 0) logamp = 0x7F ^ (((amp - 1) & 15) << 2);
     else return;
     MEM[sccb] = (uint8_t)(logamp & 0x7F);
     MEM[sccb + 1] = snd_attached[c];
