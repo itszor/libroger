@@ -45,6 +45,7 @@ static uint32_t upload_size;
 static SDL_GPUSampler *samplers[2][4][2];     /* [linear][wrap][mipmap] */
 static uint8_t need_mips[5][MAXPASS];         /* [texkind][index] */
 static uint32_t frame;
+static float aspect;                          /* the picture's shape (width / height) */
 
 /* ---------------------------------------------------------------- resources */
 static SDL_GPUTextureFormat gpu_format(int f)
@@ -323,7 +324,7 @@ static void fill_uniforms(int p, uint8_t *u, int vw, int vh)
         case RS_U_VIEWPORT_SIZE: put_vec4(d, (float)vw, (float)vh); break;
         case RS_U_FRAME_COUNT: put_scalar(d, x->type, ps->frame_count_mod ? frame % ps->frame_count_mod : frame); break;
         case RS_U_FRAME_DIRECTION: case RS_U_ONE: put_scalar(d, x->type, 1); break;
-        case RS_U_ASPECT: put_scalar(d, x->type, mode_aspect(cur_mode())); break;
+        case RS_U_ASPECT: put_scalar(d, x->type, aspect); break;
         case RS_U_FPS: put_scalar(d, x->type, 50); break;
         case RS_U_FRAME_TIME: put_scalar(d, x->type, 20000); break;
         case RS_U_TEX_SIZE: { struct target *t = tex_of(x->tex); put_vec4(d, (float)t->w, (float)t->h); break; }
@@ -352,11 +353,12 @@ static void bind_samplers(SDL_GPURenderPass *rp, const struct rs_sampler *s, int
     else SDL_BindGPUFragmentSamplers(rp, 0, b, (Uint32)n);
 }
 
-/* Run the chain over the game's screen (w x h RGBA8 pixels) for a viewport
- * of vw x vh output pixels; the result to draw, or NULL. */
-SDL_Texture *shader_run(const uint32_t *pix, int w, int h, int vw, int vh)
+/* Run the chain over the game's screen (w x h RGBA8 pixels, shown at shape
+ * asp) for a viewport of vw x vh output pixels; the result to draw, or NULL. */
+SDL_Texture *shader_run(const uint32_t *pix, int w, int h, int vw, int vh, float asp)
 {
     if (!ch) return NULL;
+    aspect = asp;
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
     if (!cmd) return NULL;
     /* sizes, and the textures they need */

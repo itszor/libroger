@@ -236,6 +236,9 @@ static void usage(const char *prog)
            "  --windowed-games  ...the program's own screen in the window, not fullscreen\n"
            "  --no-title        skip loader programs\n"
            "  --scale=N --fullscreen[=WxH@Hz] --list-modes\n"
+           "  --crop[=FIRST-LAST|FILE]  show only the rows the game's picture is on, as its\n"
+           "                    PROGRAM.ini's [crop] says (or FILE's, or rows FIRST-LAST), at\n"
+           "                    least enough to fill the monitor's shape: less letterboxing\n"
            "  --shader=NAME     display shader (F10 / Shift+F10 cycle; --crt = --shader=crt)\n"
            "  --list-shaders\n"
            "  --no-sound --wav=FILE\n"
@@ -258,7 +261,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     const char *image = NULL;
     int scale = 4, headless = 0, no_sound = 0, no_title = 0;
     const char *pad_opt = NULL, *pad2_opt = NULL;
-    const char *fs = NULL, *wavpath = NULL, *shader = NULL;
+    const char *fs = NULL, *wavpath = NULL, *shader = NULL, *crop = NULL;
     float mips_opt = -1, sens_opt = -1, hmips_opt = -1;
     rg_appdir = cfg->appdir ? cfg->appdir : ".";
     rg_floppy = cfg->floppy;
@@ -295,6 +298,8 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
         else if (!strncmp(argv[k], "--fullscreen=", 13)) fs = argv[k] + 13;
         else if (!strcmp(argv[k], "--list-modes")) { display_list_modes(); exit(0); }
         else if (!strncmp(argv[k], "--scale=", 8)) scale = atoi(argv[k] + 8);
+        else if (!strcmp(argv[k], "--crop")) crop = "";
+        else if (!strncmp(argv[k], "--crop=", 7)) crop = argv[k] + 7;
         else if (!strncmp(argv[k], "--script=", 9)) parse_script(argv[k] + 9);
         else if (!strncmp(argv[k], "--app=", 6)) rg_appdir = argv[k] + 6;
         else if (!strncmp(argv[k], "--out=", 6)) outprefix = argv[k] + 6;
@@ -321,6 +326,7 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     if (!evlog) { perror(fn); exit(1); }
     if (rg_interactive) {
         if (!display_init(scale, fs, shader)) exit(1);
+        if (crop && !display_set_crop(*crop ? crop : NULL, argv[0])) exit(1);
         if (!no_sound && !wavpath) audio_init_device();
         rg_t0_ns = display_ticks_ns();
         irq_start_clock(rg_t0_ns);

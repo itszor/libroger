@@ -6,9 +6,11 @@
  * size on a Risc PC), coloured through VIDC's palette (vidc_rgb()) or, at
  * 16 and 32 bits per pixel, directly (then through VIDC20's gamma tables). Keys are tracked by RISC OS internal key
  * number (INKEY -(n+1)) and typed characters go to a small key buffer.
+ * With --crop only the rows the game's picture is on are shown (below).
  */
 #include <SDL3/SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "internal.h"
 
@@ -27,7 +29,10 @@ static int kbuf[64], khead, ktail;
 static SDL_DisplayMode fs_mode;                 /* exclusive fullscreen mode, if chosen */
 static int fs_exclusive, fullscreen;
 #define LH 768
-static int lw = 1024;                           /* logical size: LH high, the mode's shape */
+static int lw = 1024;                           /* logical size: LH for the whole frame's height, */
+static int lh = LH;                             /* the mode's shape; lh for the rows shown */
+static float crop_y0;                           /* logical y of the first row shown (--crop) */
+static int shown_rows = 256;                    /* the frame's rows shown */
 /* The game's pointer hit point may sit some OS units below the host
  * pointer's (roger_config.pointer_y_offset). */
 #define POINTER_Y_OFFSET (desktop_visible() ? 0 : rg->pointer_y_offset)   /* (not the desktop's) */
@@ -52,7 +57,7 @@ void display_set_mouse(int x, int y)
     if (win && SDL_GetMouseFocus() == win) {
         float wx, wy;
         SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * lw / 1280,
-                                      (1023 + POINTER_Y_OFFSET - y + 0.5f) * LH / 1024, &wx, &wy);
+                                      (1023 + POINTER_Y_OFFSET - y + 0.5f) * LH / 1024 - crop_y0, &wx, &wy);
         SDL_WarpMouseInWindow(win, wx, wy);
     }
 }
@@ -62,7 +67,8 @@ void display_set_mouse(int x, int y)
 void display_inject_tap(int px, int py)
 {
     float wx, wy;
-    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * lw / cur_mode()->width, (py + 0.5f) * LH / cur_mode()->height, &wx, &wy);
+    SDL_RenderCoordinatesToWindow(ren, (px + 0.5f) * lw / cur_mode()->width,
+                                  (py + 0.5f) * LH / cur_mode()->height - crop_y0, &wx, &wy);
     SDL_Event e;
     SDL_zero(e);
     e.type = SDL_EVENT_MOUSE_MOTION; e.motion.windowID = SDL_GetWindowID(win); e.motion.x = wx; e.motion.y = wy;
@@ -382,18 +388,140 @@ void display_set_fullscreen(int on)
     apply_fullscreen();
 }
 
+/* --crop: of a frame the game shows in only some of its rows (Lemmings'
+ * 208 of 256 in a level, with black above and below), only those rows are
+ * shown, at the same pixel shape, so that on a widescreen monitor the
+ * picture is larger and letterboxed less. The rows are cut from the frame
+ * before it is drawn or goes through a display shader, which still sees a
+ * texel a pixel. At least enough rows to fill the monitor's shape are shown
+ * (on a 16:9 one 192 of 256 lines of 4:3), centred on the rows asked for
+ * where they can be - uneven bars are trimmed alike - so that what the
+ * monitor would show as bars anyway is the frame's own.
+ *
+ * The rows are fixed, never measured from the frames: --crop=FIRST-LAST,
+ * or the game's own settings, <program>.ini (--crop=FILE: another), whose
+ * [crop] section gives them to start with (rows = FIRST-LAST) and from
+ * when some code first runs (ADDR = FIRST-LAST, ADDR in hex: an execution
+ * gate, cpu.c) - a splash screen's rows, say, then the game's for good
+ * once its own code starts. */
+static int crop_on, crop_first = -1, crop_last;   /* the rows asked for (crop_first -1: all) */
+static int crop_top, crop_rows;                   /* the rows shown (crop_rows 0: all) */
+#define MAXCROPGATES 32
+static struct { uint32_t a; int first, last; } crop_gates[MAXCROPGATES];
+static int ncrop_gates;
+
+static void crop_gate(uint32_t a)
+{
+    for (int k = 0; k < ncrop_gates; k++)
+        if (crop_gates[k].a == a) {
+            crop_first = crop_gates[k].first; crop_last = crop_gates[k].last;
+            if (crop_first < 0) SDL_Log("crop: from &%X, all rows", a);
+            else SDL_Log("crop: from &%X, rows %d-%d", a, crop_first, crop_last);
+        }
+}
+
+/* "FIRST-LAST", or "all" (first -1); 0 if it's neither */
+static int crop_spec(const char *s, int *first, int *last)
+{
+    char c;
+    if (!SDL_strcasecmp(s, "all")) { *first = -1; *last = 0; return 1; }
+    return sscanf(s, "%d-%d%c", first, last, &c) == 2 && *first >= 0 && *last >= *first;
+}
+
+/* the [crop] section of an .ini file; 0 if it has lines it can't take */
+static int crop_ini(const char *path, FILE *f)
+{
+    char line[256];
+    int n = 0, ok = 1, in = 0;
+    while (fgets(line, sizeof line, f)) {
+        n++;
+        line[strcspn(line, ";#\r\n")] = 0;              /* (comments) */
+        char key[64], val[64], *p = line;
+        int first, last;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) continue;
+        if (*p == '[') { in = !SDL_strncasecmp(p, "[crop]", 6); continue; }
+        if (!in) continue;
+        if (sscanf(p, "%63[^= \t] = %63s", key, val) == 2 && crop_spec(val, &first, &last)) {
+            if (!SDL_strcasecmp(key, "rows")) { crop_first = first; crop_last = last; continue; }
+            char *e;
+            uint32_t a = (uint32_t)strtoul(key + (key[0] == '&'), &e, 16);
+            if (!*e && e > key + (key[0] == '&') && ncrop_gates < MAXCROPGATES) {
+                crop_gates[ncrop_gates].a = a; crop_gates[ncrop_gates].first = first;
+                crop_gates[ncrop_gates++].last = last;
+                continue;
+            }
+        }
+        fprintf(stderr, "%s:%d: not a crop setting (rows = FIRST-LAST, ADDR = FIRST-LAST): %s\n", path, n, p);
+        ok = 0;
+    }
+    return ok;
+}
+
+int display_set_crop(const char *spec, const char *program)
+{
+    char path[2048];
+    crop_on = 1;
+    if (spec && crop_spec(spec, &crop_first, &crop_last)) return 1;
+    snprintf(path, sizeof path, "%s%s", spec ? spec : program, spec ? "" : ".ini");
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        if (spec) { perror(path); return 0; }
+        fprintf(stderr, "--crop: no %s (its [crop] rows), so nothing is cropped\n", path);
+        return 1;
+    }
+    int ok = crop_ini(path, f);
+    fclose(f);
+    for (int k = 0; k < ncrop_gates; k++)
+        if (!cpu_gate(crop_gates[k].a, crop_gate))
+            fprintf(stderr, "%s: can't watch for &%X\n", path, crop_gates[k].a);
+    return ok;
+}
+
+/* the shape (width / height) of the screen the window is shown on */
+static float screen_shape(void)
+{
+    if (fs_exclusive) return (float)fs_mode.w / fs_mode.h;
+    const SDL_DisplayMode *d = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(win));
+    return d && d->h ? (float)d->w / d->h : 16.0f / 9;
+}
+
+/* the rows to show of a frame height rows high, at the shape aspect for
+ * all of them: those asked for, and as few more as fill the screen */
+static void crop_frame(int height, float aspect)
+{
+    int first = crop_first, last = crop_last < height ? crop_last : height - 1;
+    if (first < 0 || first > last) { crop_rows = 0; return; }
+    int n = last - first + 1, fill = (int)(height * aspect / screen_shape() + 0.5f);
+    int rows = n > fill ? n : fill > height ? height : fill;
+    int top = first - (rows - n) / 2;
+    crop_top = top < 0 ? 0 : top > height - rows ? height - rows : top;
+    crop_rows = rows;
+}
+
 /* Show a frame of host colours (&RRGGBB) at the shape given (display
  * width / height), letterboxed: the game's screen */
 void display_present_rgb(const uint32_t *rgb, int width, int height, float aspect)
 {
-    int want = (int)(LH * aspect + 0.5f);
+    int full = height;
+    crop_y0 = 0;
+    if (crop_on) {
+        crop_frame(height, aspect);
+        if (crop_rows) {
+            rgb += (size_t)crop_top * width;
+            height = crop_rows;
+            crop_y0 = (float)LH * crop_top / full;
+        }
+    }
+    shown_rows = height;
+    int want = (int)(LH * aspect + 0.5f), want_h = (int)((float)LH * height / full + 0.5f);
     if (desk) { desk = 0; lw = 0; }              /* back from the desktop */
-    if (want != lw) {                            /* the shape changed */
-        lw = want;
-        SDL_SetRenderLogicalPresentation(ren, lw, LH, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    if (want != lw || want_h != lh) {            /* the shape changed */
+        lw = want; lh = want_h;
+        SDL_SetRenderLogicalPresentation(ren, lw, lh, SDL_LOGICAL_PRESENTATION_LETTERBOX);
         int ww, wh;
         if (!fullscreen && SDL_GetWindowSize(win, &ww, &wh))
-            SDL_SetWindowSize(win, wh * lw / LH, wh);
+            SDL_SetWindowSize(win, wh * lw / lh, wh);
     }
     if (!upload(rgb, width, height)) return;
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
@@ -413,7 +541,8 @@ void display_present_rgb(const uint32_t *rgb, int width, int height, float aspec
         SDL_FRect vp;
         SDL_GetRenderLogicalPresentationRect(ren, &vp);
         if (shader_pix && vp.w >= 1 && vp.h >= 1)
-            shaded = shader_run(shader_pix, width, height, (int)(vp.w + 0.5f), (int)(vp.h + 0.5f));
+            shaded = shader_run(shader_pix, width, height, (int)(vp.w + 0.5f), (int)(vp.h + 0.5f),
+                                aspect * full / height);
     }
     SDL_RenderTexture(ren, shaded ? shaded : tex, NULL, NULL);
     if (shader_capture[0]) {
@@ -463,7 +592,7 @@ static void update_cursor(void)
     float sx = 1, sy = 1, density = SDL_GetWindowPixelDensity(win);
     SDL_FRect vp;
     if (!desk && SDL_GetRenderLogicalPresentationRect(ren, &vp) && vp.w >= 1 && vp.h >= 1) {
-        sx = vp.w / cur_mode()->width; sy = vp.h / cur_mode()->height;
+        sx = vp.w / cur_mode()->width; sy = vp.h / shown_rows;
     }
     if (density > 0) { sx /= density; sy /= density; }
     if (sx < 1) sx = 1;
@@ -576,9 +705,10 @@ void display_poll(void)
                 if (desk) {                             /* the desktop: a pixel is 2x2 OS units */
                     mouse_x = (int)x * 2;
                     mouse_y = (tex_h - 1 - (int)y) * 2;
-                } else {
+                } else {                                /* (within the rows shown) */
+                    y = y < 0 ? 0 : y > lh - 0.01f ? lh - 0.01f : y;
                     mouse_x = (int)(x * 1280 / lw);
-                    mouse_y = 1023 + POINTER_Y_OFFSET - (int)(y * 1024 / LH);
+                    mouse_y = 1023 + POINTER_Y_OFFSET - (int)((y + crop_y0) * 1024 / LH);
                 }
             }
             int mw = desk ? tex_w * 2 : 1280, mh = desk ? tex_h * 2 : 1024;

@@ -79,6 +79,7 @@ void interp_step(void);
 void cpu_add_image(const struct roger_image *img);    /* dispatched wherever it lies (modules) */
 void cpu_remove_image(const struct roger_image *img);
 int  cpu_translated(uint32_t a);
+int  cpu_gate(uint32_t a, void (*fn)(uint32_t a));   /* call fn the first time a runs: 0 if it can't */
 void cpu_report_state(const char *why);
 void cpu_dump_pchist(void);
 void cpu_report_interp(void);
@@ -336,6 +337,7 @@ void desktop_outline(const struct win *w, int32_t *o);   /* its visible area and
 
 /* host.c: the SDL front end */
 int  display_init(int scale, const char *fullscreen, const char *shader);   /* fullscreen: NULL, "" or "WxH[@Hz]" */
+int  display_set_crop(const char *spec, const char *program);   /* --crop[=FIRST-LAST|FILE]: 0 if bad */
 
 /* shader.c: display shader chains on the GPU renderer's device */
 struct SDL_Renderer;
@@ -345,7 +347,7 @@ int  shader_count(void);
 const char *shader_name(int i);
 int  shader_find(const char *name);           /* -1 if none */
 int  shader_select(int i);                    /* -1: none; 0 if it failed */
-struct SDL_Texture *shader_run(const uint32_t *rgba, int w, int h, int vw, int vh);
+struct SDL_Texture *shader_run(const uint32_t *rgba, int w, int h, int vw, int vh, float aspect);
 void shader_list(void);                       /* --list-shaders */
 void display_toggle_fullscreen(void);
 void display_cycle_shader(int dir);       /* F10 / Shift+F10 */

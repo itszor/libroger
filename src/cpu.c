@@ -222,6 +222,38 @@ void cpu_log_gap(uint32_t a)
             a, (unsigned long long)icount, R[14], g_cur_pc);
 }
 
+/* Execution gates: code addresses whose first execution the runtime acts
+ * on (--crop's, host.c). An armed gate's word is marked dirty, so that
+ * translated code leaves through the dispatcher there, as at self-modified
+ * code; the gate then fires once and is gone. At a word that isn't an entry
+ * of the translation, the code from there is interpreted on until it
+ * reaches one. A store to the word (self-modification) disarms its gate. */
+#define MAXGATES 64
+static struct { uint32_t a; void (*fn)(uint32_t); } gates[MAXGATES];
+static int ngates;
+
+int cpu_gate(uint32_t a, void (*fn)(uint32_t))
+{
+    a &= 0x3FFFFFC;
+    if (ngates == MAXGATES || SMC_DIRTY(a)) return 0;
+    gates[ngates].a = a; gates[ngates++].fn = fn;
+    smc_dirty[a >> 5] |= 1 << ((a >> 2) & 7);
+    return 1;
+}
+
+/* the gate at a (disarmed), or NULL */
+static void (*gate_take(uint32_t a))(uint32_t)
+{
+    for (int k = 0; k < ngates; k++)
+        if (gates[k].a == a) {
+            void (*fn)(uint32_t) = gates[k].fn;
+            gates[k] = gates[--ngates];
+            smc_dirty[a >> 5] &= ~(1 << ((a >> 2) & 7));
+            return fn;
+        }
+    return NULL;
+}
+
 void call_addr(uint32_t a)
 {
     if (a == RETURN_TO_OS) finish("returned to OS");
@@ -239,6 +271,18 @@ void call_addr(uint32_t a)
         roger_set_image(pending);
         pending = NULL;
         pc_bias = 0;
+    }
+    void (*gate)(uint32_t);
+    if (ngates && SMC_DIRTY(a) && (gate = gate_take(a))) {
+        ev("gate", "i", a);
+        gate(a);
+        if (!interp_only && !cpu_translated(a)) {      /* inside a translated function: */
+            int n = 0;                                 /* on to where it carries on */
+            do interp_step();
+            while (++n < 1000 && npc != HANDLER_RET && npc != RETURN_TO_OS && !cpu_translated(npc));
+            if (n == 1000) fprintf(stderr, "gate &%X: no translated code after it\n", a);
+            return;
+        }
     }
     if (SMC_DIRTY(a) && smc_stale(a)) { interp_step(); return; }   /* self-modified: as it is now */
     fn_t f = 0;
@@ -412,7 +456,7 @@ static uint32_t *orig_slot(uint32_t a, int add)
 void smc_write(uint32_t a)
 {
     a &= 0x3FFFFFC;
-    if (SMC_DIRTY(a)) return;
+    if (SMC_DIRTY(a) && !(ngates && gate_take(a))) return;
     if (!orig_slot(a, 1)) return;             /* (table full: left as it was) */
     smc_dirty[a >> 5] |= 1 << ((a >> 2) & 7);
     static uint32_t s[64]; static int n;

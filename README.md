@@ -89,7 +89,7 @@ speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),
 `--mouse-sens=N`, `--pad=MAP`, `--pad2=MAP` and `--pad=off` (game
 controllers, below), `--joystick` and `--joystick=off`, `--fullscreen[=WxH@Hz]`, `--shader=NAME` (display shader, see below;
-`--crt` = `--shader=crt`), `--list-shaders`, `--no-sound`, `--wav=F`,
+`--crt` = `--shader=crt`), `--list-shaders`, `--crop[=FIRST-LAST]` (below), `--no-sound`, `--wav=F`,
 `--app=DIR`, `--save=DIR`, `--out=PREFIX`; `--help` lists them.
 
 Determinism: headless runs (`--limit`) advance time by instruction count
@@ -366,6 +366,38 @@ the font as distributed (with its license.txt and readme.txt); src/font.c
 is a bitmap table made from it by font/mkfont.py, and is an adaptation
 under the same licence. The Latin-1 characters the font hasn't come from
 the X11 misc-fixed 5x8 font (public domain).
+
+Cropping
+--------
+
+Some games use only part of the screen's 256 lines (Lemmings 216 of them
+on its menu, 208 in a level), so on a widescreen monitor the 4:3 picture
+is letterboxed at the sides and has black bars above and below as well.
+`--crop` shows only the rows the game's picture is on, at the same pixel
+shape, so it is shown larger. Mouse clicks and the pointer follow (the
+pointer stays within the rows shown). It always shows enough rows to fill
+the monitor's shape (192 of 256 on 16:9, 213 on 16:10), centred on the
+rows asked for where it can be, so a picture with more black above than
+below fits the screen with both bars trimmed. The rows are cut from the
+frame before it is drawn, so a display shader still sees one texel a
+pixel, scanline for scanline.
+
+The rows are fixed, never measured from the frames: `--crop=FIRST-LAST`,
+or the game's settings file, PROGRAM.ini beside the program (e.g.
+recomp/jamespond.ini; `--crop=FILE` for another), whose `[crop]` section
+gives the rows to start with and the rows from when some code first runs:
+
+    [crop]
+    rows = all          ; to start with (FIRST-LAST, or all): a splash screen
+    B000 = 0-201        ; from when the code at &B000 first runs: the game's
+
+An address (hex) is an execution gate (src/cpu.c): its word is marked as
+self-modified code is, so translated code leaves through the dispatcher
+there, and the gate fires once and is gone (it may be any code address; at
+one that isn't an entry of the translation, the code from there is
+interpreted on to the next one). So the crop changes only at the points
+named, and not again once the last has passed. Headless runs (no gates are
+armed) and screenshots (F12) are not cropped.
 
 Display shaders
 ---------------
