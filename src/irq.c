@@ -97,16 +97,23 @@ int irq_sound_claimed(void) { return devices[DEV_SOUND].code != 0; }
 void irq_sound(void) { call_device(DEV_SOUND, 0x02); }
 
 /* The raw handler at &100 (roger_config.irq1v), with IOC's IRQ request A
- * (&3200014) saying which interrupt this is. */
+ * (&3200014) saying which interrupt this is. It is entered as the IRQ
+ * vector enters it: in IRQ mode, on an empty IRQ stack, R14 holding the
+ * mode to return to (a handler that returns with movs pc,lr while the
+ * interrupted code is in SVC mode - a SWI - would otherwise leave the CPU
+ * in USR mode with the SVC stack as R13: James Pond, in MusicModule's
+ * SWIs). The interrupted mode is restored afterwards. */
 static void call_irq1v(uint32_t irq_bit)
 {
     uint32_t a = RD32(0x100);
     if (!a || !cpu_translated(a)) return;
     WR32(IOC + 0x14, irq_bit);
     WR32(IOC + 0x24, 0);
-    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc;
+    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc, smode = MODEBITS;
     memcpy(saved, R, sizeof R);
-    R[14] = HANDLER_RET;
+    bank_r13[2] = IRQ_STACK;
+    set_psr_mode(MODE_IRQ);
+    R[14] = HANDLER_RET | MODE_IRQ;
     npc = a;
     in_handler = 1;
     COV_ASYNC_ENTER();
@@ -121,6 +128,7 @@ static void call_irq1v(uint32_t irq_bit)
     }
     COV_ASYNC_EXIT();
     in_handler = 0;
+    set_psr_mode(smode);
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
     npc = snpc;

@@ -129,7 +129,9 @@ Implemented:
 - interrupts: TickerV, EventV (vsync, mouse, keys; run in IRQ mode on the
   IRQ stack, as RISC OS does, so the interrupted code's R13 is left alone;
   a claimant can intercept with the return address on the stack), OS_ClaimDeviceVector (vsync,
-  IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100;
+  IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100
+  (in IRQ mode on an empty IRQ stack, as the IRQ vector enters it; &100
+  starts out as the OS's handler, which it may pass interrupts on to);
   OS_IntOff/IntOn (the I bit; interrupts wait); module SWIs run with
   interrupts enabled, as on RISC OS (one may wait for a handler; entered
   in SVC mode with R14's PSR bits saying so, as the kernel calls them);

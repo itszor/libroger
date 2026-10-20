@@ -345,6 +345,10 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     fclose(f);
     if (cfg->image->base + n != cfg->image->end) fprintf(stderr, "warning: image size differs from compiled image\n");
     bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
+    /* &100 holds the OS's IRQ handler, which the hardware vector at &18
+       loads the PC from: a program's handler put there (roger_config.irq1v)
+       may pass each interrupt on to it, which ends the interrupt here */
+    if (cfg->irq1v) WR32(0x100, HANDLER_RET);
     disc_init();
     modules_init();
     /* ROGER_INTERPRET=1: interpret everything (debugging: a translation's
