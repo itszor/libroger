@@ -143,8 +143,11 @@ static inline uint32_t RD32(uint32_t a)
     return s ? (w >> s) | (w << (32 - s)) : w;
 }
 static inline uint32_t RD8(uint32_t a) { COV_RD(a & 0x3FFFFFF, 1); return MEM[a & 0x3FFFFFF]; }
-#define CODECHK(a) do { if ((a) < img_end && (a) >= img_base && \
-        (codemap[((a) - img_base) >> 5] >> ((((a) - img_base) >> 2) & 7) & 1)) smc_write(a); } while (0)
+extern uint32_t extra_lo, extra_hi;     /* the span of the images beside the program (modules...) */
+void smc_write_extra(uint32_t a);       /* a store there: a compiled word of one of them? */
+#define CODECHK(a) do { if ((a) < img_end && (a) >= img_base) { \
+            if (codemap[((a) - img_base) >> 5] >> ((((a) - img_base) >> 2) & 7) & 1) smc_write(a); } \
+        else if ((a) < extra_hi && (a) >= extra_lo) smc_write_extra(a); } while (0)
 void vidc_write(uint32_t v);           /* video.c: physical VIDC register writes, &3400000 */
 void memc_write(uint32_t addr);        /* video.c: MEMC registers, &3600000 (address only) */
 void ioc_latch_timer0(void);           /* irq.c: IOC timer 0's latch command, &320004C */

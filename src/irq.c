@@ -15,6 +15,7 @@ uint32_t monotonic, events_enabled;
 uint64_t tick_steps = 20000;
 static uint64_t next_tick = 20000, next_vsync = 40000;
 static uint64_t next_tick_ns, next_vsync_ns;
+static uint64_t snd_icount, snd_ns;       /* the sound DMA clock (sound_level0_time) */
 static unsigned click_i;
 volatile uint64_t rg_last_service_ns;      /* watchdog: last time rt_service() ran a vsync */
 
@@ -33,6 +34,11 @@ void recompute_irq(void)
 {
     uint64_t n = next_tick < next_vsync ? next_tick : next_vsync;
     if (!rg_interactive && click_i < rg->nclicks && rg->clicks[click_i].icount < n) n = rg->clicks[click_i].icount;
+    if (!rg_interactive && irq_sound_claimed()) {    /* the sound buffer's end */
+        uint32_t due = sound_level0_due_us();
+        uint64_t at = snd_icount + ((uint64_t)due * TICK_STEPS + 9999) / 10000;
+        if (due && at < n) n = at;
+    }
     if (rg_limit < n) n = rg_limit;
     irq_next = n;
 }
@@ -238,10 +244,33 @@ void ioc_latch_timer0(void)
     MEM[IOC + 0x44] = (uint8_t)(count >> 8);
 }
 
+/* A program driving the sound DMA (device 9) has its buffer interrupt when
+ * the buffer ends, as MEMC gives it, not a centisecond's worth at once:
+ * a player that times its interrupts (Desktop Tracker: IOC timer 0, its
+ * intervals averaged) would otherwise see them in pairs, 0 and 10ms
+ * apart. The DMA clock follows emulated time (instructions, headless) or
+ * the host's, from where it was last advanced; the OS's own SoundDMA, and
+ * a Level 1 handler, still go a centisecond at a time. */
+static void sound_level0_time(void)
+{
+    uint64_t now = rg_interactive ? display_ticks_ns() : 0;
+    if (!irq_sound_claimed()) { snd_icount = icount; snd_ns = now; return; }
+    uint64_t us;
+    if (rg_interactive) {
+        us = (now - snd_ns) / 1000;
+        if (us > 200000) { snd_ns = now; return; }  /* a stall: don't burst */
+        snd_ns += us * 1000;
+    } else {
+        us = (icount - snd_icount) * 10000 / TICK_STEPS;
+        snd_icount += us * TICK_STEPS / 10000;
+    }
+    if (us) sound_dma_advance((uint32_t)us);
+}
+
 static void centisecond(void)
 {
     WR32(ZP_CENTISECONDS, ++centiseconds);
-    sound_dma_advance(10000);                    /* 1 cs of sound DMA */
+    if (!irq_sound_claimed()) sound_dma_advance(10000);   /* 1 cs of sound DMA */
     sound_tick();
     if (rg->centisecond) rg->centisecond();
     call_vector(0x1C, 0, 0);                     /* TickerV */
@@ -376,6 +405,7 @@ void irq_point(void)
         irq_next = icount + 64;
         return;
     }
+    sound_level0_time();
     if (rg_interactive) {
         rt_service(0);
         throttle();

@@ -375,6 +375,16 @@ static void sound_level0(void)
     irq_sound();
 }
 
+/* A program driving the DMA: microseconds until the current buffer ends
+ * (when MEMC swaps buffers and interrupts), 0 with the DMA off */
+uint32_t sound_level0_due_us(void)
+{
+    if (!(memc_control & 0x800)) return 0;
+    uint64_t buf_us = vidc_sfr ? (uint64_t)level0_len() * vidc_sfr : (uint64_t)(level0_len() / snd_nchan) * snd_period;
+    if (!buf_us) buf_us = (uint64_t)snd_samples * snd_period;
+    return buf_us > snd_acc_us ? (uint32_t)(buf_us - snd_acc_us) : 1;
+}
+
 /* Advance the sound DMA clock by `us` of emulated time. */
 void sound_dma_advance(uint32_t us)
 {

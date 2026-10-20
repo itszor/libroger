@@ -122,15 +122,42 @@ int cpu_translated(uint32_t a)
     return l && l->tab[(a - l->img->base) >> 2] != 0;
 }
 
+/* Stores into the images beside the program are checked for self-modified
+ * code as the program's are (CODECHK): a module may patch itself (Desktop
+ * Tracker sets its mixers' output stride for the tune's channels) */
+uint32_t extra_lo, extra_hi;
+static void extra_span(void)
+{
+    extra_lo = extra_hi = 0;
+    for (int k = 0; k < nextra; k++) {
+        if (!k || extra[k].img->base < extra_lo) extra_lo = extra[k].img->base;
+        if (extra[k].img->end > extra_hi) extra_hi = extra[k].img->end;
+    }
+}
+
+void smc_write_extra(uint32_t a)
+{
+    a &= 0x3FFFFFC;
+    for (int k = nextra - 1; k >= 0; k--) {
+        const struct roger_image *img = extra[k].img;
+        if (a >= img->base && a < img->end) {
+            if (img->codemap[(a - img->base) >> 5] >> (((a - img->base) >> 2) & 7) & 1) smc_write(a);
+            return;
+        }
+    }
+}
+
 void cpu_add_image(const struct roger_image *img)
 {
     if (nextra < MAXIMG) { extra[nextra].img = img; extra[nextra].tab = tab_for(img); extra[nextra].overlay = 0; nextra++; }
+    extra_span();
 }
 
 void cpu_remove_image(const struct roger_image *img)          /* (keeping the others' order) */
 {
     for (int k = 0; k < nextra; k++)
-        if (extra[k].img == img) { memmove(&extra[k], &extra[k + 1], (--nextra - k) * sizeof *extra); return; }
+        if (extra[k].img == img) { memmove(&extra[k], &extra[k + 1], (--nextra - k) * sizeof *extra); break; }
+    extra_span();
 }
 
 /* Programs that may be loaded at their image's base (or, packed, at their

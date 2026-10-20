@@ -124,8 +124,9 @@ Implemented:
   leaf ("Data.CODE": Enter the Realm)
 - CPU: processor modes with banked registers, TEQP mode changes, the
   ARM2 interpreter (gaps, self-modified instructions); self-modified code
-  at run time: a compiled word the program stores to is interpreted as it
-  now is until it holds its original value again
+  at run time: a compiled word the program stores to - in the program, a
+  module or an overlay - is interpreted as it now is until it holds its
+  original value again
 - interrupts: TickerV, EventV (vsync, mouse, keys; run in IRQ mode on the
   IRQ stack, as RISC OS does, so the interrupted code's R13 is left alone;
   a claimant can intercept with the return address on the stack), OS_ClaimDeviceVector (vsync,
@@ -201,7 +202,9 @@ Implemented:
   OS 3.1 maps them - OS_ReadMemMapEntries finds that page, physical
   &78000 - and VIDC1's sound frequency and stereo image registers once it
   writes them); MEMC's control register (written directly or with
-  OS_UpdateMEMC: bit 11 stops and starts the sound DMA); a program's own Level 1 handler, or the OS's channel handler
+  OS_UpdateMEMC: bit 11 stops and starts the sound DMA); the buffer
+  interrupt when the buffer ends, by emulated (or host) time, not a
+  centisecond's worth at once; a program's own Level 1 handler, or the OS's channel handler
   running voice generators (install, attach by number or name, Instantiate/
   Free, GateOn/Fill/Update/GateOff as SoundChannels 1.27 sequences them,
   durations - 0 leaves a playing note's alone, so a note can be re-pitched

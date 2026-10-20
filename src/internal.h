@@ -162,6 +162,7 @@ int  fonts_swi_number(const char *name, uint32_t *n);
 
 /* sound.c */
 void sound_dma_advance(uint32_t us);
+uint32_t sound_level0_due_us(void);       /* a program driving the DMA: us until its buffer ends */
 void sound_tick(void);                    /* every centisecond */
 int  sound_swi(uint32_t b);
 void sound_memc(int reg, uint32_t v);     /* MEMC sound DMA registers: 4 Sstart, 5 SendN, 6 Sptr */
