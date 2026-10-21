@@ -44,29 +44,54 @@ void recompute_irq(void)
 }
 
 /* ---------------------------------------------------------------- vectors */
-static struct { uint32_t code, ws; int set; } vectors[0x20];
+/* Each vector's claimants, the one claimed last first: RISC OS calls them in
+ * turn while each passes the call on. */
+#define MAXCLAIMS 8
+static struct { uint32_t code, ws; } vectors[0x20][MAXCLAIMS];
+static int nclaims[0x20];
+
+static void vector_release(unsigned vec, uint32_t code, uint32_t ws)
+{
+    for (int k = 0; k < nclaims[vec]; k++)
+        if (vectors[vec][k].code == code && vectors[vec][k].ws == ws) {
+            memmove(vectors[vec] + k, vectors[vec] + k + 1, (--nclaims[vec] - k) * sizeof vectors[vec][0]);
+            return;
+        }
+}
+
+static void vector_claim(unsigned vec, uint32_t code, uint32_t ws)
+{
+    vector_release(vec, code, ws);               /* claiming again moves it to the front */
+    if (nclaims[vec] == MAXCLAIMS) { fprintf(stderr, "vector &%X: too many claimants\n", vec); return; }
+    memmove(vectors[vec] + 1, vectors[vec], nclaims[vec]++ * sizeof vectors[vec][0]);
+    vectors[vec][0].code = code; vectors[vec][0].ws = ws;
+}
 
 void call_vector(unsigned vec, int nregs, const uint32_t *regs)
 {
     /* Events only reach EventV once enabled with OS_Byte 14 (a handler that
      * doesn't check the event number would otherwise see every one). */
     if (vec == 0x10 && !(events_enabled & (1u << (regs[0] & 31)))) return;
-    if (vec >= 0x20 || !vectors[vec].set) return;
+    if (vec >= 0x20 || !nclaims[vec]) return;
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc, sr13 = bank_r13[2];
     memcpy(saved, R, sizeof R);
     for (int k = 0; k < nregs; k++) R[k] = regs[k];
-    R[12] = vectors[vec].ws;
     /* These are the vectors RISC OS calls from its interrupt handler
      * (TickerV, EventV for vsync, key and mouse events): in IRQ mode, on
      * the IRQ stack. The interrupted code's R13 is left alone - it may not
      * be a stack at all (Stunt Racer 2000's text plotter walks its text
-     * with SP). R14 passes the call on; a claimant that intercepts it
-     * instead pulls the return address off the stack (ldmfd sp!, {pc}). */
+     * with SP). R14 passes the call on, to the claimant before it, with the
+     * registers as it leaves them; a claimant that intercepts it instead
+     * pulls the return address off the stack (ldmfd sp!, {pc}). */
     int irq = (MODEBITS & 3) == 2;
     uint32_t sp = (irq ? R[13] : IRQ_STACK) - 4;
-    WR32(sp, HANDLER_RET | MODE_IRQ);
-    if (irq) R[13] = sp; else bank_r13[2] = sp;
-    call_code(vectors[vec].code, MODE_IRQ, HANDLER_RET | MODE_IRQ);
+    for (int k = 0; k < nclaims[vec]; k++) {
+        WR32(sp, HANDLER_RET | MODE_IRQ);
+        if (irq) R[13] = sp; else bank_r13[2] = sp;
+        R[12] = vectors[vec][k].ws;
+        call_code(vectors[vec][k].code, MODE_IRQ, HANDLER_RET | MODE_IRQ);
+        if ((irq ? R[13] : bank_r13[2]) != sp) break;   /* intercepted */
+    }
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
     npc = snpc;
@@ -193,11 +218,10 @@ int irq_swi(uint32_t b)
         return 1;
     case 0x1F: case 0x20:                        /* OS_Claim / OS_Release */
         ev(b == 0x1F ? "OS_Claim" : "OS_Release", "iii", R[0], R[1], R[2]);
-        if (b == 0x1F && R[0] < 0x20) {
-            vectors[R[0]].code = R[1]; vectors[R[0]].ws = R[2]; vectors[R[0]].set = 1;
-        } else if (b == 0x20 && R[0] < 0x20 && vectors[R[0]].set &&
-                   vectors[R[0]].code == R[1] && vectors[R[0]].ws == R[2])
-            vectors[R[0]].set = 0;               /* e.g. a module's finalisation */
+        if (R[0] < 0x20) {
+            if (b == 0x1F) vector_claim(R[0], R[1], R[2]);
+            else vector_release(R[0], R[1], R[2]);    /* e.g. a module's finalisation */
+        }
         return 1;
     }
     return 0;

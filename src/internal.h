@@ -21,6 +21,7 @@
 #define WIMP_SPRITES 0x3100000u           /* the Wimp's sprite pool (*IconSprites, Wimp_SpriteOp) */
 #define FILER_DATA   0x2F00000u           /* the Filer's windows' indirected data (filer.c) */
 #define RETURN_TO_OS 0x3FFFFF0u           /* R14 the program starts with */
+#define OS_SWI_ENTRY 0x3FFFFD0u           /* the kernel's SWI handler, where the OS's branch at &8 leads */
 #define HANDLER_RET  ROGER_HANDLER_RET
 #define LOAD         ROGER_LOAD
 #define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
@@ -72,6 +73,7 @@ extern int in_handler, interp_only, in_loader;
 extern uint32_t g_cur_pc;
 extern uint64_t interp_count, smc_count;
 void call_code(uint32_t addr, uint32_t mode, uint32_t r14);
+void os_swi_entry(void);
 void run_callbacks(void);                 /* transient callbacks due, if in USR mode with IRQs on */
 void call_swi_code(uint32_t addr, uint32_t mode, uint32_t r14);   /* interruptible (a SWI handler) */
 void run_until(uint32_t stop);

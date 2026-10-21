@@ -101,15 +101,24 @@ static const char *strip_prefixes(const char *n)
 }
 
 /* the RISC OS name n under the host directory already in out, each part
- * matched ignoring case and any ",xxx" catalogue suffix: 1 if it exists */
+ * matched ignoring case and any ",xxx" catalogue suffix ("^" the parent,
+ * not above out as given: Phaethon's Zone$Path, <Phaethon$Dir>.^.!Zones.):
+ * 1 if it exists */
 static int lookup_in(const char *n, char *out)
 {
     char part[256];
+    size_t top = strlen(out);
     while (*n) {
         int l = 0;
         while (*n && *n != '.' && l < 255) part[l++] = *n++;
         part[l] = 0;
         if (*n == '.') n++;
+        if (l == 1 && part[0] == '^') {
+            char *slash = strrchr(out, '/');
+            if (!slash || (size_t)(slash - out) < top) return 0;
+            *slash = 0;
+            continue;
+        }
         for (int k = 0; k < l; k++) if (part[k] == '/') part[k] = '.';
         DIR *d = opendir(out);
         if (!d) return 0;

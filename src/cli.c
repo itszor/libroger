@@ -49,11 +49,13 @@ void cli_init(void)
 }
 
 /* GSTrans: <name> -> the variable's value (nothing if unset), <n> -> the
- * character n, |x -> control character / literal */
+ * character n, |x -> control character / literal; a control character ends
+ * the string, as GSRead has it (Phaethon sets Zone$Dir from a CR-terminated
+ * part of a longer buffer, with its length) */
 void gstrans(const char *in, char *out, int size)
 {
     int o = 0;
-    while (*in && o < size - 1) {
+    while ((unsigned char)*in >= ' ' && o < size - 1) {
         if (*in == '<') {
             const char *e = strchr(in + 1, '>');
             if (e && e - in - 1 < 64) {
@@ -348,7 +350,11 @@ int cli_command(const char *line, int x)
         arg(&p, word, sizeof word);
         uint32_t addr;
         if (*word) addr = (uint32_t)strtoul(word, NULL, 16);
-        else { uint32_t load, exec; file_info(path, &load, &exec); addr = load; }
+        else {                                   /* its load address; an Absolute (&FF8) at &8000, */
+            uint32_t load, exec;                 /* as Alias$@LoadType_FF8 (Load %*0 8000) has it */
+            file_info(path, &load, &exec);       /* (Phaethon's loader *Loads !RunImage so) */
+            addr = load >> 8 == 0xFFFFF8 ? 0x8000 : load;
+        }
         load_file(path, addr);
         cpu_programs_loaded(name, addr);
         return 1;

@@ -426,6 +426,40 @@ static uint32_t page_logical(uint32_t page, uint32_t *ppl)
     return 0x1F08000;
 }
 
+/* A SWI instruction. The ARM's SWI vector, &8: RISC OS's leads to its SWI
+ * dispatch (here, swi()); a program may put its own branch there, to see
+ * every SWI first (Phaethon's loader does, as copy protection, putting the
+ * OS's word back around the SWIs it then makes itself). The SWI enters it
+ * as the ARM does: SVC mode, IRQs off, R14_svc the return address with the
+ * caller's PSR. 1 if so: the caller leaves for npc. */
+int swi_insn(uint32_t n, uint32_t nextpc)
+{
+    uint32_t to = hw_vector(8);
+    if (!to || to == OS_SWI_ENTRY) { swi(n, nextpc); return 0; }
+    uint32_t ret = nextpc | PSR();
+    ev("swi_vector", "ii", n, to);
+    set_psr_mode(0x08000000u | 3);
+    R[14] = ret;
+    npc = to;
+    return 1;
+}
+
+/* The kernel's SWI handler, where the OS's branch at &8 leads: entered as
+ * the SWI vector enters it (SVC mode, R14 the caller's return address and
+ * PSR), it makes the SWI in the instruction before R14 and returns to the
+ * caller, in its mode, with V saying whether there was an error. A program's
+ * own handler at &8 passes SWIs on to it so (Phaethon's jumps to where the
+ * word it replaced led). */
+void os_swi_entry(void)
+{
+    uint32_t ret = R[14];
+    npc = ret & 0x3FFFFFC;
+    swi(RD32(npc - 4) & 0xFFFFFF, npc);
+    uint32_t v = VF;
+    SETPSR(ret);
+    VF = v;
+}
+
 void swi(uint32_t n, uint32_t nextpc)
 {
     int user = (MODEBITS & 3) == 0;

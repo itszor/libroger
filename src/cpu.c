@@ -257,6 +257,7 @@ static void (*gate_take(uint32_t a))(uint32_t)
 void call_addr(uint32_t a)
 {
     if (a == RETURN_TO_OS) finish("returned to OS");
+    if (a == OS_SWI_ENTRY) { os_swi_entry(); return; }
     if (rg->call_addr && rg->call_addr(a)) return;
     if (clib_dispatch(a)) return;             /* the Shared C Library (clib.c) */
     if (rg->relocations)
@@ -397,6 +398,17 @@ void bad_entry(uint32_t fn, uint32_t e)
     fprintf(stderr, "bad entry %08x into F_%x\n", e, fn);
     finish("bad entry");
 }
+/* A program's own handler in one of the ARM's hardware vectors (&4, &8,
+ * ...): where the branch or ldr pc,[pc,#n] it put there leads, or 0 - the
+ * OS's, which the runtime is. */
+uint32_t hw_vector(uint32_t v)
+{
+    uint32_t w = RD32(v);
+    if ((w & 0xFF000000u) == 0xEA000000u) return (v + 8 + ((int32_t)(w << 8) >> 6)) & 0x3FFFFFC;
+    if ((w & 0xFFFFF000u) == 0xE59FF000u) return RD32(v + 8 + (w & 0xFFF)) & 0x3FFFFFC;
+    return 0;
+}
+
 /* An undefined instruction - on an ARM2, a coprocessor's too, there being
  * none: the trap, as RISC OS passes it on to the undefined instruction
  * handler (OS_ChangeEnvironment 1) in SVC mode with IRQs off and R14_svc
@@ -408,9 +420,7 @@ void undefined_insn(uint32_t a, uint32_t w)
     /* the ARM's undefined instruction vector, &4: RISC OS's leads to the
        OS_ChangeEnvironment 1 handler; a program may put its own branch
        there (Desktop Tracker does, to get from IRQ to SVC mode) */
-    uint32_t v = RD32(4), to = 0;
-    if ((v & 0xFF000000u) == 0xEA000000u) to = (12 + ((int32_t)(v << 8) >> 6)) & 0x3FFFFFC;
-    else if ((v & 0xFFFFF000u) == 0xE59FF000u) to = RD32(12 + (v & 0xFFF)) & 0x3FFFFFC;
+    uint32_t to = hw_vector(4);
     if (to) {
         uint32_t ret = ((a + 4) & 0x3FFFFFC) | PSR();
         ev("undefined_instruction", "ii", a, w);
@@ -530,6 +540,17 @@ void trace_insn(uint32_t a)
  * One ARM2 instruction at npc, for gaps and for self-modified instructions
  * whose current form wasn't translated. */
 static uint32_t ipc;                     /* address of the instruction being interpreted */
+
+/* The ARM2's pipeline: while an instruction executes, the next two words
+ * have already been fetched, so a store to either isn't seen when they run
+ * in sequence after it - only once the pipeline is refilled (a branch, an
+ * exception, a SWI's return). Copy protection relies on it (Phaethon's
+ * str r1,[pc] in a loop that patches the program, which an emulator
+ * without it runs differently). pf_at: the address the words in pf_w were
+ * fetched for; pf_ic: the instruction count when they were, so that
+ * anything run in between (translated code, an interrupt) refills it. */
+static uint32_t pf_at = 1, pf_w[2];
+static uint64_t pf_ic;
 
 static int cond_ok(uint32_t c)
 {
@@ -674,7 +695,8 @@ static int exec_word(uint32_t pc, uint32_t i)
         npc = (pc + 8 + off * 4) & 0x3FFFFFC;
         return 1;
     } else if (op == 7 && (i >> 24) & 1) {                     /* SWI */
-        swi(i & 0xFFFFFF, next);
+        pf_at = 1;                                             /* (the OS returns with a branch) */
+        if (swi_insn(i & 0xFFFFFF, next)) return 1;
         return npc != next;
     } else { undefined_insn(pc, i); return 1; }
     return 0;
@@ -706,7 +728,15 @@ void interp_step(void)
     interp_count++;
     note_interp(pc, 0);
     uint32_t w;
-    COV_NOFETCH(w = RD32(pc));     /* instruction fetch, not a data read */
+    if (pc == pf_at && icount == pf_ic + 1) {      /* in sequence: as fetched */
+        w = pf_w[0];
+        pf_w[0] = pf_w[1];
+    } else {                                       /* instruction fetches, not data reads */
+        COV_NOFETCH(w = RD32(pc));
+        COV_NOFETCH(pf_w[0] = RD32(pc + 4));
+    }
+    COV_NOFETCH(pf_w[1] = RD32(pc + 8));
+    pf_at = pc + 4; pf_ic = icount;
     exec_word(pc, w);
 }
 

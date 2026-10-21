@@ -355,6 +355,9 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
        loads the PC from: a program's handler put there (roger_config.irq1v)
        may pass each interrupt on to it, which ends the interrupt here */
     if (cfg->irq1v) WR32(0x100, HANDLER_RET);
+    /* the SWI vector, &8: the OS's branch to its SWI handler, which a
+       program that puts its own there may read to pass SWIs on to */
+    WR32(8, 0xEA000000u | (((OS_SWI_ENTRY - 16) >> 2) & 0xFFFFFF));
     disc_init();
     modules_init();
     /* ROGER_INTERPRET=1: interpret everything (debugging: a translation's

@@ -45,11 +45,13 @@ extern uint32_t img_base, img_end;      /* the running image's address range */
 
 void irq_point(void);                    /* interrupts / instruction limit */
 void swi(uint32_t n, uint32_t nextpc);   /* OS stubs */
+int swi_insn(uint32_t n, uint32_t nextpc);   /* a SWI instruction: 1 if it went to the program's own SWI vector */
 void call_addr(uint32_t a);              /* one dispatch step: compiled fn or interpreter */
 int  interp_exec(uint32_t a, uint32_t w);/* execute one (self-modified) word; 1 = pc changed */
 void smc_write(uint32_t a);              /* store hit compiled code */
 void bad_entry(uint32_t fn, uint32_t e);
 void undefined_insn(uint32_t a, uint32_t w);
+uint32_t hw_vector(uint32_t v);        /* a program's handler in a hardware vector, or 0 */
 
 /* ---- coverage hooks (make cov): a recorder providing cov.h, e.g. SuperSpider's
  * phase0/cov, sees every instruction, memory access and asynchronous entry ---- */
@@ -293,6 +295,6 @@ static inline uint32_t SHRC(uint32_t v, int typ, uint32_t amt) { uint32_t c; shr
 /* direct call of a compiled function; resume only if it came back to `ret` */
 #define CALL(f, t, ret)  do { f(t); if (npc != (ret)) return; } while (0)
 #define CALLI(ret)       do { call_addr(npc); if (npc != (ret)) return; } while (0)
-#define SWI(n, next)     swi((n), (next))
+#define SWI(n, next)     do { if (swi_insn((n), (next))) return; } while (0)
 
 #endif
