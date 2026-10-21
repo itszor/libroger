@@ -230,7 +230,8 @@ Implemented:
   save dragged out goes: the data transfer protocol's DataSave/Ack,
   DataLoad/Ack), Wimp_GetPointerInfo, Wimp_ReportError (to stderr),
   Wimp_SpriteOp on the Wimp's sprite pool (*IconSprites), Wimp_ReadSysInfo,
-  Wimp_SetMode, Wimp_CloseDown; Wimp_SlotSize (the application slot is
+  Wimp_BaseOfSprites, Wimp_SetMode, Wimp_CommandWindow (accepted: no window
+  is shown), Wimp_CloseDown; Wimp_SlotSize (the application slot is
   the RAM limit) and the screen's dynamic area (OS_ReadDynamicArea,
   OS_ChangeDynamicArea 2)
 - the Shared C Library (src/clib.c): SharedCLibrary_LibInitAPCS_A/R, and
@@ -238,8 +239,17 @@ Implemented:
   C89's behaviour as the library had it (long 32 bits, doubles in FPA
   order), its static data as clients' macros read it (errno, __iob,
   __ctype), stdio on the OS's files, the console through the VDU, the
-  library's rand(); no floating point arithmetic in the client (no FP
-  emulator), no stack extension (a 64K root stack instead)
+  library's rand(), the vprintf family's va_list as Acorn C's (an array:
+  the address of the argument pointer); no stack extension (a 64K root
+  stack instead)
+- the floating point emulator (src/fpa.c): the FPA's instructions
+  (coprocessors 1 and 2: LDF/STF, LFM/SFM, the data operations, FLT/FIX,
+  the compares, RFS/WFS) carried out as RISC OS's FPEmulator does, from
+  the undefined instruction vector (after a program's own branch at &4,
+  before an OS_ChangeEnvironment handler): eight extended-precision
+  registers, results rounded to each instruction's precision and rounding
+  mode, the FPA's memory formats; no packed decimal, no exceptions
+  trapped. Acorn C's float and double arithmetic is these instructions
 - the kernel: OS_Byte (keyboard scans, single key or first key pressed, or
   from 16; the keyboard status (Caps Lock as the host's);
   INKEY, the OS version, events, Escape, banks, mode, the vsync counter,

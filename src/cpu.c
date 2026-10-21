@@ -413,7 +413,8 @@ uint32_t hw_vector(uint32_t v)
  * none: the trap, as RISC OS passes it on to the undefined instruction
  * handler (OS_ChangeEnvironment 1) in SVC mode with IRQs off and R14_svc
  * the address after it (with the caller's PSR). Programs telling an ARM2
- * from an ARM3 (an MRC from the cache controller, p15) rely on it. With no
+ * from an ARM3 (an MRC from the cache controller, p15) rely on it. The
+ * floating point instructions are the FPEmulator's (fpa.c). With no
  * handler, the run stops. */
 void undefined_insn(uint32_t a, uint32_t w)
 {
@@ -429,6 +430,9 @@ void undefined_insn(uint32_t a, uint32_t w)
         npc = to;
         return;
     }
+    /* RISC OS's FPEmulator, on the vector, takes the FPA's instructions
+       (fpa.c) before the OS passes the rest on */
+    if (fpa_insn(a, w)) return;
     if (env[1][0]) {
         uint32_t ret = ((a + 4) & 0x3FFFFFC) | PSR();
         ev("undefined_instruction", "ii", a, w);

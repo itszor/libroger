@@ -60,6 +60,7 @@ extern float rg_mouse_sens;               /* captured mouse: OS units per host p
 extern float rg_mips;                     /* interactive CPU speed (MIPS), 0 unthrottled */
 extern uint64_t rg_limit, rg_t0_ns;
 extern const char *rg_appdir, *rg_savedir, *rg_floppy;
+int fpa_insn(uint32_t a, uint32_t w);     /* fpa.c: the FPEmulator: an FPA instruction carried out */
 void ev(const char *name, const char *fmt, ...);
 void os_error(uint32_t num, const char *msg);   /* a SWI fails: R0 -> error block, V set */
 void finish(const char *why) __attribute__((noreturn));

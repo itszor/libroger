@@ -969,9 +969,11 @@ static int clib_call(int k)
     case C__printf: case C_printf: a.k = 1; sk.f = file_addr(1); R[0] = c_format(&sk, A[0], &a); return 1;
     case C__fprintf: case C_fprintf: a.k = 2; sk.f = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
     case C__sprintf: case C_sprintf: a.k = 2; sk.buf = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
-    case C_vprintf: a.mem = A[1]; sk.f = file_addr(1); R[0] = c_format(&sk, A[0], &a); return 1;
-    case C_vfprintf: case C__vfprintf: a.mem = A[2]; sk.f = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
-    case C_vsprintf: a.mem = A[2]; sk.buf = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
+    /* a va_list is an array, char *va_list[1]: what's passed is the address
+       of the word that points at the arguments */
+    case C_vprintf: a.mem = RD32(A[1]); sk.f = file_addr(1); R[0] = c_format(&sk, A[0], &a); return 1;
+    case C_vfprintf: case C__vfprintf: a.mem = RD32(A[2]); sk.f = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
+    case C_vsprintf: a.mem = RD32(A[2]); sk.buf = A[0]; R[0] = c_format(&sk, A[1], &a); return 1;
     case C_scanf: { struct src s = {NULL, file_addr(0), 0, -2}; a.k = 1; R[0] = c_scan(&s, A[0], &a); return 1; }
     case C_fscanf: { struct src s = {NULL, A[0], 0, -2}; a.k = 2; R[0] = c_scan(&s, A[1], &a); return 1; }
     case C_sscanf: { struct src s = {P(A[0]), 0, 0, -2}; a.k = 2; R[0] = c_scan(&s, A[1], &a); return 1; }

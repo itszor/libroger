@@ -873,6 +873,10 @@ int wimp_swi(uint32_t b)
         R[1] = wimp_sprites();
         sprite_op();
         return 1;
+    case 0x400EA: R[0] = R[1] = wimp_sprites(); return 1;  /* Wimp_BaseOfSprites: the ROM and RAM
+                                                              pools (one here, as ReadSysInfo 9) */
+    case 0x400EF: ev("Wimp_CommandWindow", "i", R[0]); return 1;   /* no command window shown: its
+                                                              output goes to the screen as VDU */
     case 0x400F2:                                            /* Wimp_ReadSysInfo */
         switch (R[0]) {
         case 0: R[0] = 1; break;                             /* tasks active */
