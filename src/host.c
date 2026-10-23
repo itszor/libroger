@@ -60,10 +60,15 @@ static uint64_t last_setpos_ns;
 static int relative;
 void display_set_mouse(int x, int y)
 {
+    int moved = x != mouse_x || y != mouse_y;
     mouse_x = x; mouse_y = y;
     last_setpos_ns = SDL_GetTicksNS();
     if (rg->relative_mouse) return;
-    if (win && SDL_GetMouseFocus() == win) {
+    /* Setting it where it already is moves nothing (Tertis' title writes
+     * back the position it read, every frame): warping the host pointer
+     * there would pull it back to the last event's position, losing what
+     * it has moved since, and the mouse would hardly move. */
+    if (moved && win && SDL_GetMouseFocus() == win) {
         float wx, wy;
         SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * lw / 1280,
                                       (1023 + POINTER_Y_OFFSET - y + 0.5f) * LH / 1024 - crop_y0, &wx, &wy);

@@ -296,6 +296,50 @@ static int cli_error(int x)
     return 0;
 }
 
+int cli_command(const char *line, int x);
+
+/* An alias (Alias$...) run with its parameters, as the CLI expands one:
+ * %0-%9 the parameters, %*N the rest of the line from parameter N, each
+ * line of the value (*Set made |M a CR) a command of its own */
+static int run_alias(const char *alias, const char *params, int x)
+{
+    const char *start[11];
+    int n = 0;
+    for (const char *q = skip(params); *q && n < 10; q = skip(q)) {
+        start[n++] = q;
+        while (*q && *q != ' ') q++;
+    }
+    start[n] = params + strlen(params);
+    char cmd[1100];
+    int o = 0, ok = 1;
+    for (const char *a = alias; ; a++) {
+        if (!*a || *a == '\r' || *a == '\n') {
+            cmd[o] = 0;
+            if (*skip(cmd) && !cli_command(cmd, x)) ok = 0;
+            o = 0;
+            if (!*a) break;
+            continue;
+        }
+        const char *from = NULL, *to = NULL;
+        if (a[0] == '%' && a[1] == '*' && a[2] >= '0' && a[2] <= '9') {
+            int k = a[2] - '0';
+            if (k < n) { from = start[k]; to = start[n]; }
+            else from = to = "";
+            a += 2;
+        } else if (a[0] == '%' && a[1] >= '0' && a[1] <= '9') {
+            int k = a[1] - '0';
+            if (k < n) { from = start[k]; for (to = from; *to && *to != ' '; to++) ; }
+            else from = to = "";
+            a += 1;
+        }
+        if (from) {
+            while (to > from && to[-1] == ' ') to--;
+            while (from < to && o < (int)sizeof cmd - 1) cmd[o++] = *from++;
+        } else if (o < (int)sizeof cmd - 1) cmd[o++] = *a;
+    }
+    return ok;
+}
+
 /* run one command line; 0 = not understood (only logged) */
 int cli_command(const char *line, int x)
 {
@@ -574,6 +618,18 @@ int cli_command(const char *line, int x)
                 if (modules_rmload(f, skip(p ? p : s))) return 1;
                 fprintf(stderr, "*RMRun: module file not configured %s\n", f);
                 return cli_error(x);
+            }
+            /* another type: its run type, Alias$@RunType_TTT (e.g. a music
+             * file a module sets one for: MusicModule4's &CC5, *MusLoad),
+             * with the file's name and the rest of the line as parameters */
+            if ((load >> 20) == 0xFFF) {
+                char var[32], params[1100];
+                snprintf(var, sizeof var, "Alias$@RunType_%03X", (unsigned)(load >> 8) & 0xFFF);
+                const char *alias = roger_getvar(var);
+                if (alias) {
+                    snprintf(params, sizeof params, "%s %s", f, skip(p ? p : s));
+                    return run_alias(alias, params, x);
+                }
             }
         }
     }

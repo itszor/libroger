@@ -5,7 +5,8 @@
  * files as extracted from the disc: a RISC OS name a.b.c is the host path
  * appdir/a/b/c, matched case-insensitively, where a host name may carry the
  * file's catalogue information after a comma - ",xxx" (filetype) or
- * ",llllllll-eeeeeeee" (load and exec addresses) - and RISC OS "/" is ".".
+ * ",llllllll-eeeeeeee" (load and exec addresses) - and RISC OS "/" is ".";
+ * a top-bit character (Latin-1) matches its UTF-8 there too.
  * A <name> in a filename expands to the system variable's value (after any
  * dir_prefixes are stripped). Files the program writes (open for output or
  * update, OS_File save, *Save) go to savedir, mirroring their path, so the
@@ -120,6 +121,14 @@ static int lookup_in(const char *n, char *out)
             continue;
         }
         for (int k = 0; k < l; k++) if (part[k] == '/') part[k] = '.';
+        char part8[512];                          /* Latin-1 -> UTF-8, as extracted (CHR$160: "\302\240") */
+        int l8 = 0;
+        for (int k = 0; k < l; k++) {
+            uint8_t c = (uint8_t)part[k];
+            if (c < 0x80) part8[l8++] = (char)c;
+            else { part8[l8++] = (char)(0xC0 | c >> 6); part8[l8++] = (char)(0x80 | (c & 0x3F)); }
+        }
+        part8[l8] = 0;
         DIR *d = opendir(out);
         if (!d) return 0;
         struct dirent *e;
@@ -129,7 +138,7 @@ static int lookup_in(const char *n, char *out)
             snprintf(base, sizeof base, "%s", e->d_name);
             char *comma = strchr(base, ',');
             if (comma) *comma = 0;
-            if (!strcasecmp(base, part)) { strcat(out, "/"); strcat(out, e->d_name); hit = 1; break; }
+            if (!strcasecmp(base, part) || !strcasecmp(base, part8)) { strcat(out, "/"); strcat(out, e->d_name); hit = 1; break; }
         }
         closedir(d);
         if (!hit) return 0;
@@ -211,6 +220,14 @@ static int path_var(const char *x, char *out)
     return ok;
 }
 
+/* A RISC OS name ends at a space, as FileSwitch reads one (MusicModule4's
+ * *MusLoad passes its whole command tail to OS_File: "name " when an alias
+ * left a space after the name) - a host path (HostFS:) may hold spaces */
+static void name_end(char *x)
+{
+    if (strncasecmp(x, "HostFS:", 7)) x[strcspn(x, " ")] = 0;
+}
+
 /* A RISC OS filename -> the host file: under the application directory
  * (or the RAM disc); "HostFS:" followed by a host path names that host
  * file (e.g. a file given on the command line) */
@@ -218,6 +235,7 @@ static int hostpath_top(const char *name, char *out)
 {
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
+    name_end(x);
     if (!strncasecmp(x, "HostFS:", 7)) {
         struct stat st;
         snprintf(out, 2048, "%s", x + 7);
@@ -268,6 +286,7 @@ static int saved_path_top(const char *name, char *out)
 {
     char x[1100];
     gstrans(strip_prefixes(name), x, sizeof x);
+    name_end(x);
     if (!strncasecmp(x, "HostFS:", 7)) return 0;
     const char *n = strip_prefixes(x), *r = ram_name(x);
     snprintf(out, 2048, "%s", r ? ramdir : rg_savedir);
@@ -517,6 +536,7 @@ static void save_path(const char *name, char *out, int create)
     const char *r0 = in_csd(name, c, sizeof c);
     if (r0) name = r0;
     gstrans(strip_prefixes(name), x, sizeof x);
+    name_end(x);
     const char *n = strip_prefixes(x), *r = ram_name(x);
     snprintf(out, 2048, "%s/", r ? ramdir : rg_savedir);
     if (r) n = r;
