@@ -217,9 +217,10 @@ Implemented:
   scheduler (Sound_QSchedule, QTempo); to SDL or a WAV file
 - the command line: Set, SetEval (integer and string expressions), Unset,
   If ... Then ... Else, Dir, Load, Save, Copy (R: recursively), Delete, RMLoad,
-  RMRun, RMKill, RMClear, FX, IconSprites, ChannelVoice, Filer_OpenDir and
+  RMRun, RMKill, RMClear, FX, IconSprites, ChannelVoice, EnumDir, Filer_OpenDir and
   Filer_CloseDir (directory viewers, on the desktop), and loaded modules' commands, after GSTrans
   (<var>), abbreviated too ("L." for Load: the first command it abbreviates);
+  a name in double quotes, the command name ending at one too (Load"name");
   running a file by name: a BBC font file (&FF7) printed, a module (&FFA)
   RMRun; OS_GSTrans; OS_ReadVarVal, OS_SetVarVal (strings, and numbers as 4-byte
   integers). Other commands are logged and ignored

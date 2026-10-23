@@ -243,7 +243,7 @@ static int if_condition(const char *e)
 static const char *word_at(const char *s, const char *w)
 {
     size_t l = strlen(w);
-    if (!strncasecmp(s, w, l) && (s[l] == ' ' || s[l] == 0)) return s + l;
+    if (!strncasecmp(s, w, l) && (s[l] == ' ' || s[l] == 0 || s[l] == '"')) return s + l;   /* *Load"file" */
     size_t a = 0;
     while (a < l && s[a] && s[a] != '.' && s[a] != ' ' && tolower((unsigned char)s[a]) == tolower((unsigned char)w[a])) a++;
     return a > 0 && a < l && s[a] == '.' ? s + a + 1 : NULL;
@@ -265,6 +265,14 @@ static int arg(const char **s, char *out, int size)
 {
     const char *p = skip(*s);
     int o = 0;
+    if (*p == '"') {                             /* "a name", as RISC OS takes one (Saloon Cars
+                                                    Deluxe: *Load "<SALOONC$Dir>.x" addr) */
+        for (p++; *p && *p != '"' && o < size - 1; ) out[o++] = *p++;
+        if (*p == '"') p++;
+        out[o] = 0;
+        *s = p;
+        return o;
+    }
     while (*p && *p != ' ' && o < size - 1) out[o++] = *p++;
     out[o] = 0;
     *s = p;
@@ -357,6 +365,39 @@ int cli_command(const char *line, int x)
         }
         load_file(path, addr);
         cpu_programs_loaded(name, addr);
+        return 1;
+    }
+    if ((p = word_at(s, "EnumDir"))) {           /* a directory's leaves, a line each, into a file
+                                                    (Saloon Cars Deluxe's list of players) */
+        static struct dir_entry e[256];
+        char out[1100];
+        arg(&p, name, sizeof name);
+        arg(&p, out, sizeof out);
+        int n = dir_entries(name, e, 256);
+        if (n < 0 || !*out) {
+            fprintf(stderr, "*EnumDir: directory not found %s\n", name);
+            if (cli_error(x)) return 1;
+            finish("directory not found");
+        }
+        uint32_t r[8];                           /* written as the program would: OS_Find, OS_BPut */
+        int sx = swi_x, vf = VF;
+        memcpy(r, R, sizeof r);
+        R[0] = 0x83; R[1] = roger_scratch(out);
+        roger_swi(0x2000D);                      /* XOS_Find: open out */
+        uint32_t h = VF ? 0 : R[0];
+        for (int k = 0; h && k < n; k++)
+            for (const char *c = e[k].leaf; ; c++) {
+                R[0] = *c ? (uint8_t)*c : 10; R[1] = h;
+                roger_swi(0x2000B);              /* XOS_BPut */
+                if (!*c) break;
+            }
+        if (h) { R[0] = 0; R[1] = h; roger_swi(0x2000D); }
+        memcpy(R, r, sizeof r);
+        swi_x = sx; VF = vf;
+        if (!h) {
+            fprintf(stderr, "*EnumDir: can't write %s\n", out);
+            return cli_error(x) || 1;
+        }
         return 1;
     }
     if ((p = word_at(s, "SLoad")) || (p = word_at(s, "SMerge"))) {   /* the system sprite area */
