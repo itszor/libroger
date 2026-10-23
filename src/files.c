@@ -397,6 +397,17 @@ static void os_file(void)
         if (op != 4 && !set_info(name, load, exec) && swi_x) VF = 1;   /* (4: attributes, ignored) */
         return;
     }
+    if (op == 9) {                                               /* date stamp (the C library's fopen */
+        char p[2048];                                            /* for writing, before it opens) */
+        uint32_t load, exec;
+        if (!hostpath_read(name, p)) {
+            if (swi_x) { os_error(0xD6, "File not found"); return; }
+            finish("file not found");
+        }
+        file_info(p, &load, &exec);                              /* the time isn't kept: only an */
+        if ((load & 0xFFF00000u) != 0xFFF00000u && !set_info(name, 0xFFFFFD00u, 0) && swi_x) VF = 1;   /* untyped file changes (to Data) */
+        return;
+    }
     if (op == 8) {                                               /* create a directory (in the save */
         char p[2048];                                            /* directory, as files written are) */
         save_path(name, p, 1);
