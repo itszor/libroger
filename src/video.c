@@ -230,6 +230,8 @@ uint32_t vduvar(uint32_t v)
     case 148: return screen_base() + bank * sz;                       /* DriverBank's address */
     case 149: return screen_base() + (rg_full_os ? display_bank : bank) * sz;   /* DisplayBank's */
     case 150: return screen_size();                                   /* TotalScreenSize */
+    case 172: return rg->vidc20 ? 24000 : 0;   /* VIDCClockSpeed (RISC OS 3.5 on), kHz: a Risc PC's
+                                                  VIDC20 runs from 24MHz (QTM's sample rates follow it) */
     default: return v < 13 ? modevar(-1, v) : 0;
     }
 }
@@ -285,6 +287,14 @@ void vdu_put(uint8_t c)
     } else if (c < 32 && nparams[c]) {
         q[0] = c; qn = 1; qwant = 1 + nparams[c];
     }
+}
+
+/* A palette entry set as PaletteV does (ColourTrans_WritePalette), not
+ * through the VDU stream: colour n (of the current mode's) to 0xRRGGBB */
+void video_set_colour(int n, uint32_t rgb)
+{
+    if (full_palette()) vidc20_pal[n & 0xFF] = rgb;
+    else if (n < 16) vidc_palette[n] = (rgb >> 20 & 0xF) | (rgb >> 12 & 0xF) << 4 | (rgb >> 4 & 0xF) << 8;
 }
 
 /* ---------------------------------------------------------------- VIDC

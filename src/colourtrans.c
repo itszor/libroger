@@ -16,6 +16,8 @@
  *     made the current one with the VDU drivers
  *   &4075C ReadPalette (R0/R1 mode, palette; R2 a buffer or 0, R3 its
  *     size -> the size needed, or what's left)
+ *   &4075D WritePalette (R2 a palette, or 0 the default; R4 bit 0: the
+ *     pointer's colours, not kept): the current mode's colours set
  *   &40750 InvalidateCache: nothing kept */
 #include <string.h>
 #include "internal.h"
@@ -113,6 +115,13 @@ int colourtrans_swi(uint32_t b)
             WR32(R[2] + 4 * k, (c & 0xFF) << 24 | (c >> 8 & 0xFF) << 16 | (c >> 16) << 8);
         }
         R[3] -= 4 * k;
+        return 1;
+    }
+    case 0x4075D: {                                               /* WritePalette: R2 the palette */
+        if (R[4] & 1) return 1;                                   /* (bit 0: the pointer's: not kept) */
+        int n = ncolours((uint32_t)-1);
+        for (int k = 0; k < n; k++)
+            video_set_colour(k, R[2] ? colour_of(0, R[2], k) : video_default_colour(cur_mode()->bpp, (uint8_t)k));
         return 1;
     }
     case 0x40750: return 1;                                       /* InvalidateCache */

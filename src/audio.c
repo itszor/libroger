@@ -50,9 +50,14 @@ int audio_init_wav(const char *path)
 void roger_audio_out(const int16_t *lr, int frames, int rate)
 {
     if (wav) {
-        /* A WAV file has one rate: keep the first one seen (programs
-         * normally pick their rate once). */
-        if (!wav_frames) wav_rate = rate;
+        /* A WAV file has one rate: the one sound is first heard at
+         * (programs normally pick their rate once, though a module may
+         * reconfigure after the default's silent buffers: QTM) */
+        static int heard;
+        if (!heard) {
+            wav_rate = rate;
+            for (int k = 0; k < 2 * frames && !heard; k++) heard = lr[k] != 0;
+        }
         fwrite(lr, 4, frames, wav);
         wav_frames += frames;
     }

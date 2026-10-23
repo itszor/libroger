@@ -50,14 +50,20 @@ struct roger_program {
  * image when their code is the same (e.g. a music player module per tune).
  * An in_memory module is one the program puts in memory itself and inserts
  * where it is (OS_Module 10, R1 = image->base): no file is read, and path
- * only names it in messages. */
+ * only names it in messages; or (in_memory 2) one it inserts by having it
+ * copied into the RMA (OS_Module 11), translated for its place there
+ * (image->base, an RMA address of the game's choosing, kept clear of the
+ * heap) and known by its title (path). */
 struct roger_module {
     const char *path;                     /* host path, relative to the working directory */
     const struct roger_image *image;
     int on_demand;
     const char *args;                     /* its parameters, as *RMLoad or *RMRun gives them after
                                              the name (R10 for its initialisation; NULL: none) */
-    int in_memory;                        /* inserted from memory by the program (OS_Module 10) */
+    int in_memory;                        /* inserted from memory by the program: 1 where it is
+                                             (OS_Module 10, at its image's base); 2 copied into the
+                                             RMA (OS_Module 11): to its image's base there, and
+                                             `path` is its title, which it is known by */
 };
 
 /* An image that copies itself and runs from the copy: while `image` is the
@@ -148,6 +154,10 @@ struct roger_config {
                                              programs check for one - Wimp 3.50,
                                              OS_ScreenMode, OS_Memory 8 (2MB of VRAM),
                                              their names for OS_SWINumberFromString */
+    int strongarm;                        /* ...with a StrongARM (RISC OS 3.7): OS_PlatformFeatures
+                                             0 reports that code areas must be synchronised
+                                             (bit 0), which is what programs tell a StrongARM by
+                                             (without it the SWI is unknown, as on RISC OS 3.5) */
 
     /* --- interrupts */
     int irq1v;                            /* also call a handler whose address the program

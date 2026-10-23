@@ -561,6 +561,54 @@ static void put_sprite_scaled(uint32_t s, int x, int y, int action, uint32_t fac
     }
 }
 
+/* An RGB image (rows top first, 3 bytes a pixel: SpriteExtend's JPEGs)
+ * with its bottom left at x, y (OS units), one image pixel two OS units
+ * (as a 90 dpi sprite) times the factors at fac (as OS_SpriteOp 52's; 0:
+ * none), within the graphics window, in the screen's depth: 32bpp
+ * &00BBGGRR, 16bpp 5 bits each, 8bpp and fewer the current palette's
+ * nearest colour (no dithering) */
+void vdu_plot_rgb(int x, int y, int w, int h, const uint8_t *rgb, uint32_t fac)
+{
+    int bpp = md()->bpp;
+    int64_t xm = 1, ym = 1, xd = 1, yd = 1;
+    if (fac) { xm = rd32(fac); ym = rd32(fac + 4); xd = rd32(fac + 8); yd = rd32(fac + 12); }
+    if (xd <= 0 || yd <= 0 || xm <= 0 || ym <= 0 || w <= 0 || h <= 0) return;
+    int dw = (int)((int64_t)w * 2 * xm / (xd << md()->xeig)), dh = (int)((int64_t)h * 2 * ym / (yd << md()->yeig));
+    if (dw <= 0 || dh <= 0) return;
+    static int16_t near[32768];                     /* 15-bit RGB -> colour number (bpp <= 8) */
+    if (bpp <= 8) {
+        uint32_t pal[256];
+        for (int k = 0; k < 1 << bpp; k++) pal[k] = video_colour((uint8_t)k);
+        for (int c = 0; c < 32768; c++) {
+            int r = (c & 31) << 3 | (c & 31) >> 2, g = (c >> 5 & 31) << 3 | (c >> 5 & 31) >> 2,
+                b = (c >> 10) << 3 | (c >> 10) >> 2, best = 0;
+            long bd = -1;
+            for (int k = 0; k < 1 << bpp; k++) {
+                long dr = (long)(pal[k] >> 16) - r, dg = (long)(pal[k] >> 8 & 0xFF) - g, db = (long)(pal[k] & 0xFF) - b;
+                long d = dr * dr + dg * dg + db * db;
+                if (bd < 0 || d < bd) { bd = d; best = k; }
+            }
+            near[c] = (int16_t)best;
+        }
+    }
+    int left = tox(x + ox), top = toy(y + oy) - (dh - 1);
+    for (int r = 0; r < dh; r++) {
+        int yy = top + r;
+        if (yy < wb || yy > wt) continue;
+        const uint8_t *src = rgb + (size_t)((int64_t)r * h / dh) * w * 3;
+        uint8_t *dst = bankmem() + yy * line_bytes();
+        for (int c = 0; c < dw; c++) {
+            int xx = left + c;
+            if (xx < wl || xx > wr) continue;
+            const uint8_t *p = src + (int)((int64_t)c * w / dw) * 3;
+            int v = bpp == 32 ? (int)(p[0] | p[1] << 8 | (uint32_t)p[2] << 16)
+                  : bpp == 16 ? p[0] >> 3 | (p[1] >> 3) << 5 | (p[2] >> 3) << 10
+                  : near[p[0] >> 3 | (p[1] >> 3) << 5 | (p[2] >> 3) << 10];
+            put_px(dst, xx, bpp, v);
+        }
+    }
+}
+
 /* *ScreenLoad (OS_SpriteOp 3): a sprite file's first sprite, in its own
  * mode (changed to if it isn't the current one), with its palette if it
  * has one (the first flash colours; 16 at most, as VIDC has), at the

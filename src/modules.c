@@ -9,7 +9,8 @@
  * OS_Module 4: finalisation entry run, code no longer dispatched); loading
  * a module whose title is already loaded replaces the old one, as RISC OS
  * does. in_memory modules are inserted where the program put them
- * (OS_Module 10), with no file. Module code runs in the processor mode the OS would use - SVC for
+ * (OS_Module 10), with no file, or copied from there into the RMA, to
+ * their image's base (OS_Module 11), known by their title. Module code runs in the processor mode the OS would use - SVC for
  * initialisation and SWIs, IRQ for interrupt code such as a sound Level 1
  * handler - with banked R13/R14, and returns to the caller's mode through
  * R14's PSR bits. OS_Module 6 claims come from the RMA above every
@@ -66,7 +67,7 @@ static int nrfree;
 static uint32_t rma_len(uint32_t size) { return (size + 4 + 15) & ~15u; }   /* a claim's extent */
 uint32_t rma_size(void) { return rma_next - RMA_BASE; }
 
-static uint32_t rma_claim(uint32_t size)
+uint32_t rma_claim(uint32_t size)
 {
     uint32_t len = rma_len(size);
     for (int k = 0; k < nrfree; k++)
@@ -83,7 +84,7 @@ static uint32_t rma_claim(uint32_t size)
     return a + 4;
 }
 
-static void rma_free(uint32_t blk)
+void rma_free(uint32_t blk)
 {
     uint32_t a = blk - 4, n = rma_len(RD32(a) - 4);
     if (a < RMA_HEAP || a + n > rma_next) return;
@@ -130,6 +131,24 @@ static uint32_t module_entry_n(uint32_t a, uint32_t r10, uint32_t pw, uint32_t r
     return err;
 }
 static uint32_t module_entry(uint32_t a, uint32_t r10, uint32_t pw) { return module_entry_n(a, r10, pw, 0); }
+
+/* Module code at a called in SVC mode with R0-R7 from r (and set from
+ * them on return) and R12 r12, as FileSwitch calls a filing system's
+ * entries: the error block, or 0 */
+uint32_t module_call(uint32_t a, uint32_t r12, uint32_t r[8])
+{
+    uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
+    memcpy(saved, R, sizeof R);
+    memcpy(R, r, 8 * sizeof *r);
+    R[12] = r12;
+    VF = 0;
+    call_code(a, MODE_SVC, HANDLER_RET | MODEBITS);
+    uint32_t err = VF ? (R[0] ? R[0] : ERROR_BUF) : 0;
+    memcpy(r, R, 8 * sizeof *r);
+    memcpy(R, saved, sizeof R);
+    NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
+    return err;
+}
 static const char *error_text(uint32_t e) { return (const char *)MEM + ((e + 4) & 0x3FFFFFF); }
 
 /* one incarnation finalised and gone (the last: the module with it) */
@@ -209,7 +228,12 @@ void modules_load(void)
     /* the RMA heap starts above every module that may be loaded */
     for (const struct roger_module *m = rg->modules; m->path; m++) {
         struct stat st;
-        if (m->in_memory) continue;                      /* (wherever the program puts it) */
+        if (m->in_memory == 1) continue;                 /* (wherever the program puts it) */
+        if (m->in_memory == 2) {                         /* (copied to its image's base) */
+            uint32_t end = (m->image->end + 0xFFFF) & ~0xFFFFu;
+            if (end > rma_next) rma_next = end;
+            continue;
+        }
         uint32_t len = stat(m->path, &st) == 0 ? (uint32_t)st.st_size : m->image->end - m->image->base;
         uint32_t end = (m->image->base + len + 0xFFFF) & ~0xFFFFu;
         if (end > rma_next) rma_next = end;
@@ -460,11 +484,23 @@ int modules_swi(uint32_t b, int x)
         } else if (R[0] == 10) {                         /* insert from memory: R1 the module, in */
             const struct roger_module *m = NULL;         /* place, its length (at most) the word before */
             for (const struct roger_module *c = rg->modules; c && c->path && !m; c++)
-                if (c->in_memory && c->image->base == R[1]) m = c;
+                if (c->in_memory == 1 && c->image->base == R[1]) m = c;
             if (!m) {
                 if (x) os_error(0x103, "Module not configured");
                 else finish("OS_Module 10: no in_memory module configured at that address");
             } else if (!module_insert(m, NULL, RD32(R[1] - 4), NULL) && x) os_error(0x101, "No room in module area");
+        } else if (R[0] == 11) {                         /* insert from memory, copying it into the */
+            const struct roger_module *m = NULL;         /* RMA: R1 the module, R2 its length */
+            uint32_t toff = RD32(R[1] + 16);
+            cstr(R[1] + toff, s, 1);
+            for (const struct roger_module *c = rg->modules; c && c->path && !m; c++)
+                if (c->in_memory == 2 && !strcasecmp(c->path, s)) m = c;
+            if (!m || toff >= R[2]) {
+                if (x) os_error(0x103, "Module not configured");
+                else finish("OS_Module 11: no in_memory 2 module configured with that title");
+            } else if (R[2] > m->image->end - m->image->base + 0x10000) {
+                if (x) os_error(0x101, "No room in module area"); else finish("OS_Module 11: module too long");
+            } else if (!module_insert(m, MEM + R[1], R[2], NULL) && x) os_error(0x101, "No room in module area");
         } else if (R[0] == 4) {                          /* delete: R1 title (%postfix: the incarnation) */
             int k, i;
             cstr(R[1], s, 1);

@@ -85,6 +85,7 @@ int  cpu_translated(uint32_t a);
 int  cpu_gate(uint32_t a, void (*fn)(uint32_t a));   /* call fn the first time a runs: 0 if it can't */
 void cpu_report_state(const char *why);
 void cpu_dump_pchist(void);
+void pchist_sample(void);                 /* (irq.c) */
 void cpu_report_interp(void);
 int  cpu_seen_gap(uint32_t a);
 void cpu_log_gap(uint32_t a);
@@ -129,10 +130,20 @@ int  video_timer_line(uint32_t latch);    /* output line where timer 1 (started 
 void video_set_bank(int which, uint32_t b);
 void video_set_screen_size(uint32_t size);   /* OS_ChangeDynamicArea 2 */
 uint32_t vidc_rgb(int line, uint8_t pixel);   /* host colour of a pixel on an output line */
+void video_set_colour(int n, uint32_t rgb);   /* palette entry n := 0xRRGGBB (PaletteV) */
 void video_default_palette(void);         /* the palette a mode change sets */
 uint32_t video_colour(uint8_t p);         /* the current mode's colour p now (0xRRGGBB) */
 uint32_t video_default_colour(int bpp, uint8_t p);   /* a default palette's (0xRRGGBB) */
 int  colourtrans_swi(uint32_t b);
+int  jpeg_swi(uint32_t b);                /* jpeg.c: SpriteExtend's JPEG SWIs */
+uint32_t rma_claim(uint32_t size);        /* modules.c: an RMA block (0: no room) */
+void rma_free(uint32_t blk);
+uint32_t module_call(uint32_t a, uint32_t r12, uint32_t r[8]);   /* module code, R0-R7 in and out */
+int  modfs_fscontrol(void);               /* modfs.c: OS_FSControl 12/16 (1 if handled) */
+uint8_t *modfs_read(const char *name, uint32_t *len, int *ours);   /* a module filing system's
+                                             file, malloc'd (NULL: not there); *ours: the name
+                                             is on one */
+int  modfs_info(const char *name, uint32_t *type, uint32_t *load, uint32_t *exec, uint32_t *len);
 int  buffers_swi(uint32_t b);             /* buffers.c: the Buffer Manager */
 int  heap_swi(uint32_t b);                /* heap.c: OS_Heap */
 int  dynarea_swi(uint32_t b);             /* dynarea.c: OS_DynamicArea (a Risc PC's) */
@@ -157,6 +168,7 @@ void vdu_char_def(int c, uint8_t *def);   /* OS_Word 10: a character's 8 rows */
 int  sprite_op_full(void);
 void vdu_paint_pixel(int x, int y, int v);   /* (fonts.c) pixel coordinates, y down; clipped */
 void vdu_origin(int *x, int *y);          /* the graphics origin, OS units */
+void vdu_plot_rgb(int x, int y, int w, int h, const uint8_t *rgb, uint32_t fac);   /* (jpeg.c) */
 void vdu_text_cursor(int *x, int *y);     /* the text cursor, in the text window */
 uint8_t vdu_colour_pixel(int c);          /* a GCOL colour number's pixel value */
 

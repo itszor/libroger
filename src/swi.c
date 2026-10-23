@@ -610,7 +610,11 @@ static void swi_body(uint32_t n, uint32_t nextpc)
         return;
     case 0x56: ev("OS_SetECFOrigin", "ii", R[0], R[1]); return;
     case 0x16: set_psr_mode((MODEBITS & ~3u) | 3); return;   /* OS_EnterOS: caller continues in SVC mode */
-    case 0x2C: CF = rg_interactive ? escape_pressed : 0; return;   /* OS_ReadEscapeState */
+    case 0x6D:                                   /* OS_PlatformFeatures (RISC OS 3.7) */
+        if (!rg->strongarm) break;
+        if (R[0] == 0) { R[0] = 1; return; }     /* 0: code areas must be synchronised (StrongARM) */
+        break;
+    case 0x2C: CF = escape_pressed != 0; return;   /* OS_ReadEscapeState (headless: a script's esc) */
     case 0x31: {                                 /* OS_ReadVduVariables */
         uint32_t i = R[0], o = R[1];
         for (;;) { uint32_t v = RD32(i); if (v == 0xFFFFFFFF) break;
@@ -694,7 +698,7 @@ static void swi_body(uint32_t n, uint32_t nextpc)
     if (b >= 0x406C0 && b <= 0x406C7) return;   /* Hourglass: nothing to show */
     if ((b == 0x65 && screen_mode_swi()) || (b == 0x68 && os_memory())) return;
     if (joystick_swi(b) || cli_swi(b, x != 0) || clib_swi(b) || files_swi(b) || disc_swi(b) || irq_swi(b) || sound_swi(b) || modules_swi(b, x != 0) || wimp_swi(b) || fonts_swi(b)
-        || resourcefs_swi(b) || messagetrans_swi(b, x != 0) || colourtrans_swi(b) || buffers_swi(b) || heap_swi(b)
+        || resourcefs_swi(b) || messagetrans_swi(b, x != 0) || colourtrans_swi(b) || jpeg_swi(b) || buffers_swi(b) || heap_swi(b)
         || (rg->vidc20 && dynarea_swi(b))) return;
     if (b == 0x43040) { R[0] = 1; return; }     /* Territory_Number: the UK */
     if (b == 0x4305E) { territory_symbols(); return; }

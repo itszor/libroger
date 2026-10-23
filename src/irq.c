@@ -428,6 +428,7 @@ static void throttle(void)
 void irq_point(void)
 {
     if (in_handler) return;
+    pchist_sample();
     if (!rg_interactive && icount >= rg_limit) finish("instruction limit");
     if (MODEBITS & 0x08000000u) {               /* IRQs disabled: they wait */
         irq_next = icount + 64;

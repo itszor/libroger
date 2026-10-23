@@ -384,6 +384,22 @@ static void os_file(void)
         mkdir(p, 0777);
         return;
     }
+    uint32_t mtype, mload, mexec, mlen;
+    if ((op == 255 || op == 5 || op == 17) && modfs_info(name, &mtype, &mload, &mexec, &mlen)) {
+        if (op != 255) { R[0] = mtype; R[2] = mload; R[3] = mexec; R[4] = mlen; R[5] = 3; return; }
+        int ours;                                                /* load a module filing system's file */
+        uint8_t *d = modfs_read(name, &mlen, &ours);
+        uint32_t at = R[3] & 0xFF ? mload : R[2];
+        if (!d || at + (uint64_t)mlen > MEMSIZE) {
+            free(d);
+            if (swi_x) { os_error(0xD6, "File not found"); return; }
+            finish("file not found");
+        }
+        memcpy(MEM + at, d, mlen);
+        free(d);
+        R[0] = 1; R[2] = mload; R[3] = mexec; R[4] = mlen; R[5] = 3;
+        return;
+    }
     int ok;
     if (op == 12 || op == 13 || op == 14 || op == 15) {          /* along a path (string or variable) */
         char list[1100];
@@ -519,6 +535,17 @@ static uint32_t open_handle(uint32_t reason, const char *name)
     int k;
     for (k = 0; k < NHANDLES && handles[k]; k++) ;
     if (k == NHANDLES) return 0;
+    if ((reason & 0xC0) == 0x40) {                         /* a module filing system's file: read */
+        int ours;                                          /* whole, served from a host copy */
+        uint32_t len = 0;
+        uint8_t *d = modfs_read(name, &len, &ours);
+        if (ours) {
+            FILE *t = d ? tmpfile() : NULL;
+            if (t) { fwrite(d, 1, len, t); rewind(t); handles[k] = t; }
+            free(d);
+            return t ? k + 1 : 0;
+        }
+    }
     int saved = saved_path(name, spath);
     if (!saved) save_path(name, spath, (reason & 0xC0) != 0x40);
     FILE *f = NULL;
@@ -841,7 +868,7 @@ int files_swi(uint32_t b)
             if (!set_csd(name)) os_error(0xD6, "Not found");
             return 1;
         }
-        return 0;
+        return modfs_fscontrol();                 /* 12, 16: a module's filing system */
     }
     return 0;
 }

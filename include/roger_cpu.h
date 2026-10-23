@@ -75,7 +75,8 @@ uint32_t hw_vector(uint32_t v);        /* a program's handler in a hardware vect
 #endif
 
 /* ---- instruction prologue: count, and service interrupts at exact counts ---- */
-void dbg_hook(uint32_t a);              /* PC histogram and current-PC tracking (cpu.c) */
+extern uint32_t g_cur_pc;               /* the instruction running (for diagnostics; the PC
+                                           histogram samples it, cpu.c) */
 /* A compiled word the program has stored to since (smc_write) is dirty:
  * its translation may be stale, so control goes back to the dispatcher,
  * which interprets the word as it now is (or, if it holds its original
@@ -85,10 +86,10 @@ extern uint8_t smc_dirty[];
 #ifdef RECOMP_TRACE
 void trace_insn(uint32_t a);
 #define I_(a) do { if (icount >= irq_next) { COV_ASYNC_ENTER(); irq_point(); COV_ASYNC_EXIT(); } \
-                    trace_insn(a); dbg_hook(a); COV_INSN(a); icount++; } while (0)
+                    trace_insn(a); g_cur_pc = (a); COV_INSN(a); icount++; } while (0)
 #else
 #define I_(a) do { if (icount >= irq_next) { COV_ASYNC_ENTER(); irq_point(); COV_ASYNC_EXIT(); } \
-                    dbg_hook(a); COV_INSN(a); icount++; } while (0)
+                    g_cur_pc = (a); COV_INSN(a); icount++; } while (0)
 #endif
 /* translated code's instruction prologue; the interpreter uses I_() */
 #define I(a)  do { if (SMC_DIRTY(a)) { npc = (a); return; } I_(a); } while (0)
@@ -258,6 +259,23 @@ static inline uint32_t SHRC(uint32_t v, int typ, uint32_t amt) { uint32_t c; shr
 #define MULS(d, m, s)       do { uint32_t _r = R[m] * R[s]; R[d] = _r; SETNZ(_r); } while (0)
 #define MLA(d, m, s, n)     do { R[d] = R[m] * R[s] + R[n]; } while (0)
 #define MLAS(d, m, s, n)    do { uint32_t _r = R[m] * R[s] + R[n]; R[d] = _r; SETNZ(_r); } while (0)
+
+/* the long multiplies (ARMv3M: on a Risc PC, the StrongARM's): RdLo, RdHi =
+   Rm * Rs (+ RdHi:RdLo for the accumulating forms); N,Z of the 64-bit
+   result when S (C and V unchanged, as the StrongARM leaves them) */
+#define MULL_(lo, hi, e, s) do { uint64_t _r = (e); R[lo] = (uint32_t)_r; R[hi] = (uint32_t)(_r >> 32); \
+        if (s) { NF = (uint32_t)(_r >> 63); ZF = _r == 0; } } while (0)
+#define UMULL_V(m, s)       ((uint64_t)R[m] * R[s])
+#define SMULL_V(m, s)       ((uint64_t)((int64_t)(int32_t)R[m] * (int32_t)R[s]))
+#define ACC_V(lo, hi)       ((uint64_t)R[hi] << 32 | R[lo])
+#define UMULL(lo, hi, m, s)  MULL_(lo, hi, UMULL_V(m, s), 0)
+#define UMULLS(lo, hi, m, s) MULL_(lo, hi, UMULL_V(m, s), 1)
+#define UMLAL(lo, hi, m, s)  MULL_(lo, hi, UMULL_V(m, s) + ACC_V(lo, hi), 0)
+#define UMLALS(lo, hi, m, s) MULL_(lo, hi, UMULL_V(m, s) + ACC_V(lo, hi), 1)
+#define SMULL(lo, hi, m, s)  MULL_(lo, hi, SMULL_V(m, s), 0)
+#define SMULLS(lo, hi, m, s) MULL_(lo, hi, SMULL_V(m, s), 1)
+#define SMLAL(lo, hi, m, s)  MULL_(lo, hi, SMULL_V(m, s) + ACC_V(lo, hi), 0)
+#define SMLALS(lo, hi, m, s) MULL_(lo, hi, SMULL_V(m, s) + ACC_V(lo, hi), 1)
 
 /* ---- single data transfer -----------------------------------------------------
  * base/off are values; P,U,W,B constants; wb = register to write back or -1. */

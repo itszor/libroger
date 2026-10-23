@@ -491,15 +491,18 @@ static int smc_stale(uint32_t a)
 
 /* ---------------------------------------------------------------- diagnostics
  * PC histogram (after the first 700000 instructions), printed at exit:
- * where the program spends its time when it seems stuck. Open-addressed
- * with a bounded probe, so a PC that finds no slot is just not counted. */
+ * where the program spends its time when it seems stuck. Sampled at each
+ * interrupt point outside handlers (irq_point: every 20000 instructions
+ * in interactive runs), not counted at every instruction, which cost
+ * translated code a call each. Open-addressed with a bounded probe, so a PC that finds no
+ * slot is just not counted. */
 #define PCHIST 65536
 #define PCHIST_PROBE 32
 static struct { uint32_t a; uint64_t n; } pchist[PCHIST];
 uint32_t g_cur_pc;
-void dbg_hook(uint32_t a)
+void pchist_sample(void)
 {
-    g_cur_pc = a;
+    uint32_t a = g_cur_pc;
     if (icount < 700000) return;
     unsigned h = (a >> 2) % PCHIST;
     for (int k = 0; k < PCHIST_PROBE; k++, h = (h + 1) % PCHIST)
@@ -609,6 +612,14 @@ static int exec_word(uint32_t pc, uint32_t i)
         if (i & (1 << 21)) v += R[rn];
         R[rd] = v;
         if (i & (1 << 20)) SETNZ(v);
+    } else if (op <= 1 && (i & 0x0F8000F0) == 0x00800090) {   /* UMULL/UMLAL/SMULL/SMLAL (ARMv3M) */
+        int hi = (i >> 16) & 15, lo = (i >> 12) & 15, rs = (i >> 8) & 15, rm = i & 15;
+        uint64_t v = i & (1 << 22) ? (uint64_t)((int64_t)(int32_t)R[rm] * (int32_t)R[rs])
+                                   : (uint64_t)R[rm] * R[rs];
+        if (i & (1 << 21)) v += (uint64_t)R[hi] << 32 | R[lo];
+        R[lo] = (uint32_t)v;
+        R[hi] = (uint32_t)(v >> 32);
+        if (i & (1 << 20)) { NF = (uint32_t)(v >> 63); ZF = v == 0; }
     } else if (op <= 1 && (i & 0x0FB00FF0) == 0x01000090) {   /* SWP */
         int rn = (i >> 16) & 15, rd = (i >> 12) & 15, rm = i & 15;
         uint32_t a = R[rn], t;
