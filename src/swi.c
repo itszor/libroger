@@ -78,6 +78,12 @@ static void os_byte(void)
         R[1] = k < 128 ? k : 0xFF;
         return;
     }
+    if (op == 229) {                                   /* Escape a character (non-zero) or a */
+        uint8_t old = (uint8_t)escape_char;            /* condition: (old AND R2) EOR R1 */
+        escape_char = (uint8_t)((old & R[2]) ^ R[1]);
+        R[1] = old;
+        return;
+    }
     if (op == 202) {                                   /* keyboard status: (old AND R2) EOR R1 */
         uint8_t old = (kbd_status & ~0x48) | (key_held(0) ? 0x08 : 0) | (key_held(1) ? 0x40 : 0);
         kbd_status = ((old & R[2]) ^ R[1]) & ~0x48;

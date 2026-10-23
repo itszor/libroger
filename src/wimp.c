@@ -774,7 +774,10 @@ int wimp_swi(uint32_t b)
             vdu_put((R[0] & 15) | (R[0] & 0x80));
         }
         return 1;
-    case 0x400DC: case 0x400D8:                             /* ProcessKey, SetPointerShape */
+    case 0x400DC: return 1;                                 /* Wimp_ProcessKey */
+    case 0x400D8:                                           /* Wimp_SetPointerShape: R0 the shape */
+        if (R[1] == 0xFFFFFFFF || R[0] == 0)                /* (0 off), R1 -1: the shape kept - */
+            pointer_shape = R[0] & 15;                      /* as OS_Byte 106 (data: not kept) */
         return 1;
     case 0x400E5:                                           /* Wimp_ReadPalette: R1 20 words (&BBGGRR00) */
         for (int k = 0; k < 20; k++) {
@@ -828,7 +831,8 @@ int wimp_swi(uint32_t b)
             if (!started++) modules_service_call(0x46, screen_mode);
         }
         R[0] = WIMP_VERSION; R[1] = TASK_HANDLE;
-        if (rg_desktop) desktop_enter();
+        escape_char = 1;                                     /* *FX 229,1: Escape a key, as the */
+        if (rg_desktop) desktop_enter();                     /* Wimp has it */
         return 1;
     case 0x400C7: case 0x400E1: poll(b); return 1;          /* Wimp_Poll, Wimp_PollIdle */
     case 0x400D4:                                            /* Wimp_CreateMenu */

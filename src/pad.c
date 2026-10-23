@@ -135,7 +135,7 @@ void pad_set(int p, int c, int source, int down)
     if (now) {
         pad_down[k]++;
         if (both >= 0) pad_down[both]++;
-        if (k == 112) escape_pressed = 1;                  /* one condition per press */
+        if (k == 112) escape_key();                        /* one per press */
         else if (map[p][c].ch >= 0) key_buffer_put(map[p][c].ch);
     } else {
         if (pad_down[k]) pad_down[k]--;

@@ -17,6 +17,15 @@
 uint8_t key_down[128];
 int mouse_x = 640, mouse_y = 512, mouse_buttons;
 int quit_requested, escape_pressed;
+int escape_char;                                  /* OS_Byte 229: Escape a character, not a condition */
+
+/* The Escape key: a condition, or (OS_Byte 229 non-zero: the Wimp sets it)
+ * ASCII 27 in the keyboard buffer */
+void escape_key(void)
+{
+    if (escape_char) key_buffer_put(27);
+    else escape_pressed = 1;
+}
 
 static SDL_Window *win;
 static SDL_Renderer *ren;
@@ -683,7 +692,7 @@ void display_poll(void)
             if (e.key.scancode == SDL_SCANCODE_LALT || e.key.scancode == SDL_SCANCODE_RALT)
                 key_down[2] = down;
             if (e.key.scancode == SDL_SCANCODE_ESCAPE) {
-                if (down && !e.key.repeat) escape_pressed = 1;   /* one condition per press */
+                if (down && !e.key.repeat) escape_key();       /* one per press */
             }
             else if (down && !e.key.repeat) {
                 int c = ascii_for(e.key.scancode, (e.key.mod & SDL_KMOD_SHIFT) != 0);

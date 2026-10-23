@@ -124,7 +124,7 @@ void script_run(void)
         else if (!strcmp(a, "release")) mouse_buttons = 0;
         else if (!strcmp(a, "buttons")) mouse_buttons = x;
         else if (!strcmp(a, "move")) { mouse_x += x; mouse_y += y; }
-        else if (!strcmp(a, "esc")) escape_pressed = 1;
+        else if (!strcmp(a, "esc")) escape_key();
         else if (!strcmp(a, "key") && x >= 1 && x <= 128) {
             if (x == 65) kbd_status ^= 0x10;                /* Caps Lock (INKEY -65) toggles */
             key_down[x - 1] = 1; key_release_ms[x] = ms + (y > 0 ? y : 200); }

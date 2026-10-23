@@ -416,6 +416,8 @@ static inline unsigned scenario_clicks(void) { return script_input() ? 0 : rg->n
 static inline unsigned scenario_keys(void) { return script_input() ? 0 : rg->nkeys; }
 extern int mouse_x, mouse_y, mouse_buttons;   /* OS units; 4 select, 2 menu, 1 adjust */
 extern int quit_requested, escape_pressed, screenshot_requested;
+extern int escape_char;                   /* OS_Byte 229 */
+void escape_key(void);                    /* the Escape key pressed: a condition, or 27 */
 int  key_buffer_get(void);
 void key_buffer_put(int c);
 void key_buffer_flush(void);
