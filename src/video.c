@@ -143,6 +143,7 @@ float mode_aspect(const struct rg_mode *m) { return m->aspect > 0 ? m->aspect : 
 /* Change mode (VDU 22, OS_ScreenMode 0, Wimp_SetMode): 0 if m isn't one.
  * A selector is copied (OS_ScreenMode 1 returns the copy). */
 static void reset_timing(void);
+static void zero_page(void);
 int video_set_mode(uint32_t m)
 {
     const struct rg_mode *mi = mode_info(m);
@@ -156,6 +157,7 @@ int video_set_mode(uint32_t m)
     }
     screen_mode = m;
     bank = display_bank = 0;
+    zero_page();
     if (!rg->desktop_pointer) pointer_shape = 0;
     video_default_palette();
     reset_timing();                       /* the OS programs VIDC and MEMC for the mode */
@@ -170,12 +172,31 @@ int video_set_mode(uint32_t m)
 uint32_t mode_bytes(const struct rg_mode *m) { return (uint32_t)m->width * m->height * m->bpp / 8; }
 static uint32_t screen_bytes;             /* after OS_ChangeDynamicArea */
 uint32_t screen_size(void) { return screen_bytes ? screen_bytes : rg->screen_size ? rg->screen_size : 0x14000; }
-void video_set_screen_size(uint32_t size) { screen_bytes = size; }
 uint32_t screen_base(void) { return rg->screen_base ? rg->screen_base : 0x2000000u - screen_size(); }
 uint32_t write_bank_addr(void) { return screen_base() + bank * mode_bytes(cur_mode()); }
+
+/* RISC OS 2 and 3.1's own workspace, which programs of their time read
+ * directly (Tertis): the soft CAM map at &164, whose first entry is the
+ * logical address of physical page 0 - where video memory starts, so the
+ * start of screen memory - and the VDU drivers' ScreenStart (their bank's
+ * address, OS_ReadVduVariables 148) at &10C0, in VduDriverWorkSpace (&1000,
+ * +&C0). Kept as the OS keeps them: on a mode change, a change of bank or
+ * of screen memory. */
+#define ZP_CAM_ENTRY0   0x164u
+#define ZP_SCREENSTART  0x10C0u
+static void zero_page(void)
+{
+    WR32(ZP_CAM_ENTRY0, screen_base());
+    WR32(ZP_SCREENSTART, write_bank_addr());
+}
+void video_set_screen_size(uint32_t size) { screen_bytes = size; zero_page(); }
 /* OS_Byte 112/113. The display bank and OS_Word 22's display start set the
  * same thing (VIDC's display start): the last one counts. */
-void video_set_bank(int which, uint32_t b) { if (which) { display_bank = b; display_off = 0; } else bank = b; }
+void video_set_bank(int which, uint32_t b)
+{
+    if (which) { display_bank = b; display_off = 0; } else bank = b;
+    zero_page();
+}
 
 /* VDU variables (OS_ReadVduVariables) and mode variables (OS_ReadModeVariable) */
 static uint32_t log2bpp(int bpp) { return bpp == 32 ? 5 : bpp == 16 ? 4 : bpp == 8 ? 3 : bpp == 4 ? 2 : bpp == 2 ? 1 : 0; }

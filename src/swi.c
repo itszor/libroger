@@ -20,7 +20,7 @@ int pressed(int inkey)
     if (inkey >= 10 && inkey <= 12 && (mouse_buttons & (4 >> (inkey - 10)))) return 1;
     if (inkey >= 1 && inkey <= 128 && key_held(inkey - 1)) return 1;   /* (headless: --script keys) */
     if (rg_interactive) return 0;
-    for (unsigned k = 0; k < rg->nkeys; k++)
+    for (unsigned k = 0; k < scenario_keys(); k++)
         if (rg->keys[k].inkey == inkey && rg->keys[k].from <= icount && icount < rg->keys[k].to) return 1;
     return 0;
 }
@@ -47,21 +47,24 @@ static void os_byte(void)
         } else if (R[2] == 0xFF && (R[1] & 0xFF) >= 0x80) {   /* scan one key (R1's low byte) */
             int k = 256 - (int)(R[1] & 0xFF);
             R[1] = R[2] = pressed(k) ? 0xFF : 0;
-        } else if (rg_interactive) {                    /* read a key, with time limit */
+        } else if (rg_interactive) {                    /* read a key, with time limit: R1 the
+                                                           character, or as R2 (&1B Escape, &FF
+                                                           timeout), as RISC OS gives it (Tertis'
+                                                           level entry tests R1 for &FF) */
             uint64_t until = display_ticks_ns() + (uint64_t)((R[2] & 0x7F) << 8 | R[1]) * CS_NS;
             for (;;) {
-                if (escape_pressed) { R[1] = 0; R[2] = 27; return; }
+                if (escape_pressed) { R[1] = R[2] = 27; return; }
                 int c = key_buffer_get();
                 if (c >= 0) { R[1] = c; R[2] = 0; return; }
-                if (display_ticks_ns() >= until) { R[1] = 0; R[2] = 0xFF; return; }
+                if (display_ticks_ns() >= until) { R[1] = R[2] = 0xFF; return; }
                 display_sleep_ns(CS_NS);
                 rt_service(0);
             }
         } else {
             int c = key_buffer_get();                   /* (--script's type:) */
             if (c >= 0) { R[1] = c; R[2] = 0; return; }
-            R[1] = 0; R[2] = 0xFF;
-            for (unsigned k = 0; k < rg->nkeys; k++)   /* a scripted Space reads as ' ' */
+            R[1] = R[2] = 0xFF;
+            for (unsigned k = 0; k < scenario_keys(); k++)   /* a scripted Space reads as ' ' */
                 if (rg->keys[k].from <= icount && icount < rg->keys[k].to && rg->keys[k].inkey == 99) {
                     R[1] = 32; R[2] = 0;
                 }
@@ -185,6 +188,18 @@ static void convert(uint32_t b)
     int l = strlen(s);
     memcpy(MEM + buf, s, l + 1);
     R[0] = buf; R[1] = buf + l; R[2] = size - l - 1;
+}
+
+/* OS_BinaryToDecimal: R0 a signed integer, as decimal digits (a leading
+ * "-" if negative, no terminator) into R1's buffer of R2 bytes; R2 returns
+ * the length. Buffer overflow if it doesn't fit. */
+static void binary_to_decimal(void)
+{
+    char s[16];
+    int l = sprintf(s, "%d", (int32_t)R[0]);
+    if ((uint32_t)l > R[2]) { os_error(0x1E4, "Buffer overflow"); return; }
+    memcpy(MEM + R[1], s, l);
+    R[2] = l;
 }
 
 /* OS_ConvertDateAndTime (R3 the format) and OS_ConvertStandardDateAndTime
@@ -669,6 +684,7 @@ static void swi_body(uint32_t n, uint32_t nextpc)
                                      : (uint32_t)(icount / TICK_STEPS); return;
     }
     if (b >= 0xD0 && b <= 0xE8) { convert(b); return; }
+    if (b == 0x28) { binary_to_decimal(); return; }                 /* OS_BinaryToDecimal */
     if (b == 0xC0 || b == 0xC1) { convert_time(b); return; }
     if (b == 0x40783 && rg->ramfs_size) {        /* RamFS_FreeSpace: R0 free, R1 the largest object */
         uint32_t used = ramfs_used();

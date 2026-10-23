@@ -33,7 +33,7 @@ void irq_headless_mips(float n)
 void recompute_irq(void)
 {
     uint64_t n = next_tick < next_vsync ? next_tick : next_vsync;
-    if (!rg_interactive && click_i < rg->nclicks && rg->clicks[click_i].icount < n) n = rg->clicks[click_i].icount;
+    if (!rg_interactive && click_i < scenario_clicks() && rg->clicks[click_i].icount < n) n = rg->clicks[click_i].icount;
     if (!rg_interactive && irq_sound_claimed()) {    /* the sound buffer's end */
         uint32_t due = sound_level0_due_us();
         uint64_t at = snd_icount + ((uint64_t)due * TICK_STEPS + 9999) / 10000;
@@ -256,8 +256,11 @@ static void ticker_events(void)
  * and then &3200040 (low) and &3200044 (high): the time since the last
  * tick, at a finer grain (Desktop Tracker times its music by it). Each
  * tick also counts in RISC OS 3's zero page word at &A38, which such
- * programs read alongside (their OS_Byte 129 says RISC OS 3) */
+ * programs read alongside (their OS_Byte 129 says RISC OS 3), and in
+ * MetroGnome at &10C (RISC OS 2 and 3's, read directly by programs of
+ * their time: Tertis' music) */
 #define ZP_CENTISECONDS 0xA38u
+#define ZP_METROGNOME 0x10Cu
 static uint32_t centiseconds;
 void ioc_latch_timer0(void)
 {
@@ -294,6 +297,7 @@ static void sound_level0_time(void)
 static void centisecond(void)
 {
     WR32(ZP_CENTISECONDS, ++centiseconds);
+    WR32(ZP_METROGNOME, centiseconds);
     if (!irq_sound_claimed()) sound_dma_advance(10000);   /* 1 cs of sound DMA */
     sound_tick();
     if (rg->centisecond) rg->centisecond();
@@ -447,7 +451,7 @@ void irq_point(void)
         vsync();
         if (script_active()) { script_run(); mouse_and_shots(); }
     }
-    if (click_i < rg->nclicks && icount >= rg->clicks[click_i].icount) {
+    if (click_i < scenario_clicks() && icount >= rg->clicks[click_i].icount) {
         uint32_t x = rg->clicks[click_i].x, y = rg->clicks[click_i].y, b = rg->clicks[click_i].buttons;
         click_i++;
         ev("mouse", "iii", x, y, b);

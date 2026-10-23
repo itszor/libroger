@@ -46,12 +46,15 @@ What the configuration covers (all but the image optional):
 
 - the program and its translation, and where it starts if not at its load
   address (`entry`, an absolute file's execution address); other programs
-  it may chain-load at their image's base (`programs`); images that copy
+  it may chain-load at their image's base (`programs`; `entry` for one
+  unpacked into place and entered part way through); images that copy
   themselves elsewhere and run from the copy (`relocations`, with code
   translated relative to `pc_bias`); relocatable modules to RMLoad first,
   or when the program asks for them (`modules`, `on_demand`: *RMLoad,
   *RMRun, OS_Module, and *RMKill again; modules never loaded together may
-  share an address and a translation); loader programs !Run runs before it
+  share an address and a translation; `in_memory`: modules the program
+  puts in memory itself and inserts where they are, OS_Module 10); loader
+  programs !Run runs before it
   (`loader_programs`, interpreted; OS_Exit ends the loader, not the run)
 - its files: the host directory standing in for the application directory
   and the RISC OS prefixes that mean it, system variables as !Run sets
@@ -83,7 +86,8 @@ translated by hand) can call SWIs and * commands with `roger_swi()` and
 Command line (any game): `--limit=N` (headless, deterministic),
 `--script=...` (scripted input: keys, clicks, taps, screenshots - in
 headless runs too, timed in emulated milliseconds, so a scenario can be
-replayed and screenshotted deterministically),
+replayed and screenshotted deterministically; one with input of its own
+replaces the game's headless scenario, one of screenshots only doesn't),
 `--desktop[=WxH]` and `--windowed-games` (below), `--trace-gaps`, `--full-os`, `--no-title`, `--scale=N`, `--mips=N` (the CPU's
 speed in interactive runs, for games that don't pace themselves:
 roger_config.mips; unthrottled by default),

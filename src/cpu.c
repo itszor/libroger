@@ -165,6 +165,7 @@ void cpu_remove_image(const struct roger_image *img)          /* (keeping the ot
  * its base. A program's leaf names the file; with dots in it, the last
  * components of its name ("Data.CODE": two files of the same leaf). */
 static const struct roger_image *pending;
+static uint32_t pending_entry;            /* where it starts */
 static int names_program(const char *name, const char *leaf)
 {
     char x[1100];
@@ -181,7 +182,7 @@ void cpu_programs_loaded(const char *name, uint32_t addr)
     if (!rg->programs) return;
     for (const struct roger_program *p = rg->programs; p->leaf; p++)
         if (names_program(name, p->leaf) && (p->at ? p->at : p->image->base) == addr) {
-            if (!p->overlay) pending = p->image;
+            if (!p->overlay) { pending = p->image; pending_entry = p->entry ? p->entry : p->image->base; }
             else {
                 cpu_remove_image(p->image);
                 cpu_add_image(p->image);
@@ -267,7 +268,7 @@ void call_addr(uint32_t a)
                 a -= pc_bias;
                 npc = a;
             }
-    if (pending && a == pending->base) {
+    if (pending && a == pending_entry) {
         fprintf(stderr, "chain-load: program at %08x replaced (icount %llu)\n", a, (unsigned long long)icount);
         roger_set_image(pending);
         pending = NULL;

@@ -21,7 +21,7 @@
  * (e.g. a loader that chain-loads the main program to &8000). When OS_File
  * or *Load loads a file whose leaf name is `leaf` to `image->base`, the
  * image becomes the one dispatched once control next arrives at that
- * address. An overlay is code the program loads and calls alongside its
+ * address (or at `entry`, where it is entered if not at its base). An overlay is code the program loads and calls alongside its
  * own (e.g. a BASIC program's CALL into a file it *Loads into a DIMmed
  * block): once loaded, its image is dispatched from as well, like a
  * module's. A file that is packed is loaded elsewhere and unpacked to the
@@ -35,6 +35,9 @@ struct roger_program {
     const struct roger_image *image;
     int overlay;
     uint32_t at;
+    uint32_t entry;                       /* where the loader enters it, if not at its base (a
+                                             program unpacked into place that starts part way
+                                             through: Tertis' TertisCode) */
 };
 
 /* A relocatable module RMLoaded before the program starts (as !Run would):
@@ -44,13 +47,17 @@ struct roger_program {
  * only loaded when the program asks for that file (*RMLoad, *RMRun,
  * OS_Module 0/1), and may be killed again (*RMKill, OS_Module 4). Modules
  * that are never loaded at the same time may share an address, and so an
- * image when their code is the same (e.g. a music player module per tune). */
+ * image when their code is the same (e.g. a music player module per tune).
+ * An in_memory module is one the program puts in memory itself and inserts
+ * where it is (OS_Module 10, R1 = image->base): no file is read, and path
+ * only names it in messages. */
 struct roger_module {
     const char *path;                     /* host path, relative to the working directory */
     const struct roger_image *image;
     int on_demand;
     const char *args;                     /* its parameters, as *RMLoad or *RMRun gives them after
                                              the name (R10 for its initialisation; NULL: none) */
+    int in_memory;                        /* inserted from memory by the program (OS_Module 10) */
 };
 
 /* An image that copies itself and runs from the copy: while `image` is the

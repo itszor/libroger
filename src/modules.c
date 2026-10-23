@@ -8,7 +8,8 @@
  * *RMRun, OS_Module 0/1, matched by file), and can be killed (*RMKill,
  * OS_Module 4: finalisation entry run, code no longer dispatched); loading
  * a module whose title is already loaded replaces the old one, as RISC OS
- * does. Module code runs in the processor mode the OS would use - SVC for
+ * does. in_memory modules are inserted where the program put them
+ * (OS_Module 10), with no file. Module code runs in the processor mode the OS would use - SVC for
  * initialisation and SWIs, IRQ for interrupt code such as a sound Level 1
  * handler - with banked R13/R14, and returns to the caller's mode through
  * R14's PSR bits. OS_Module 6 claims come from the RMA above every
@@ -150,34 +151,29 @@ static void module_kill(int k)
     while (mods[k].m) inc_kill(k, mods[k].ninc - 1);
 }
 
-static int module_load(const struct roger_module *m, const char *args)
+/* m's n bytes at buf (NULL: already in place, in_memory) put in at its
+ * image's base and initialised */
+static int module_insert(const struct roger_module *m, const uint8_t *buf, uint32_t n, const char *args)
 {
     uint32_t base = m->image->base;
-    FILE *f = fopen(m->path, "rb");
-    if (!f) { fprintf(stderr, "cannot load module %s\n", m->path); return 0; }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    rewind(f);
-    uint8_t *buf = malloc(n > 0x20 ? n : 0x20);
-    n = (long)fread(buf, 1, n, f);
-    fclose(f);
-    uint32_t toff = buf[16] | buf[17] << 8 | buf[18] << 16 | (uint32_t)buf[19] << 24;
-    const char *title = toff < (uint32_t)n ? (const char *)buf + toff : "";
+    const uint8_t *hdr = buf ? buf : MEM + base;
+    uint32_t toff = hdr[16] | hdr[17] << 8 | hdr[18] << 16 | (uint32_t)hdr[19] << 24;
+    char title[64] = "";
+    if (toff < n) snprintf(title, sizeof title, "%s", (const char *)hdr + toff);
     /* the same title already loaded: RISC OS replaces it (before the new
      * file goes in, as the two may share the address) */
     for (int j = 0; j < MAXMOD; j++)
         if (mods[j].m && !strcasecmp(title_of(mods[j].base), title)) module_kill(j);
     int k;
     for (k = 0; k < MAXMOD && mods[k].m; k++) ;
-    if (k == MAXMOD) { fprintf(stderr, "too many modules\n"); free(buf); return 0; }
-    memcpy(MEM + base, buf, n);
-    free(buf);
-    if (!m->on_demand && base + (uint32_t)n != m->image->end)
+    if (k == MAXMOD) { fprintf(stderr, "too many modules\n"); return 0; }
+    if (buf) memcpy(MEM + base, buf, n);
+    if (!m->on_demand && !m->in_memory && base + n != m->image->end)
         fprintf(stderr, "warning: module %s differs from its compiled image\n", m->path);
-    if (m->on_demand) ev("RMLoad", "s", title_of(base), (int)strlen(title_of(base)));
+    if (m->on_demand || m->in_memory) ev("RMLoad", "s", title_of(base), (int)strlen(title_of(base)));
     cpu_add_image(m->image);
     uint32_t pw = MOD_PRIVATE - 4 * k;
-    mods[k].m = m; mods[k].base = base; mods[k].size = (uint32_t)n; mods[k].private_word = pw;
+    mods[k].m = m; mods[k].base = base; mods[k].size = n; mods[k].private_word = pw;
     mods[k].chunk = RD32(base + 0x1C) & ~0x3Fu;     /* header: SWI chunk base number */
     strcpy(mods[k].inc[0].postfix, "Base");
     mods[k].inc[0].pw = pw;
@@ -192,18 +188,34 @@ static int module_load(const struct roger_module *m, const char *args)
     return 1;
 }
 
+static int module_load(const struct roger_module *m, const char *args)
+{
+    FILE *f = fopen(m->path, "rb");
+    if (!f) { fprintf(stderr, "cannot load module %s\n", m->path); return 0; }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    rewind(f);
+    uint8_t *buf = calloc(1, n > 0x20 ? n : 0x20);
+    n = (long)fread(buf, 1, n, f);
+    fclose(f);
+    int ok = module_insert(m, buf, (uint32_t)n, args);
+    free(buf);
+    return ok;
+}
+
 void modules_load(void)
 {
     if (!rg->modules) return;
     /* the RMA heap starts above every module that may be loaded */
     for (const struct roger_module *m = rg->modules; m->path; m++) {
         struct stat st;
+        if (m->in_memory) continue;                      /* (wherever the program puts it) */
         uint32_t len = stat(m->path, &st) == 0 ? (uint32_t)st.st_size : m->image->end - m->image->base;
         uint32_t end = (m->image->base + len + 0xFFFF) & ~0xFFFFu;
         if (end > rma_next) rma_next = end;
     }
     for (const struct roger_module *m = rg->modules; m->path; m++)
-        if (!m->on_demand) module_load(m, NULL);
+        if (!m->on_demand && !m->in_memory) module_load(m, NULL);
 }
 
 /* *RMLoad / *RMRun / OS_Module 0, 1: a RISC OS filename and the
@@ -215,7 +227,7 @@ int modules_rmload(const char *name, const char *args)
     struct stat a, b;
     if (!rg->modules || !hostpath(name, path) || stat(path, &b) != 0) return 0;
     for (const struct roger_module *m = rg->modules; m->path; m++)
-        if (stat(m->path, &a) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
+        if (!m->in_memory && stat(m->path, &a) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
             return module_load(m, args);
     return 0;
 }
@@ -445,6 +457,14 @@ int modules_swi(uint32_t b, int x)
             if (*params) *params++ = 0;
             while (*params == ' ') params++;
             if (!modules_rmload(s, params)) { if (x) VF = 1; else finish("OS_Module: module file not configured"); }
+        } else if (R[0] == 10) {                         /* insert from memory: R1 the module, in */
+            const struct roger_module *m = NULL;         /* place, its length (at most) the word before */
+            for (const struct roger_module *c = rg->modules; c && c->path && !m; c++)
+                if (c->in_memory && c->image->base == R[1]) m = c;
+            if (!m) {
+                if (x) os_error(0x103, "Module not configured");
+                else finish("OS_Module 10: no in_memory module configured at that address");
+            } else if (!module_insert(m, NULL, RD32(R[1] - 4), NULL) && x) os_error(0x101, "No room in module area");
         } else if (R[0] == 4) {                          /* delete: R1 title (%postfix: the incarnation) */
             int k, i;
             cstr(R[1], s, 1);

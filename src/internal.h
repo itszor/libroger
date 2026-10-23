@@ -390,6 +390,11 @@ extern int rg_joystick_opt;               /* --joystick: 1, =off: 0, else -1 */
 void joystick_start(int controllers);
 void pad_axis(int pad, int axis, int value);   /* left stick x (0) or y (1), SDL's -32768..32767 */
 int  joystick_swi(uint32_t swi);          /* 1 if it's a joystick SWI, answered */
+/* the game's headless scenario (roger_config.clicks, keys): none when a
+ * --script with input of its own replaces it */
+int script_input(void);
+static inline unsigned scenario_clicks(void) { return script_input() ? 0 : rg->nclicks; }
+static inline unsigned scenario_keys(void) { return script_input() ? 0 : rg->nkeys; }
 extern int mouse_x, mouse_y, mouse_buttons;   /* OS units; 4 select, 2 menu, 1 adjust */
 extern int quit_requested, escape_pressed, screenshot_requested;
 int  key_buffer_get(void);
