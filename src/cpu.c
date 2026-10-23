@@ -190,6 +190,7 @@ void cpu_programs_loaded(const char *name, uint32_t addr)
             }
         }
 }
+void roger_program_loaded(const char *name, uint32_t addr) { cpu_programs_loaded(name, addr); }
 
 /* ---------------------------------------------------------------- dispatch */
 static int smc_stale(uint32_t a);

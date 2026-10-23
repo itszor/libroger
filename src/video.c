@@ -315,6 +315,14 @@ static int vidc_vcr = 312, vidc_vdsr = STD_VDSR, vidc_vder = STD_VDSR + 256;
 static int vidc_hdsr = -1, vidc_hder = -1, vidc_hbsr = -1, vidc_hber = -1;   /* -1: the mode's own */
 static int vidc_vbsr = -1, vidc_vber = -1;
 static int vidc_seen[64];
+/* the window shown: its first raster line, and its first raster pixel in a
+ * 320 or 640-pixel mode (roger_config.window_x/y, or a standard mode's) */
+static int window_top(void) { return rg->window_y > 0 ? rg->window_y : STD_VDSR; }
+static int window_left(int width)
+{
+    int x = rg->window_x > 0 ? rg->window_x : 131;
+    return width == 320 ? x : 2 * x - 1;
+}
 static int memc_direct;
 static uint32_t memc_vinit, memc_vstart = 0, memc_vend = ~0u;
 
@@ -360,21 +368,71 @@ void vidc_write(uint32_t v)
  * (VDER); a timer started there with this latch (2MHz, 128 ticks a line)
  * fires at raster line VDER + latch/128 of the next frame. Returns that as
  * a line of the output window (with standard timings: latch/128 - 56). */
+int video_raster_line(uint32_t ticks)
+{
+    return vidc_vder + (int)(ticks / 128) - vidc_vcr - window_top();
+}
+
+/* Raster lines from vsync (the end of the display, VDER) to the start of
+ * the next frame's display (VDSR): the flyback, in which a program's
+ * changes still make the next picture */
+int video_flyback_lines(void)
+{
+    int n = vidc_vcr - vidc_vder + vidc_vdsr;
+    return n < 0 ? 0 : n;
+}
+
 int video_timer_line(uint32_t latch)
 {
-    int line = vidc_vder + (int)((latch + 1) / 128) - vidc_vcr - STD_VDSR;
+    int line = video_raster_line(latch + 1);
     return line < 0 ? 0 : line > 256 ? 256 : line;
 }
 
-/* Host colour (0xRRGGBB) of a pixel value on an output line. With 8 bits
- * per pixel, bits 0-3 go through the palette and bits 4-7 drive the top
- * bits of the colour directly: bit 4 red 3, bit 5 green 2, bit 6 green 3,
- * bit 7 blue 3. */
-uint32_t vidc_rgb(int line, uint8_t p)
+/* roger_config.raster_palette: the palette after each of the frame's timer
+ * 1 interrupts (irq.c), from the output line it fired on - a program that
+ * reprograms the timer from its handler to change colours every few lines
+ * down the frame (James Pond 2's colour bars). Region 0 is the palette the
+ * vsync handlers left (vidc_palette_top), region k the one the kth timer
+ * interrupt left. Without it there are two regions, above and below
+ * palette_split, the second the palette as it is now. */
+#define MAXRASTER 512
+static int raster_n, raster_line[MAXRASTER];
+static uint32_t raster_pal[MAXRASTER][16];
+
+void video_raster_start(void) { raster_n = 0; }
+
+void video_raster_add(int line)
+{
+    if (raster_n == MAXRASTER) return;
+    raster_line[raster_n] = line < 0 ? 0 : line;
+    memcpy(raster_pal[raster_n++], vidc_palette, sizeof vidc_palette);
+}
+
+int video_palette_regions(void) { return raster_n ? raster_n + 1 : 2; }
+
+int video_palette_region(int line)
+{
+    if (!raster_n) return line >= palette_split;
+    int lo = 0, hi = raster_n;                     /* the splits at or above the line */
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (raster_line[mid] <= line) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+/* Host colour (0xRRGGBB) of a pixel value in a region, or on an output
+ * line. With 8 bits per pixel, bits 0-3 go through the palette and bits
+ * 4-7 drive the top bits of the colour directly: bit 4 red 3, bit 5 green
+ * 2, bit 6 green 3, bit 7 blue 3. */
+uint32_t vidc_rgb_region(int region, uint8_t p)
 {
     if (full_palette()) return vidc20_pal[p];
-    return vidc1_rgb(line < palette_split ? vidc_palette_top : vidc_palette, p);
+    if (!raster_n) return vidc1_rgb(region ? vidc_palette : vidc_palette_top, p);
+    return vidc1_rgb(region ? raster_pal[region - 1] : vidc_palette_top, p);
 }
+
+uint32_t vidc_rgb(int line, uint8_t p) { return vidc_rgb_region(video_palette_region(line), p); }
 
 static uint32_t vidc1_rgb(const uint32_t *pal, uint8_t p)
 {
@@ -483,14 +541,17 @@ const uint8_t *displayed(void)
     int hprog = (m->width == 320 || m->width == 640) &&
                 ((vidc_hdsr >= 0 && vidc_hder > vidc_hdsr) || vidc_hbsr >= 0 || vidc_hber >= 0);
     int vb = vidc_vbsr > vidc_vdsr || (vidc_vber >= 0 && vidc_vber < vidc_vder);   /* border over the display */
-    if (!vidc1_mode(m) || (!memc_direct && !hprog && !vb && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
+    int moved = rg->window_x > 0 || rg->window_y > 0;              /* a window of the game's own */
+    if (!vidc1_mode(m) || (!memc_direct && !hprog && !vb && !moved && vidc_vdsr == STD_VDSR && vidc_vder == STD_VDSR + 256))
         return MEM + screen_base() + display_off + display_bank * sz;
     uint32_t p = memc_direct ? memc_vinit : display_off + display_bank * sz;
     uint32_t end = memc_direct && memc_vend != ~0u ? memc_vend + 16 : total;
-    int first = vidc_vdsr - STD_VDSR, last = vidc_vder - STD_VDSR;   /* output lines shown */
+    int top = window_top();
+    int first = vidc_vdsr - top, last = vidc_vder - top;            /* output lines shown */
     static const int delay[9] = {0, 19, 11, 0, 7, 0, 0, 0, 5};
-    int bpp = m->bpp, start = m->width == 320 ? 131 : 261;
-    int dstart = start, dpx = m->width;                            /* the display, in raster pixels */
+    int bpp = m->bpp, std = m->width == 320 ? 131 : 261;           /* a standard mode's display */
+    int start = m->width == 320 || m->width == 640 ? window_left(m->width) : std;
+    int dstart = std, dpx = m->width;                              /* the display, in raster pixels */
     if (hprog && vidc_hdsr >= 0 && vidc_hder > vidc_hdsr) {
         dstart = vidc_hdsr * 2 + delay[bpp];
         dpx = (vidc_hder - vidc_hdsr) * 2;
@@ -514,7 +575,7 @@ const uint8_t *displayed(void)
             l[n] = MEM[screen_base() + (p % total)];
             if (++p == end) p = memc_direct ? memc_vstart : 0;
         }
-        int ry = y + STD_VDSR;                                     /* its raster line */
+        int ry = y + top;                                          /* its raster line */
         if (vb && ((vidc_vbsr >= 0 && ry < vidc_vbsr) || (vidc_vber >= 0 && ry >= vidc_vber))) {
             memset(d, 0, row);                                     /* under the border */
             continue;

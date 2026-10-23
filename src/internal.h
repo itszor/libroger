@@ -127,6 +127,13 @@ uint32_t vduvar(uint32_t v);
 uint32_t modevar(int64_t mode, uint32_t v);   /* mode -1: the current one */
 int  video_os_word(uint32_t r0, uint8_t *blk);   /* OS_Word 12/21/22 */
 int  video_timer_line(uint32_t latch);    /* output line where timer 1 (started at flyback) fires */
+int  video_raster_line(uint32_t ticks);   /* ...the output line ticks after flyback (unclamped) */
+int  video_flyback_lines(void);           /* raster lines from vsync to the display's start */
+void video_raster_start(void);            /* roger_config.raster_palette: a frame's palettes, */
+void video_raster_add(int line);          /* ...and the palette from an output line on */
+int  video_palette_regions(void);         /* the frame's palettes: lines 0.. use region 0, */
+int  video_palette_region(int line);      /* ...and an output line's */
+uint32_t vidc_rgb_region(int region, uint8_t pixel);   /* host colour of a pixel in a region */
 void video_set_bank(int which, uint32_t b);
 void video_set_screen_size(uint32_t size);   /* OS_ChangeDynamicArea 2 */
 uint32_t vidc_rgb(int line, uint8_t pixel);   /* host colour of a pixel on an output line */

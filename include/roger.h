@@ -147,6 +147,14 @@ struct roger_config {
                                              (the default), 1 multisync, 3 VGA - a module that
                                              only defines its modes for one (e.g. 480-line VGA
                                              modes) needs it */
+    int window_x, window_y;               /* where on the raster the window shown starts, for a
+                                             program that sets VIDC's display timing itself and
+                                             puts its picture elsewhere than a standard mode's
+                                             (its edges would be cut off): the first pixel, from
+                                             the start of
+                                             horizontal sync in a 320-pixel mode's pixels, and
+                                             the first line, from vertical sync (0: a standard
+                                             mode's display start, 131 and 38) */
     int vidc20;                           /* a Risc PC rather than an Archimedes: VIDC20's
                                              modes (taller ones, multisync numbered modes,
                                              RISC OS 3.5 mode selectors, 16 and 32 bits per
@@ -165,6 +173,19 @@ struct roger_config {
                                              some games use directly) for each interrupt */
     int irq1v_timer_always;               /* ...and call it for timer 1 every frame, even
                                              when the timer isn't running */
+    int raster_palette;                   /* timer 1 fires all the way down the frame, every
+                                             latch + 1 ticks, its handler run each time and the
+                                             palette it leaves shown from that line: colour
+                                             bars, a handler that changes a colour every few
+                                             lines (otherwise only its first interrupt is run,
+                                             one palette change a frame) */
+    int present_after_flyback;            /* the picture (and a screenshot) is taken where the
+                                             next frame's display starts, the flyback after
+                                             vsync (VCR - VDER + VDSR lines), not at vsync: a
+                                             program that flips banks or sets the display start
+                                             after its vsync wait, while its vsync handler has
+                                             set VIDC (a fine scroll), shows both in one
+                                             picture, as on the machine */
 
     /* --- input */
     int pointer_y_offset;                 /* OS units between the host pointer and the game's
@@ -251,6 +272,12 @@ void roger_run_until(uint32_t stop);
 void roger_idle(unsigned n);                           /* host code waiting: n instructions' worth of time passes */
 void roger_set_image(const struct roger_image *img);  /* dispatch addresses through img */
 const struct roger_image *roger_current_image(void);
+void roger_program_loaded(const char *name, uint32_t addr);   /* the program has put file name at
+                                             addr its own way (OS_Find and OS_BGet, its own
+                                             unpacker): selects a roger_program as OS_File
+                                             loading it there would - once its words are in
+                                             place, or the stores putting them there leave
+                                             the translation stale */
 long roger_load_file(const char *path, uint32_t addr);
 int  roger_hostpath(const char *name, char *out);     /* RISC OS filename -> host path (2048 bytes) */
 int  roger_interactive(void);                          /* 0 in headless (--limit) runs */

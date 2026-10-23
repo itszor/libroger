@@ -299,9 +299,12 @@ int display_init(int scale, const char *fs, const char *shader)
     return 1;
 }
 
-/* Pixel values -> host colours, for the lines above the palette split and
- * below it, rebuilt for each frame. */
-static uint32_t pal_top[256], pal_bottom[256];
+/* Pixel values -> host colours, for each of the frame's palette regions
+ * (video_palette_region(): above the palette split and below it, or with
+ * roger_config.raster_palette one for each timer interrupt down the
+ * frame), rebuilt for each frame. */
+#define MAXREGIONS 513
+static uint32_t pals[MAXREGIONS][256];
 static uint32_t apply_gamma(uint32_t c)
 {
     if (!gamma_set) return c;
@@ -310,18 +313,18 @@ static uint32_t apply_gamma(uint32_t c)
 static void update_palette(void)
 {
     if (cur_mode()->bpp > 8) return;
-    int n = 1 << cur_mode()->bpp;
-    for (int c = 0; c < n; c++) {
-        pal_top[c] = apply_gamma(vidc_rgb(0, (uint8_t)c));
-        pal_bottom[c] = apply_gamma(vidc_rgb(256, (uint8_t)c));
-    }
+    int n = 1 << cur_mode()->bpp, regions = video_palette_regions();
+    if (regions > MAXREGIONS) regions = MAXREGIONS;
+    for (int r = 0; r < regions; r++)
+        for (int c = 0; c < n; c++) pals[r][c] = apply_gamma(vidc_rgb_region(r, (uint8_t)c));
 }
 
 /* one line of the frame (mode pixels) as host colours */
 static void convert_line(const uint8_t *pix, int y, uint32_t *row)
 {
     const struct rg_mode *m = cur_mode();
-    const uint32_t *pal = y < palette_split ? pal_top : pal_bottom;
+    int region = video_palette_region(y);
+    const uint32_t *pal = pals[region < MAXREGIONS ? region : MAXREGIONS - 1];
     const uint8_t *src = pix + (size_t)y * (m->width * m->bpp / 8);
     int bpp = m->bpp;
     if (bpp == 32) {                              /* &00BBGGRR */

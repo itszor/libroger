@@ -17,6 +17,8 @@ static uint64_t next_tick = 20000, next_vsync = 40000;
 static uint64_t next_tick_ns, next_vsync_ns;
 static uint64_t snd_icount, snd_ns;       /* the sound DMA clock (sound_level0_time) */
 static unsigned click_i;
+static int present_pending;               /* roger_config.present_after_flyback: the picture due */
+static uint64_t present_due_ns, present_due_icount;
 volatile uint64_t rg_last_service_ns;      /* watchdog: last time rt_service() ran a vsync */
 
 void irq_start_clock(uint64_t now) { next_tick_ns = next_vsync_ns = now; }
@@ -34,6 +36,7 @@ void recompute_irq(void)
 {
     uint64_t n = next_tick < next_vsync ? next_tick : next_vsync;
     if (!rg_interactive && click_i < scenario_clicks() && rg->clicks[click_i].icount < n) n = rg->clicks[click_i].icount;
+    if (!rg_interactive && present_pending && present_due_icount < n) n = present_due_icount;
     if (!rg_interactive && irq_sound_claimed()) {    /* the sound buffer's end */
         uint32_t due = sound_level0_due_us();
         uint64_t at = snd_icount + ((uint64_t)due * TICK_STEPS + 9999) / 10000;
@@ -169,9 +172,13 @@ static void call_irq1v(uint32_t irq_bit)
  * the program has it running - the usual way to change the palette part
  * way down the frame. The display gets the palette as the vsync handlers
  * left it above the line where the timer fires, and as the timer handler
- * left it below. */
+ * left it below. With roger_config.raster_palette the timer goes on firing
+ * down the frame, every latch + 1 ticks (the latch as the handler leaves
+ * it), and each line it fires on gets the palette its handler left: colour
+ * bars. */
 static void frame_irq(void)
 {
+    if (rg->raster_palette) video_raster_start();
     uint32_t written = MEM[IOC + 0x50] | MEM[IOC + 0x54] << 8;
     if (written) timer1_latch = written;          /* programmed since the last frame */
     MEM[IOC + 0x50] = MEM[IOC + 0x54] = 0;
@@ -186,6 +193,21 @@ static void frame_irq(void)
     if (running && devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
     else if (!(rg->irq1v && running)) { palette_split = 0; return; }
     palette_split = video_timer_line(latch);
+    if (!rg->raster_palette) return;
+    uint32_t ticks = latch + 1;                   /* since flyback */
+    video_raster_add(video_raster_line(ticks));
+    for (int k = 0; k < 1024; k++) {
+        uint32_t w = MEM[IOC + 0x50] | MEM[IOC + 0x54] << 8;
+        if (w) { latch = w; MEM[IOC + 0x50] = MEM[IOC + 0x54] = 0; }
+        if (!(MEM[IOC + 0x18] & 0x40)) break;     /* the timer's interrupt masked off */
+        ticks += latch + 1;
+        int line = video_raster_line(ticks);
+        if (line >= 256) break;
+        if (rg->irq1v) call_irq1v(0x40);
+        if (devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
+        video_raster_add(line);
+    }
+    timer1_latch = latch;                         /* the next frame's, unless the vsync handlers change it */
 }
 
 /* ---------------------------------------------------------------- SWIs */
@@ -358,10 +380,21 @@ static void vsync(void)
  * for. (Presenting comes last: what the program does at flyback - palette
  * pushes, bank flips, pointer redraw in its vsync event - shows in the
  * frame scanned out right after it.) */
+static void shot(void)
+{
+    static int shots;
+    if (!screenshot_requested) return;
+    char fn[64];
+    snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
+    if (desktop_visible()) desktop_screenshot(fn);
+    else display_screenshot(displayed(), fn);
+    fprintf(stderr, "saved %s\n", fn);
+    screenshot_requested = 0;
+}
+
 static void mouse_and_shots(void)
 {
     static int last_buttons;
-    static int shots;
     if (mouse_buttons != last_buttons) {
         last_buttons = mouse_buttons;
         ev("mouse", "iii", mouse_x, mouse_y, mouse_buttons);
@@ -369,14 +402,29 @@ static void mouse_and_shots(void)
         call_vector(0x10, 5, m);
         if (rg_desktop) desktop_buttons_changed(mouse_x, mouse_y, mouse_buttons);
     }
-    if (screenshot_requested) {
-        char fn[64];
-        snprintf(fn, sizeof fn, "screenshot-%d.bmp", ++shots);
-        if (desktop_visible()) desktop_screenshot(fn);
-        else display_screenshot(displayed(), fn);
-        fprintf(stderr, "saved %s\n", fn);
-        screenshot_requested = 0;
-    }
+    if (!rg->present_after_flyback) shot();
+}
+
+/* roger_config.present_after_flyback: the picture (and a screenshot) is
+ * taken when the next frame's display starts, the flyback after vsync,
+ * so that what the program sets in the flyback - a bank flip or display
+ * start after its vsync wait, with the fine scroll its vsync handler set -
+ * makes the same picture, as on the machine. Otherwise it is taken at
+ * vsync, once the vsync handlers have run. */
+static void present(void)
+{
+    present_pending = 0;
+    shot();
+    if (!rg_interactive) return;
+    if (desktop_visible()) desktop_present();
+    else display_present(displayed());
+}
+
+static void present_after_flyback(uint64_t now)
+{
+    present_pending = 1;
+    present_due_ns = now + (uint64_t)video_flyback_lines() * 64000;     /* 64us a line */
+    present_due_icount = icount + (uint64_t)video_flyback_lines() * VSYNC_STEPS / 312;
 }
 
 void rt_service(int vsync_now)
@@ -388,7 +436,9 @@ void rt_service(int vsync_now)
         next_tick_ns += CS_NS;
         centisecond();
     }
-    if (vsync_now || now >= next_vsync_ns) {
+    int vsync_due = vsync_now || now >= next_vsync_ns;
+    if (present_pending && (now >= present_due_ns || vsync_due)) present();
+    if (vsync_due) {
         next_vsync_ns += 2 * CS_NS;
         display_poll();
         if (script_active()) script_run();
@@ -396,14 +446,19 @@ void rt_service(int vsync_now)
         rg_last_service_ns = now;
         vsync();
         mouse_and_shots();
-        if (desktop_visible()) desktop_present();
-        else display_present(displayed());
+        if (rg->present_after_flyback) present_after_flyback(now);
+        else present();
     }
 }
 
 void wait_vsync(void)
 {
     uint64_t now = display_ticks_ns();
+    if (present_pending && now < present_due_ns) {
+        display_sleep_ns(present_due_ns - now);
+        rt_service(0);
+        now = display_ticks_ns();
+    }
     if (now < next_vsync_ns) display_sleep_ns(next_vsync_ns - now);
     rt_service(1);
 }
@@ -447,10 +502,13 @@ void irq_point(void)
         next_tick += TICK_STEPS;
         centisecond();
     }
+    if (present_pending && icount >= present_due_icount) present();
     if (icount >= next_vsync) {
         next_vsync += VSYNC_STEPS;
+        if (present_pending) present();
         vsync();
         if (script_active()) { script_run(); mouse_and_shots(); }
+        if (rg->present_after_flyback) present_after_flyback(0);
     }
     if (click_i < scenario_clicks() && icount >= rg->clicks[click_i].icount) {
         uint32_t x = rg->clicks[click_i].x, y = rg->clicks[click_i].y, b = rg->clicks[click_i].buttons;
