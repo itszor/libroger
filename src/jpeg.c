@@ -8,22 +8,16 @@
  *     units, R3 scale factors as OS_SpriteOp 52's or 0, R4 its length, R5
  *     flags: dithering)
  *   &49983 JPEG_PlotFileScaled (R0 a filename, R1-R3 as above, R4 flags)
- * Decoded with stb_image (Debian's libstb-dev: public domain, header
- * only), plotted by the VDU drivers (vdu_plot_rgb) in any depth, without
+ * Decoded with libjpeg (Debian's libjpeg-dev; a game links -ljpeg),
+ * plotted by the VDU drivers (vdu_plot_rgb) in any depth, without
  * dithering; drawn only when the VDU drivers draw (interactive runs,
  * --full-os). The transformed plots (&49984, &49985) aren't done. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
+#include <jpeglib.h>
 #include "internal.h"
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-function"
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_JPEG
-#define STBI_NO_STDIO
-#include <stb/stb_image.h>
-#pragma GCC diagnostic pop
 
 /* (not SpriteExtend's own error number, which isn't known here) */
 static void bad_jpeg(void) { os_error(0x1E6, "Bad JPEG file"); }
@@ -56,26 +50,61 @@ static void density(const uint8_t *p, uint32_t n, int *ratio, int *xd, int *yd)
     }
 }
 
+/* libjpeg's errors longjmp back here rather than exit; its warnings
+ * (a corrupt image it decodes anyway) say nothing */
+struct jerr { struct jpeg_error_mgr pub; jmp_buf jb; };
+static void jerr_exit(j_common_ptr c) { longjmp(((struct jerr *)c->err)->jb, 1); }
+static void jerr_message(j_common_ptr c) { (void)c; }
+
+/* an image's header read into *c (created: jpeg_destroy_decompress it
+ * after), 0 if it isn't a JPEG libjpeg can give as RGB; the caller has
+ * set e->jb for its errors */
+static int jpeg_open(struct jpeg_decompress_struct *c, struct jerr *e, const uint8_t *p, uint32_t n)
+{
+    c->err = jpeg_std_error(&e->pub);
+    e->pub.error_exit = jerr_exit;
+    e->pub.output_message = jerr_message;
+    jpeg_create_decompress(c);
+    jpeg_mem_src(c, p, n);
+    return jpeg_read_header(c, TRUE) == JPEG_HEADER_OK
+        && c->jpeg_color_space != JCS_CMYK && c->jpeg_color_space != JCS_YCCK;
+}
+
 static void info(const uint8_t *p, uint32_t n, uint32_t flags)
 {
-    int w, h, comp, ratio, xd, yd;
-    if (!stbi_info_from_memory(p, (int)n, &w, &h, &comp)) { bad_jpeg(); return; }
+    struct jpeg_decompress_struct c;
+    struct jerr e;
+    int ratio, xd, yd;
+    if (setjmp(e.jb) || !jpeg_open(&c, &e, p, n)) { jpeg_destroy_decompress(&c); bad_jpeg(); return; }
+    uint32_t w = c.image_width, h = c.image_height;
+    int grey = c.num_components == 1;
+    jpeg_destroy_decompress(&c);
     density(p, n, &ratio, &xd, &yd);
-    R[0] = (comp == 1) | ratio << 2;
-    R[2] = (uint32_t)w, R[3] = (uint32_t)h, R[4] = (uint32_t)xd, R[5] = (uint32_t)yd;
-    if (!(flags & 1)) R[6] = (uint32_t)w * 16 * 3 + 20000;   /* a strip of MCUs and tables */
+    R[0] = grey | ratio << 2;
+    R[2] = w, R[3] = h, R[4] = (uint32_t)xd, R[5] = (uint32_t)yd;
+    if (!(flags & 1)) R[6] = w * 16 * 3 + 20000;   /* a strip of MCUs and tables */
 }
 
 static void plot(const uint8_t *p, uint32_t n, int x, int y, uint32_t fac)
 {
-    int w, h, comp;
-    if (!stbi_info_from_memory(p, (int)n, &w, &h, &comp)) { bad_jpeg(); return; }
+    struct jpeg_decompress_struct c;
+    struct jerr e;
+    uint8_t *volatile rgb = NULL;
+    if (setjmp(e.jb) || !jpeg_open(&c, &e, p, n)) { jpeg_destroy_decompress(&c); free(rgb); bad_jpeg(); return; }
+    int w = (int)c.image_width, h = (int)c.image_height;
     ev("JPEG_Plot", "iiii", (uint32_t)w, (uint32_t)h, (uint32_t)x, (uint32_t)y);
-    if (!rg_full_os) return;
-    uint8_t *rgb = stbi_load_from_memory(p, (int)n, &w, &h, &comp, 3);
-    if (!rgb) { bad_jpeg(); return; }
+    if (!rg_full_os) { jpeg_destroy_decompress(&c); return; }
+    c.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&c);
+    rgb = malloc((size_t)w * h * 3);
+    while (c.output_scanline < c.output_height) {
+        JSAMPROW row = rgb + (size_t)c.output_scanline * w * 3;
+        jpeg_read_scanlines(&c, &row, 1);
+    }
+    jpeg_finish_decompress(&c);
+    jpeg_destroy_decompress(&c);
     vdu_plot_rgb(x, y, w, h, rgb, fac);
-    stbi_image_free(rgb);
+    free(rgb);
 }
 
 int jpeg_swi(uint32_t b)

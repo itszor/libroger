@@ -36,5 +36,5 @@ clean:
 	rm -rf build libroger.a libroger-cov.a
 
 # What a game links with: libroger.a plus
-#   $(pkg-config --libs sdl3) -lm -lpthread
+#   $(pkg-config --libs sdl3) -ljpeg -lm -lpthread
 .PHONY: all cov clean

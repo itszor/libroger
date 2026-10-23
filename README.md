@@ -17,11 +17,12 @@ one game is supplied by that game's own build.
 Building
 --------
 
-    make            libroger.a        (needs SDL3: pkg-config sdl3)
+    make            libroger.a        (needs SDL3: pkg-config sdl3, and
+                                       libjpeg: Debian's libjpeg-dev)
     make cov COV=<dir with cov.h>     libroger-cov.a, with coverage hooks
 
 A game links its translated code and a small game.c with libroger.a and
-`$(pkg-config --libs sdl3) -lm -lpthread`, compiling with
+`$(pkg-config --libs sdl3) -ljpeg -lm -lpthread`, compiling with
 `-I<libroger>/include`.
 
 Using it
