@@ -19,15 +19,18 @@
  * Level 1 (SoundChannels), unless a program or module installs its own:
  * per channel, the attached voice generator fills its interleaved samples.
  * Voice generator header (Sound_InstallVoice): +0 Fill, +4 Update, +8
- * GateOn, +12 GateOff, +16 Instantiate, +20 Free, +24 Install (branches),
- * +28 offset to the name. Entries are called with the return address
+ * GateOn, +12 GateOff, +16 Instantiate, +20 Free, +24 Install, +28 offset
+ * to the name. RISC OS never calls Install (voices are modules, which have
+ * their initialisation entry for it), and some blocks have something else
+ * there: DinoSaw's MCode has its name offset at +24, and runs into its own
+ * installation code after it. Entries are called with the return address
  * pushed on the stack (they exit with LDMFD R13!,{PC}) and R6 >= 0,
  * R7 = channel - 1, R9 = the channel's SCCB, R10 = buffer end,
  * R11 = channel count (sample stride), R12 = the channel's first sample;
  * Fill/Update/GateOn return R0 = 8 while the channel stays active, GateOff
  * returns the channel's final state (the buffer flushed); Instantiate and
  * Free are called (in SVC mode, from the SWI) when a voice is attached to
- * or detached from a channel, Install when it is installed. SCCB layout:
+ * or detached from a channel. SCCB layout:
  * +0 amplitude, +1 voice, +3 flags, +4 pitch (the 16-bit increment added
  * to the top of a 32-bit phase accumulator per sample; 256-byte cycles),
  * +12 duration as a number of buffer fills; the rest is the voice's. As in
@@ -546,7 +549,6 @@ static int sound_impl(uint32_t b)
         R[1] = slot;
         uint32_t header = R[0];
         R[0] = header + RD32(header + 28); /* the voice's name */
-        voice_admin(0, header + 24);      /* Install */
         return 1;
     }
     case 0x40184:                          /* Sound_RemoveVoice */
