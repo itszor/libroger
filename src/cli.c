@@ -236,6 +236,14 @@ static int if_condition(const char *e)
     return 0;
 }
 
+/* *Load's and *Save's addresses: hex, with or without a '&' (Small: *LOAD
+ * <Small$Dir>.TI &1FEC000, its panel straight into the screen) */
+static uint32_t hex_addr(const char *s, char **e)
+{
+    if (*s == '&') s++;
+    return (uint32_t)strtoul(s, e, 16);
+}
+
 /* the word w (case-insensitive) at s, followed by a space: a pointer past it */
 /* s starts with command w (any case), or an abbreviation of it - a
  * prefix ending in '.', as "L." for Load: the first command it abbreviates
@@ -401,7 +409,7 @@ int cli_command(const char *line, int x)
         }
         arg(&p, word, sizeof word);
         uint32_t addr;
-        if (*word) addr = (uint32_t)strtoul(word, NULL, 16);
+        if (*word) addr = hex_addr(word, NULL);
         else {                                   /* its load address; an Absolute (&FF8) at &8000, */
             uint32_t load, exec;                 /* as Alias$@LoadType_FF8 (Load %*0 8000) has it */
             file_info(path, &load, &exec);       /* (Phaethon's loader *Loads !RunImage so) */
@@ -489,12 +497,12 @@ int cli_command(const char *line, int x)
         arg(&p, name, sizeof name);
         arg(&p, word, sizeof word);
         char *e;
-        uint32_t start = (uint32_t)strtoul(word, &e, 16), end;
-        if (*e == '+') end = start + (uint32_t)strtoul(e + 1, NULL, 16);   /* start+length */
+        uint32_t start = hex_addr(word, &e), end;
+        if (*e == '+') end = start + hex_addr(e + 1, NULL);   /* start+length */
         else {
             arg(&p, word, sizeof word);
-            if (*word == '+') end = start + (uint32_t)strtoul(word + 1, NULL, 16);
-            else end = (uint32_t)strtoul(word, NULL, 16);
+            if (*word == '+') end = start + hex_addr(word + 1, NULL);
+            else end = hex_addr(word, NULL);
         }
         if (end < start || end - start > MEMSIZE - start) return cli_error(x);
         save_file(name, start, end - start);
@@ -548,7 +556,9 @@ int cli_command(const char *line, int x)
         R[0] = saved;
         return 1;
     }
-    if ((p = word_at(s, "FX"))) {
+    /* *FX: its number may follow the name directly (*FX19, *FX112,1), as the
+     * kernel's own commands that take numbers allow */
+    if ((p = word_at(s, "FX")) || (!strncasecmp(s, "FX", 2) && (isdigit((unsigned char)s[2]) || s[2] == '&') && (p = s + 2))) {
         uint32_t v[3] = {0, 0, 0};
         for (int k = 0; k < 3; k++) {
             p = skip(p);
