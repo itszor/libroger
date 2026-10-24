@@ -113,6 +113,9 @@ The emulated machine
               blocks, the sound system's Level 1 block and tables,
               OS_GetEnv's strings, SVC and IRQ stacks, module private words
     &1800000  RMA: modules, then OS_Module claims from &1810000
+    &1F033C0  the kernel's SWI handler, where the branch at &8 leads (an
+              address only: RISC OS 2 and 3.1's copy of it is there, and
+              copy protection jumps to it to make SWIs)
     ........  screen memory, ending at &2000000 by default
     &3200000  IOC (timer 1 latch and IRQ registers), &3400000 VIDC,
               &3600000 MEMC: writes are emulated
@@ -183,7 +186,8 @@ Implemented:
   programs test to tell one from an Archimedes: Wimp version 3.50 and the
   RISC OS 3.5 names for OS_SWINumberFromString
 - files: OS_File (load, save, catalogue; along a path string or
-  variable; directories), OS_Find, OS_GBPB (including
+  variable - an empty path, or a full name, is the name as it is;
+  directories), OS_Find, OS_GBPB (including
   directory listings, 9/10/12: the program's saved copies as well as the
   originals), OS_Args,
   OS_BGet/BPut on the host directory, catalogue information from `,xxx` /
@@ -262,7 +266,7 @@ Implemented:
   the text cursor), OS_Word (character definitions, palette, pointer - its shape, bounding
   box, and the mouse and pointer position, set and read - display
   start, the real-time clock: the host's, or fixed in headless runs),
-  OS_Mouse, OS_GetEnv, OS_ReadMemMapInfo (4MB) and OS_ReadMemMapEntries
+  OS_Mouse, OS_ReadPalette, OS_GetEnv, OS_ReadMemMapInfo (4MB) and OS_ReadMemMapEntries
   (screen memory from physical 0, the sound page, the application slot), OS_ReadSysInfo 2 (the
   hardware: IOC/MEMC1/VIDC1, or a Risc PC's IOMD/VIDC20), OS_ServiceCall,
   OS_ChangeEnvironment (MemoryLimit and ApplicationSpace: the end of the

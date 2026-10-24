@@ -627,6 +627,17 @@ static void swi_body(uint32_t n, uint32_t nextpc)
                    WR32(o, vduvar(v)); i += 4; o += 4; }
         return;
     }
+    case 0x2F: {                                 /* OS_ReadPalette: R0 colour, R1 16-18 (the colour, */
+        uint32_t rgb = 0;                        /* its flash states: none here), 24 border, 25 */
+        if (R[1] == 25) rgb = R[0] >= 1 && R[0] <= 3 ? pointer_rgb[R[0]] : 0;  /* pointer -> */
+        else if (R[1] != 24) {                   /* R2, R3 &BBGGRR00 (the border isn't kept: black) */
+            uint8_t blk[5] = {(uint8_t)R[0]};
+            video_os_word(11, blk);
+            rgb = (uint32_t)blk[2] << 16 | (uint32_t)blk[3] << 8 | blk[4];
+        }
+        R[2] = R[3] = (rgb & 0xFF) << 24 | (rgb >> 8 & 0xFF) << 16 | (rgb >> 16 & 0xFF) << 8;
+        return;
+    }
     case 0x3F:                                   /* OS_CheckModeValid: R0 mode; -1 and C set if not */
         if (!mode_info(R[0]) || (R[0] > 127 && R[0] < 0x100)) { R[0] = 0xFFFFFFFF; CF = 1; } else CF = 0;
         return;

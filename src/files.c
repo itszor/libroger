@@ -360,11 +360,29 @@ int save_file(const char *name, uint32_t addr, uint32_t len)
 }
 
 /* ---------------------------------------------------------------- OS_File */
+/* A full name, which FileSwitch doesn't look up along a path: one that
+ * starts at a directory prefix or a variable (<Game$Dir>.), or names a
+ * filing system or disc (":"), the root, the library, the user root
+ * directory or the current one ($ & % @) */
+static int absolute_name(const char *name)
+{
+    char x[1100];
+    while (*name == ' ') name++;
+    if (strip_prefixes(name) != name || *name == '<') return 1;
+    gstrans(name, x, sizeof x);
+    return strchr(x, ':') || (*x && strchr("$&%@", *x));
+}
+
 /* name looked up along a path: a comma-separated list of prefixes
- * ("Levels.!Beginner.,Lib:"), each tried in turn */
+ * ("Levels.!Beginner.,Lib:"), each tried in turn; an empty list is one
+ * empty prefix, the name as it is (Fire & Ice's Intro loads
+ * <Fire_Ice$Dir>.Fire with OS_File 12, R4 an empty string). A full name
+ * is the name as it is whatever the list (the game loads its files so,
+ * R4 left pointing at its workspace) */
 static int hostpath_along(const char *name, const char *list, char *out)
 {
     char full[2200];
+    if (!*list || absolute_name(name)) return hostpath_read(name, out);
     while (*list) {
         const char *e = strchr(list, ',');
         int l = e ? (int)(e - list) : (int)strlen(list);

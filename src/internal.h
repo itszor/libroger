@@ -21,7 +21,10 @@
 #define WIMP_SPRITES 0x3100000u           /* the Wimp's sprite pool (*IconSprites, Wimp_SpriteOp) */
 #define FILER_DATA   0x2F00000u           /* the Filer's windows' indirected data (filer.c) */
 #define RETURN_TO_OS 0x3FFFFF0u           /* R14 the program starts with */
-#define OS_SWI_ENTRY 0x3FFFFD0u           /* the kernel's SWI handler, where the OS's branch at &8 leads */
+#define OS_SWI_ENTRY 0x1F033C0u           /* the kernel's SWI handler, where the OS's branch at &8
+                                             leads: where RISC OS 2 and 3.1 have it (its copy in
+                                             RAM, before SvcTable at &1F033FC). Fire & Ice's
+                                             protection makes SWIs by jumping there */
 #define HANDLER_RET  ROGER_HANDLER_RET
 #define LOAD         ROGER_LOAD
 #define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
