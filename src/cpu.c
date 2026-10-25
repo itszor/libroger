@@ -69,7 +69,7 @@ void set_user_reg(int k, uint32_t v)
  * The program image (where &8000-based code is dispatched; replaced when a
  * chain-loaded program takes over) plus any others, e.g. modules in the
  * RMA, dispatched wherever their address range is. */
-struct loaded { const struct roger_image *img; fn_t *tab; int overlay; };
+struct loaded { const struct roger_image *img; fn_t *tab; int overlay; const uint8_t *orig; };
 #define MAXIMG 64
 static struct loaded prog, extra[MAXIMG];
 static int nextra;
@@ -95,6 +95,7 @@ void roger_set_image(const struct roger_image *img)
 {
     prog.img = img;
     prog.tab = tab_for(img);
+    prog.orig = NULL;
     img_base = img->base; img_end = img->end; codemap = img->codemap;
     (void)COV_TAG(img->cov_tag ? img->cov_tag : 'P');
 }
@@ -149,7 +150,10 @@ void smc_write_extra(uint32_t a)
 
 void cpu_add_image(const struct roger_image *img)
 {
-    if (nextra < MAXIMG) { extra[nextra].img = img; extra[nextra].tab = tab_for(img); extra[nextra].overlay = 0; nextra++; }
+    if (nextra < MAXIMG) {
+        extra[nextra].img = img; extra[nextra].tab = tab_for(img); extra[nextra].overlay = 0; extra[nextra].orig = NULL;
+        nextra++;
+    }
     extra_span();
 }
 
@@ -166,6 +170,37 @@ void cpu_remove_image(const struct roger_image *img)          /* (keeping the ot
  * components of its name ("Data.CODE": two files of the same leaf). */
 static const struct roger_image *pending;
 static uint32_t pending_entry;            /* where it starts */
+static const uint8_t *pending_orig;
+
+/* A program unpacked in place (roger_program.unpacked): the image's words
+ * as translated, read once from the file; and, as its packed file is
+ * loaded, every compiled word marked dirty that doesn't hold its unpacked
+ * value now, so that code dispatched there before the unpacking has put
+ * it back is interpreted as it is */
+static const uint8_t *unpacked_words(const struct roger_program *p)
+{
+    static struct { const struct roger_program *p; uint8_t *w; } cache[MAXIMG];
+    int k;
+    for (k = 0; k < MAXIMG && cache[k].p; k++)
+        if (cache[k].p == p) return cache[k].w;
+    uint32_t n = p->image->end - p->image->base;
+    uint8_t *w = calloc(n, 1);
+    FILE *f = fopen(p->unpacked, "rb");
+    if (!f || fread(w, 1, n, f) == 0) { fprintf(stderr, "%s: can't read it\n", p->unpacked); finish("no unpacked image"); }
+    fclose(f);
+    if (k < MAXIMG) cache[k].p = p, cache[k].w = w;
+    return w;
+}
+static void mark_unpacked(const struct roger_image *img, const uint8_t *orig)
+{
+    for (uint32_t a = img->base; a < img->end; a += 4)
+        if (img->codemap[(a - img->base) >> 5] >> (((a - img->base) >> 2) & 7) & 1) {
+            uint32_t w;
+            memcpy(&w, orig + (a - img->base), 4);
+            if (RD32(a) != w) smc_dirty[a >> 5] |= 1 << ((a >> 2) & 7);
+            else smc_dirty[a >> 5] &= ~(1 << ((a >> 2) & 7));
+        }
+}
 static int names_program(const char *name, const char *leaf)
 {
     char x[1100];
@@ -182,11 +217,18 @@ void cpu_programs_loaded(const char *name, uint32_t addr)
     if (!rg->programs) return;
     for (const struct roger_program *p = rg->programs; p->leaf; p++)
         if (names_program(name, p->leaf) && (p->at ? p->at : p->image->base) == addr) {
-            if (!p->overlay) { pending = p->image; pending_entry = p->entry ? p->entry : p->image->base; }
-            else {
+            const uint8_t *orig = p->unpacked ? unpacked_words(p) : NULL;
+            if (!p->overlay) {
+                pending = p->image; pending_entry = p->entry ? p->entry : p->image->base;
+                pending_orig = orig;
+            } else {
                 cpu_remove_image(p->image);
                 cpu_add_image(p->image);
-                if (nextra && extra[nextra - 1].img == p->image) extra[nextra - 1].overlay = 1;
+                if (nextra && extra[nextra - 1].img == p->image) {
+                    extra[nextra - 1].overlay = 1;
+                    extra[nextra - 1].orig = orig;
+                    if (orig) mark_unpacked(p->image, orig);
+                }
             }
         }
 }
@@ -272,6 +314,7 @@ void call_addr(uint32_t a)
     if (pending && a == pending_entry) {
         fprintf(stderr, "chain-load: program at %08x replaced (icount %llu)\n", a, (unsigned long long)icount);
         roger_set_image(pending);
+        if ((prog.orig = pending_orig)) mark_unpacked(pending, pending_orig);
         pending = NULL;
         pc_bias = 0;
     }
@@ -287,7 +330,10 @@ void call_addr(uint32_t a)
             return;
         }
     }
-    if (SMC_DIRTY(a) && smc_stale(a)) { interp_step(); return; }   /* self-modified: as it is now */
+    /* self-modified: as it is now; or back as it was, but not an entry of
+       the translation (translated code left at it, the word dirty: a
+       program unpacked in place, part way through) - as translated */
+    if (SMC_DIRTY(a) && (smc_stale(a) || !cpu_translated(a))) { interp_step(); return; }
     fn_t f = 0;
     static uint32_t dbg_lo = 1, dbg_hi;           /* ROGER_INTERP=from:to (hex): interpret that range,
                                                     to tell a translation fault from the program's */
@@ -450,7 +496,9 @@ void undefined_insn(uint32_t a, uint32_t w)
  * the store) marks it dirty and, the first time, records the word it
  * held: the one it was translated from. Translated code leaves through
  * the dispatcher at a dirty word (I()); dispatching it interprets it,
- * unless it holds its original value again. */
+ * unless it holds its original value again. In a program unpacked in
+ * place (roger_program.unpacked) the original is the unpacked image's
+ * word, whatever was there before. */
 uint8_t smc_dirty[MEMSIZE / 32];
 #define SMC_ORIG 65536
 static struct { uint32_t a, w; } smc_orig[SMC_ORIG];      /* open addressing; a = 0 free */
@@ -473,7 +521,8 @@ void smc_write(uint32_t a)
 {
     a &= 0x3FFFFFC;
     if (SMC_DIRTY(a) && !(ngates && gate_take(a))) return;
-    if (!orig_slot(a, 1)) return;             /* (table full: left as it was) */
+    struct loaded *l = owner(a);
+    if (!(l && l->orig) && !orig_slot(a, 1)) return;     /* (table full: left as it was) */
     smc_dirty[a >> 5] |= 1 << ((a >> 2) & 7);
     static uint32_t s[64]; static int n;
     if (seen(s, &n, 64, a)) return;
@@ -485,7 +534,9 @@ void smc_write(uint32_t a)
  * interpret it); one back to its original value is clean again */
 static int smc_stale(uint32_t a)
 {
-    uint32_t *o = orig_slot(a, 0);
+    struct loaded *l = owner(a);
+    uint32_t w, *o = orig_slot(a, 0);
+    if (l && l->orig) memcpy(o = &w, l->orig + (a - l->img->base), 4);
     if (o && RD32(a) == *o) { smc_dirty[a >> 5] &= ~(1 << ((a >> 2) & 7)); return 0; }
     return 1;
 }

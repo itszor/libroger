@@ -38,6 +38,12 @@ struct roger_program {
     uint32_t entry;                       /* where the loader enters it, if not at its base (a
                                              program unpacked into place that starts part way
                                              through: Tertis' TertisCode) */
+    const char *unpacked;                 /* a file loaded packed over its own image and unpacked
+                                             in place: the image as unpacked (host path, as it was
+                                             translated), what its code is compared with to tell
+                                             self-modification - not the packed bytes the stores
+                                             unpacking it find there (Magic Pockets' Intro and
+                                             Pockets, RNC-packed at &8000). NULL: none */
 };
 
 /* A relocatable module RMLoaded before the program starts (as !Run would):

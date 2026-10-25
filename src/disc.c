@@ -3,11 +3,12 @@
  * copy protection checks. The files themselves are read from the host
  * directory (files.c); this is only for programs that go below them.
  *
- * The disc (roger_config.floppy, --floppy=) is an HxC .hfe image - its MFM
- * tracks are decoded here into the sectors on them, keeping each one's ID
- * (C, H, R, N) and whether its data CRC is good, so a protection track of
- * odd sizes and deliberate CRC errors reads as it did on the drive - or a
- * flat image (.adf: ADFS D/E, 800K, or F, 1600K; every sector good; a dump
+ * The disc (roger_config.floppy, --floppy=) is an HxC .hfe image or an
+ * Arculator .apd (uncompressed: SuperSpider's weave.py keeps it so) - their
+ * MFM tracks are decoded here into the sectors on them, keeping each one's
+ * ID (C, H, R, N) and whether its data CRC is good, so a protection track
+ * of odd sizes and deliberate CRC errors reads as it did on the drive - or
+ * a flat image (.adf: ADFS D/E, 800K, or F, 1600K; every sector good; a dump
  * short by whole tracks has those unformatted).
  *
  * A DiscOp addresses the disc as bytes, which a disc record turns into
@@ -109,8 +110,9 @@ static void mfm_track(int cyl, int head, const uint8_t *raw, long len)
                 s.ok = crc16(rec, size + 1, crc16(a1, 3, 0xFFFF)) == (rec[size + 1] << 8 | rec[size + 2]);
                 memcpy(s.data, rec + 1, size);
                 if (id_end <= len * 8) add_sector(cyl, head, s); else free(s.data);
-                i = p + 16L * (size + 3) - 1; sr = 0;
             }
+            i = p + 16 - 1; sr = 0;                /* (not past the data: a sector's ID may be
+                                                      inside another's, as on Magic Pockets' track 79) */
             free(rec);
             have_id = 0;
         }
@@ -118,6 +120,7 @@ static void mfm_track(int cyl, int head, const uint8_t *raw, long len)
     free(cells);
 }
 
+static int pick_geometry(int nsides);
 static int load_hfe(const uint8_t *d, long size)
 {
     int ntracks = d[9], nsides = d[10], enc = d[11];
@@ -138,7 +141,45 @@ static int load_hfe(const uint8_t *d, long size)
         for (int s = 0; s < nsides && s < 2; s++) mfm_track(t, s, side[s], n[s]);
         free(side[0]); free(side[1]);
     }
-    /* the disc's own geometry: the commonest track layout */
+    return pick_geometry(nsides);
+}
+
+/* An Arculator .apd ("APDX0001"; Arculator's own are gzipped, this is the
+ * image inside): a word triple per track side, interleaved by side (track
+ * 0 side 0, track 0 side 1, ...) - the lengths in bits of its FM, MFM and
+ * high density MFM cell streams - then each side's streams in that order,
+ * each padded to a byte, most significant bit first. ADFS discs are on the
+ * MFM (double density) one. */
+#define APD_SIDES 166
+static int load_apd(const uint8_t *d, long size)
+{
+    long p = 8 + 12L * APD_SIDES;
+    if (size < p) return 0;
+    for (int i = 0; i < APD_SIDES; i++) {
+        long len[3];
+        for (int k = 0; k < 3; k++) {
+            const uint8_t *w = d + 8 + 12 * i + 4 * k;
+            len[k] = (((long)w[0] | w[1] << 8 | w[2] << 16 | (long)w[3] << 24) + 7) >> 3;
+        }
+        if (p + len[0] + len[1] + len[2] > size) return 0;
+        if (len[1] && i / 2 < CYLS) {
+            uint8_t *cells = malloc(len[1]);       /* least significant bit first, as mfm_track reads */
+            for (long k = 0; k < len[1]; k++) {
+                uint8_t b = d[p + len[0] + k], r = 0;
+                for (int j = 0; j < 8; j++) r |= ((b >> j) & 1) << (7 - j);
+                cells[k] = r;
+            }
+            mfm_track(i / 2, i % 2, cells, len[1]);
+            free(cells);
+        }
+        p += len[0] + len[1] + len[2];
+    }
+    return pick_geometry(2);
+}
+
+/* the disc's own geometry: the commonest track layout */
+static int pick_geometry(int nsides)
+{
     int best = 0;
     for (int c = 0; c < CYLS; c++)
         for (int h = 0; h < 2; h++) {
@@ -190,7 +231,10 @@ void disc_load(const char *path)
     uint8_t *d = malloc(size);
     if (fread(d, 1, size, f) != (size_t)size) size = 0;
     fclose(f);
-    loaded = size >= 512 && !memcmp(d, "HXCPICFE", 8) ? load_hfe(d, size) : load_flat(d, size);
+    if (size >= 2 && d[0] == 0x1F && d[1] == 0x8B)
+        fprintf(stderr, "floppy: %s is gzipped: an .apd is read as the image inside\n", path);
+    loaded = size >= 512 && !memcmp(d, "HXCPICFE", 8) ? load_hfe(d, size) :
+             size >= 8 && !memcmp(d, "APDX0001", 8) ? load_apd(d, size) : load_flat(d, size);
     free(d);
     if (!loaded) fprintf(stderr, "floppy: %s: no disc read\n", path);
 }
