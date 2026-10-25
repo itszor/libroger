@@ -368,6 +368,7 @@ uint8_t vsync_counter;                     /* OS_Byte 176: down by one each vsyn
 static void vsync(void)
 {
     monotonic += 2;
+    interval_tick();
     vsync_counter--;
     video_pointer_frame();                       /* the pointer image, as the cursor DMA reads it */
     frame_irq();

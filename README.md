@@ -265,7 +265,9 @@ Implemented:
   INKEY, the OS version, events, Escape, banks, mode, the vsync counter,
   the text cursor), OS_Word (character definitions, palette, pointer - its shape, bounding
   box, and the mouse and pointer position, set and read - display
-  start, the real-time clock: the host's, or fixed in headless runs),
+  start, the real-time clock: the host's, or fixed in headless runs; the system
+  clock and the interval timer, counting centiseconds from what was last
+  written, event 5 when the interval timer passes zero),
   OS_Mouse, OS_ReadPalette, OS_GetEnv, OS_ReadMemMapInfo (4MB) and OS_ReadMemMapEntries
   (screen memory from physical 0, the sound page, the application slot), OS_ReadSysInfo 2 (the
   hardware: IOC/MEMC1/VIDC1, or a Risc PC's IOMD/VIDC20), OS_ServiceCall,

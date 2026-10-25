@@ -107,6 +107,7 @@ void recompute_irq(void);
 void rt_service(int vsync_now);
 void wait_vsync(void);
 void call_vector(unsigned vec, int nregs, const uint32_t *regs);
+void interval_tick(void);                  /* swi.c: the interval timer, event 5 at zero */
 int  irq_swi(uint32_t b);                 /* OS_Claim/Release, device vectors */
 int  irq_sound_claimed(void);             /* a program has the sound DMA interrupt (device 9) */
 void irq_sound(void);                     /* ...call its handler */

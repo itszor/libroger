@@ -141,6 +141,23 @@ uint8_t kbd_status = 0x30;                   /* Caps Lock and Shift Lock off */
  * the monotonic timer from the value OS_Word 2 last wrote (0 at start) */
 static uint64_t sysclock_base;
 
+/* The interval timer (OS_Word 3 and 4): 5 bytes, counting up each
+ * centisecond with the monotonic timer from the value OS_Word 4 last wrote
+ * (0 at start); event 5 when it passes zero (interval_tick, each vsync) */
+static uint64_t interval_base, interval_last;
+static uint64_t interval_timer(void) { return (interval_base + monotonic) & 0xFFFFFFFFFFull; }
+
+void interval_tick(void)
+{
+    uint64_t t = interval_timer();
+    int crossed = t < interval_last;
+    interval_last = t;
+    if (crossed) {
+        uint32_t r[1] = {5};
+        call_vector(0x10, 1, r);
+    }
+}
+
 static void os_word(void)
 {
     uint8_t *blk = MEM + R[1];
@@ -152,6 +169,19 @@ static void os_word(void)
             uint64_t t = 0;
             for (int k = 4; k >= 0; k--) t = t << 8 | blk[k];
             sysclock_base = monotonic - t;
+        }
+        ev("OS_Word", "is", R[0], blk, 5);
+        return;
+    }
+    if (R[0] == 3 || R[0] == 4) {                    /* read / write the interval timer */
+        if (R[0] == 3) {
+            uint64_t t = interval_timer();
+            for (int k = 0; k < 5; k++) blk[k] = (uint8_t)(t >> 8 * k);
+        } else {
+            uint64_t t = 0;
+            for (int k = 4; k >= 0; k--) t = t << 8 | blk[k];
+            interval_base = t - monotonic;
+            interval_last = t;
         }
         ev("OS_Word", "is", R[0], blk, 5);
         return;
