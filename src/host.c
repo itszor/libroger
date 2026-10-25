@@ -46,7 +46,13 @@ static int shown_rows = 256;                    /* the frame's rows shown */
  * pointer's (roger_config.pointer_y_offset). */
 #define POINTER_Y_OFFSET (desktop_visible() ? 0 : rg->pointer_y_offset)   /* (not the desktop's) */
 
-/* The host pointer maps absolutely onto the screen (OS units 1280x1024),
+/* The screen's size in OS units: the mode's pixels times its eig factors -
+ * 1280x1024 for the standard modes, not for every mode (Diggers' 320x200
+ * at eig 2,2 is 1280x800; a Risc PC's 640x480, 1280x960) */
+static int os_w(void) { return cur_mode()->width << cur_mode()->xeig; }
+static int os_h(void) { return cur_mode()->height << cur_mode()->yeig; }
+
+/* The host pointer maps absolutely onto the screen (its OS units),
  * so a click or a touch lands exactly where the game's own software pointer
  * is drawn - the host pointer itself is hidden over the window. When the
  * game sets the pointer position (OS_Word 21,3), move the host pointer
@@ -70,8 +76,8 @@ void display_set_mouse(int x, int y)
      * it has moved since, and the mouse would hardly move. */
     if (moved && win && SDL_GetMouseFocus() == win) {
         float wx, wy;
-        SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * lw / 1280,
-                                      (1023 + POINTER_Y_OFFSET - y + 0.5f) * LH / 1024 - crop_y0, &wx, &wy);
+        SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * lw / os_w(),
+                                      (os_h() - 1 + POINTER_Y_OFFSET - y + 0.5f) * LH / os_h() - crop_y0, &wx, &wy);
         SDL_WarpMouseInWindow(win, wx, wy);
     }
 }
@@ -724,11 +730,11 @@ void display_poll(void)
                     mouse_y = (tex_h - 1 - (int)y) * 2;
                 } else {                                /* (within the rows shown) */
                     y = y < 0 ? 0 : y > lh - 0.01f ? lh - 0.01f : y;
-                    mouse_x = (int)(x * 1280 / lw);
-                    mouse_y = 1023 + POINTER_Y_OFFSET - (int)((y + crop_y0) * 1024 / LH);
+                    mouse_x = (int)(x * os_w() / lw);
+                    mouse_y = os_h() - 1 + POINTER_Y_OFFSET - (int)((y + crop_y0) * os_h() / LH);
                 }
             }
-            int mw = desk ? tex_w * 2 : 1280, mh = desk ? tex_h * 2 : 1024;
+            int mw = desk ? tex_w * 2 : os_w(), mh = desk ? tex_h * 2 : os_h();
             mouse_x = mouse_x < 0 ? 0 : mouse_x > mw - 1 ? mw - 1 : mouse_x;
             mouse_y = mouse_y < 0 ? 0 : mouse_y > mh - 1 ? mh - 1 : mouse_y;
             if (e.type != SDL_EVENT_MOUSE_MOTION) {

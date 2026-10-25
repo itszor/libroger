@@ -369,10 +369,16 @@ static void vsync(void)
 {
     monotonic += 2;
     vsync_counter--;
+    video_pointer_frame();                       /* the pointer image, as the cursor DMA reads it */
     frame_irq();
     if (rg->frame) rg->frame();
-    uint32_t r[2] = {4, 0};                      /* event 4: vsync */
-    call_vector(0x10, 2, r);
+    /* event 4: vsync, raised from the kernel's VSync interrupt handler,
+     * which is entered as device handlers are, with R3 = IOC: a claimant may
+     * clear the interrupt itself (Diggers' intro: strb r1,[r3,#&14], with
+     * the program's R3 a store into MEMC's control register that turned the
+     * sound DMA off) */
+    uint32_t r[4] = {4, 0, R[2], IOC};
+    call_vector(0x10, 4, r);
     key_events();
 }
 

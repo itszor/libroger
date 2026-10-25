@@ -624,6 +624,51 @@ static void pointer_colour(int n, uint32_t rgb)
     if (n >= 1 && n <= 3 && pointer_rgb[n] != rgb) { pointer_rgb[n] = rgb; pointer_gen++; }
 }
 
+/* The pointer's image as the cursor DMA shows it, in the kernel's
+ * workspace. Where, and its layout, are inferred from one program, not
+ * checked against RISC OS: Diggers' FastPtr module (1993), which animates
+ * the pointer without calling the OS - SetPointer32x16 copies each frame,
+ * 32x16 at 2 bits a pixel, to &1F038F8 and to &1F039F8, and zeros the 16
+ * rows after each, so two buffers of 32 pixels (8 bytes) by 32 rows. On
+ * the RISC OS it was written for, writing there must change the pointer
+ * shown; which versions keep it there, and whether the kernel copies the
+ * current shape there on a definition or selection (OS_Word 21,0, OS_Byte
+ * 106) as this does, isn't known. Once a frame, what's written there that
+ * libroger didn't put there is taken as the current shape's image. (On an
+ * Archimedes only: RISC OS 3.5's workspace is laid out differently.) */
+#define PTR_IMAGE 0x1F038F8u
+#define PTR_IMAGES 2
+static uint8_t ptr_image[256];                  /* what the OS last put there */
+static int ptr_synced_shape = -1, ptr_synced_gen = -1;
+void video_pointer_frame(void)
+{
+    int s = pointer_shape & 15;
+    if (rg->vidc20 || !s) return;
+    struct pointer_def *d = &pointer_defs[s];
+    if (s != ptr_synced_shape || pointer_gen != ptr_synced_gen) {   /* the OS copies the shape */
+        memset(ptr_image, 0, sizeof ptr_image);
+        for (int y = 0; y < d->h && y < 32; y++)
+            for (int x = 0; x < d->w; x++)
+                ptr_image[y * 8 + x / 4] |= (uint8_t)(d->pix[y * 32 + x] << 2 * (x % 4));
+        for (int k = 0; k < PTR_IMAGES; k++) memcpy(MEM + PTR_IMAGE + 0x100 * k, ptr_image, sizeof ptr_image);
+        ptr_synced_shape = s; ptr_synced_gen = pointer_gen;
+        return;
+    }
+    for (int k = 0; k < PTR_IMAGES; k++) {
+        const uint8_t *b = MEM + PTR_IMAGE + 0x100 * k;
+        if (!memcmp(b, ptr_image, sizeof ptr_image)) continue;
+        memcpy(ptr_image, b, sizeof ptr_image);                    /* the program's: shown */
+        if (!d->w) d->ax = d->ay = 0;
+        d->w = 32; d->h = 32;
+        for (int y = 0; y < 32; y++)
+            for (int x = 0; x < 32; x++)
+                d->pix[y * 32 + x] = b[y * 8 + x / 4] >> 2 * (x % 4) & 3;
+        for (int j = 0; j < PTR_IMAGES; j++) memcpy(MEM + PTR_IMAGE + 0x100 * j, ptr_image, sizeof ptr_image);
+        ptr_synced_gen = ++pointer_gen;
+        return;
+    }
+}
+
 int video_os_word(uint32_t r0, uint8_t *blk)
 {
     if (r0 == 21 && (blk[0] == 4 || blk[0] == 6)) {     /* read the mouse (unbuffered) or pointer */

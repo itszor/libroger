@@ -138,6 +138,7 @@ int  video_palette_regions(void);         /* the frame's palettes: lines 0.. use
 int  video_palette_region(int line);      /* ...and an output line's */
 uint32_t vidc_rgb_region(int region, uint8_t pixel);   /* host colour of a pixel in a region */
 void video_set_bank(int which, uint32_t b);
+void video_pointer_frame(void);              /* the pointer image a program writes itself */
 void video_set_screen_size(uint32_t size);   /* OS_ChangeDynamicArea 2 */
 uint32_t vidc_rgb(int line, uint8_t pixel);   /* host colour of a pixel on an output line */
 void video_set_colour(int n, uint32_t rgb);   /* palette entry n := 0xRRGGBB (PaletteV) */

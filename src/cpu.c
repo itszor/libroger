@@ -607,7 +607,11 @@ static int exec_word(uint32_t pc, uint32_t i)
     npc = next;
     if (!cond_ok(i >> 28)) return 0;
     uint32_t op = (i >> 25) & 7;
-    if (op <= 1 && (i & 0x0FC000F0) == 0x00000090) {          /* MUL/MLA */
+    /* MUL/MLA: the ARM2 takes bits 7 and 4 set (bits 27-22 clear) as a
+     * multiply, whatever bits 6-5 are - &0000FFFF is muleq r0,pc,pc.
+     * Diggers calls one, with Z set, a word before a routine (an
+     * assembler's slip); as andeq pc,r0,pc,ror pc it would jump away */
+    if (op <= 1 && (i & 0x0FC00090) == 0x00000090) {
         int rd = (i >> 16) & 15, rn = (i >> 12) & 15, rs = (i >> 8) & 15, rm = i & 15;
         uint32_t v = R[rm] * R[rs];
         if (i & (1 << 21)) v += R[rn];
