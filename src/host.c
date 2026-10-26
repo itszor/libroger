@@ -52,6 +52,16 @@ static int shown_rows = 256;                    /* the frame's rows shown */
 static int os_w(void) { return cur_mode()->width << cur_mode()->xeig; }
 static int os_h(void) { return cur_mode()->height << cur_mode()->yeig; }
 
+/* A bounding box (OS_Word 21,1) that isn't within the screen: the mouse
+ * reads as a stick centred on 0 (Guile's flight, -320,-256 to 320,256; its
+ * panel, -420,-620 to 100,-490). On RISC OS the mouse moves by counts,
+ * clamped only to the box; mapping the window onto the screen would leave
+ * most of such a box out of reach, so the window maps onto the box instead. */
+static int box_off_screen(void)
+{
+    return !desktop_visible() && (mbox[0] < 0 || mbox[1] < 0 || mbox[2] >= os_w() || mbox[3] >= os_h());
+}
+
 /* The host pointer maps absolutely onto the screen (its OS units),
  * so a click or a touch lands exactly where the game's own software pointer
  * is drawn - the host pointer itself is hidden over the window. When the
@@ -76,6 +86,10 @@ void display_set_mouse(int x, int y)
      * it has moved since, and the mouse would hardly move. */
     if (moved && win && SDL_GetMouseFocus() == win) {
         float wx, wy;
+        if (box_off_screen())
+            SDL_RenderCoordinatesToWindow(ren, (x - mbox[0] + 0.5f) * lw / (mbox[2] - mbox[0] + 1),
+                                          (mbox[3] - y + 0.5f) * lh / (mbox[3] - mbox[1] + 1), &wx, &wy);
+        else
         SDL_RenderCoordinatesToWindow(ren, (x + 0.5f) * lw / os_w(),
                                       (os_h() - 1 + POINTER_Y_OFFSET - y + 0.5f) * LH / os_h() - crop_y0, &wx, &wy);
         SDL_WarpMouseInWindow(win, wx, wy);
@@ -728,15 +742,25 @@ void display_poll(void)
                 if (desk) {                             /* the desktop: a pixel is 2x2 OS units */
                     mouse_x = (int)x * 2;
                     mouse_y = (tex_h - 1 - (int)y) * 2;
+                } else if (box_off_screen()) {          /* the window: the box */
+                    x = x < 0 ? 0 : x > lw - 0.01f ? lw - 0.01f : x;
+                    y = y < 0 ? 0 : y > lh - 0.01f ? lh - 0.01f : y;
+                    mouse_x = mbox[0] + (int)(x * (mbox[2] - mbox[0] + 1) / lw);
+                    mouse_y = mbox[3] - (int)(y * (mbox[3] - mbox[1] + 1) / lh);
                 } else {                                /* (within the rows shown) */
                     y = y < 0 ? 0 : y > lh - 0.01f ? lh - 0.01f : y;
                     mouse_x = (int)(x * os_w() / lw);
                     mouse_y = os_h() - 1 + POINTER_Y_OFFSET - (int)((y + crop_y0) * os_h() / LH);
                 }
             }
+            if (box_off_screen()) {                 /* (relative mode: confined to the box) */
+                mouse_x = mouse_x < mbox[0] ? mbox[0] : mouse_x > mbox[2] ? mbox[2] : mouse_x;
+                mouse_y = mouse_y < mbox[1] ? mbox[1] : mouse_y > mbox[3] ? mbox[3] : mouse_y;
+            } else {
             int mw = desk ? tex_w * 2 : os_w(), mh = desk ? tex_h * 2 : os_h();
             mouse_x = mouse_x < 0 ? 0 : mouse_x > mw - 1 ? mw - 1 : mouse_x;
             mouse_y = mouse_y < 0 ? 0 : mouse_y > mh - 1 ? mh - 1 : mouse_y;
+            }
             if (e.type != SDL_EVENT_MOUSE_MOTION) {
                 int bit = e.button.button == SDL_BUTTON_LEFT ? 4 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : 1;
                 int kn = bit == 4 ? 9 : bit == 2 ? 10 : 11;
