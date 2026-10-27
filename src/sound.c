@@ -56,6 +56,9 @@ static int16_t snd_linear[128];
 #define SCCB_ACTIVE  0x08
 static uint32_t snd_voice[33];            /* installed voice generators, by slot */
 static uint8_t snd_attached[8];           /* voice slot per channel */
+static uint32_t snd_free_from = 10;       /* where Sound_InstallVoice looks for a free slot:
+                                             10 past the ROM voices, 1 once SoundChannels
+                                             is reinitialised (sound_reinit_channels) */
 static int snd_pend[8];                   /* pending voice calls, as SoundChannels' SCCB flags:
                                              &80 gate off, &40 gate on, &20 update */
 #define DEFAULT_TUNING 0x6AB0                /* the master pitch: &4000 is middle C */
@@ -224,6 +227,20 @@ void sound_tick(void)
             q[k] = q[--nq];
             q_call(s, a, b);
         } else k++;
+}
+
+/* *RMReinit / *RMFaster SoundChannels: the module starts again with an
+ * empty voice table - the ROM voices (WaveSynth-Beep and the rest) are
+ * gone until their own modules are reinitialised - so voices installed
+ * after it get slots from 1 (Gyrinus II's Loadfx2Meg does this before
+ * loading its 16 voice modules, and the game attaches them as 1-16) */
+void sound_reinit_channels(void)
+{
+    beep_install();
+    memset(snd_voice, 0, sizeof snd_voice);
+    memset(snd_attached, 0, sizeof snd_attached);
+    memset(snd_pend, 0, sizeof snd_pend);
+    snd_free_from = 1;
 }
 
 /* *ChannelVoice: attach a voice (a slot number or a name) to a channel */
@@ -539,11 +556,16 @@ static int sound_impl(uint32_t b)
          * (WaveSynth-Beep, four StringLib, four Percussion), so a module's
          * voice gets 10 or later, and games attach channels to the numbers
          * they know it gets (Chocks Away: 10, 13, 14). Only Beep is made
-         * here; 2-9 are given out when 10-32 are full. */
+         * here; 2-9 are given out when 10-32 are full. After SoundChannels
+         * is reinitialised, from 1 (sound_reinit_channels). */
         uint32_t slot = R[1];
-        if (!slot) for (slot = 10; slot <= 32 && snd_voice[slot]; slot++) ;
-        if (slot > 32) for (slot = 2; slot < 10 && snd_voice[slot]; slot++) ;
-        if (!R[1] && slot == 10 && snd_voice[10]) slot = 33;
+        if (!slot) {
+            for (slot = snd_free_from; slot <= 32 && snd_voice[slot]; slot++) ;
+            if (slot > 32) {
+                for (slot = 2; slot < snd_free_from && snd_voice[slot]; slot++) ;
+                if (slot >= snd_free_from) slot = 33;
+            }
+        }
         if (slot < 1 || slot > 32) { R[1] = 0; return 1; }
         snd_voice[slot] = R[0];
         R[1] = slot;

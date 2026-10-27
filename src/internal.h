@@ -100,6 +100,7 @@ int  clib_dispatch(uint32_t a);           /* an entry in a client's library vect
 
 /* sound.c */
 int  sound_channel_voice(int chan, const char *voice);   /* *ChannelVoice */
+void sound_reinit_channels(void);         /* *RMReinit / *RMFaster SoundChannels */
 
 /* irq.c */
 extern uint32_t monotonic, events_enabled;

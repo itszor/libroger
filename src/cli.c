@@ -539,6 +539,13 @@ int cli_command(const char *line, int x)
         if (!modules_rmkill(name)) return cli_error(x);   /* "Module not found" */
         return 1;
     }
+    if ((p = word_at(s, "RMReinit")) || (p = word_at(s, "RMFaster"))) {
+        /* RISC OS's own modules as libroger stands in for them: only
+         * SoundChannels' restart (its voice table emptied) is modelled */
+        arg(&p, name, sizeof name);
+        if (!strcasecmp(name, "SoundChannels")) sound_reinit_channels();
+        return 1;
+    }
     if (word_at(s, "RMClear")) {
         modules_rmclear();
         return 1;
