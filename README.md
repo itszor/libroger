@@ -165,7 +165,9 @@ Implemented:
   Converttopoints; no outline fonts
 - video: the standard 50Hz graphics modes (0, 1, 2, 4, 5, 8, 9, 10, 12, 13,
   15), modes modules define (Service_ModeExtension: VIDC and workspace
-  lists, e.g. an overscan mode, shown at their own size; asked about for
+  lists, e.g. an overscan mode, shown at their own size, in the shape the
+  VIDC list's display extent gives it on a TV-standard frame, else the
+  eig factors' (Big Bang's 640x128 letterbox); asked about for
   roger_config.monitor_type, a TV monitor by default), screen banks
   (OS_Byte 112/113, returning the previous bank; OS_Word 22), MEMC Vinit/Vstart/Vend
   with wrap-around, VIDC palette including 256-colour modes, VDU and mode

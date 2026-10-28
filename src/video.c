@@ -89,9 +89,22 @@ static const struct rg_mode *module_mode(uint32_t m)
     uint32_t base_mode = RD32(wl + 4) & 0x7F;
     struct rg_mode r = base_mode < sizeof modes / sizeof modes[0] && modes[base_mode].width
                        ? modes[base_mode] : (struct rg_mode){640, 256, 8, 1, 2, 80, 32};
+    int hdsr = -1, hder = -1, vdsr = -1, vder = -1;   /* the display's extent, if the list sets it */
+    int vcr = -1, rate = -1;                           /* its frame, and its pixel rate (8-24MHz) */
     if (vl && vl + 8 <= MEMSIZE)
-        for (uint32_t p = vl + 8; p < vl + 8 + 4 * 64 && RD32(p) != 0xFFFFFFFF; p += 4)
-            if (RD32(p) >> 26 == 0x38) r.bpp = 1 << (RD32(p) >> 2 & 3);   /* control register */
+        for (uint32_t p = vl + 8; p < vl + 8 + 4 * 64 && RD32(p) != 0xFFFFFFFF; p += 4) {
+            uint32_t reg = RD32(p) >> 26, val = RD32(p) >> 14 & 0x3FF;
+            if (reg == 0x38) r.bpp = 1 << (RD32(p) >> 2 & 3), rate = RD32(p) & 3;   /* control register */
+            if (reg == 40) vcr = val;
+            if (reg == 35) hdsr = val;
+            if (reg == 36) hder = val;
+            if (reg == 43) vdsr = val;
+            if (reg == 44) vder = val;
+        }
+    /* a 312-line frame's 256 standard lines span the 4:3 screen's height,
+     * as 320 pixels at 8MHz (640 at 16MHz) its width */
+    static const int rate_width[4] = {320, 480, 640, 960};
+    int base_width = rate >= 0 ? rate_width[rate] : r.width == 320 || r.width == 640 ? r.width : 0;
     int32_t v[13];
     for (int k = 0; k < 13; k++) v[k] = -1;
     for (uint32_t p = wl + 8; p < wl + 8 + 8 * 64 && RD32(p) != 0xFFFFFFFF; p += 8)
@@ -107,9 +120,18 @@ static const struct rg_mode *module_mode(uint32_t m)
     /* A mode a module defines keeps the pixel shape its eig factors give it
      * against the 1280x1024 OS units that fill the 4:3 screen: a smaller or
      * larger picture rather than one stretched to fill (FervourMode's
-     * 368x216, mode 13's pixels, is wider than 4:3). */
+     * 368x216, mode 13's pixels, is wider than 4:3). Where its VIDC list
+     * sets the display's extent on a TV-standard frame (VCR 311, or the
+     * base mode's), that is the
+     * shape the monitor shows whatever the eig factors say: its line (HDSR
+     * to HDER, two pixels a unit) against the standard width at its pixel
+     * rate (the control register's, or the base mode's), its lines against
+     * the standard 256. FervourMode's eig factors agree; Big Bang's mode 112
+     * (mode 15's 640 pixels on 128 lines, a letterbox) says 2 and 2. */
     int osw = r.width << r.xeig, osh = r.height << r.yeig;
     r.aspect = osw == 1280 && osh == 1024 ? 0 : 4.0f / 3 * osw * 1024 / (1280.0f * osh);
+    if (hder > hdsr && hdsr >= 0 && vder > vdsr && vdsr >= 0 && base_width > 0 && (vcr < 0 || vcr == 311))
+        r.aspect = 4.0f / 3 * (2.0f * (hder - hdsr) / base_width) / ((vder - vdsr) / 256.0f);
     ext_modes[m] = r;
     ext_known[m] = 1;
     ev("mode_extension", "iiii", m, r.width, r.height, r.bpp);
