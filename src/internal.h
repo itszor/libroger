@@ -26,6 +26,11 @@
                                              RAM, before SvcTable at &1F033FC). Fire & Ice's
                                              protection makes SWIs by jumping there */
 #define HANDLER_RET  ROGER_HANDLER_RET
+#define OS_IRQ_ENTRY 0x1F03380u           /* the kernel's IRQ handler, where the OS's branch at
+                                             &18 leads (libroger's address for it, near the SWI
+                                             handler's: a program's handler that passes an
+                                             interrupt on branches there, irq.c) */
+#define OS_IRQ_VECTOR (0xEA000000u | (((OS_IRQ_ENTRY - 0x20) >> 2) & 0xFFFFFF))   /* b OS_IRQ_ENTRY, at &18 */
 #define LOAD         ROGER_LOAD
 #define DMA_BUF      0x017F0000u          /* two sound DMA buffers, &2000 each */
 #define SCCB_AREA    0x017F4000u          /* 8 sound channel control blocks, &100 each */

@@ -130,30 +130,28 @@ static void call_device(int dev, uint32_t irq_bit)
 int irq_sound_claimed(void) { return devices[DEV_SOUND].code != 0; }
 void irq_sound(void) { call_device(DEV_SOUND, 0x02); }
 
-/* The raw handler at &100 (roger_config.irq1v), with IOC's IRQ request A
- * (&3200014) saying which interrupt this is. It is entered as the IRQ
- * vector enters it: in IRQ mode, on an empty IRQ stack, R14 holding the
- * mode to return to (a handler that returns with movs pc,lr while the
- * interrupted code is in SVC mode - a SWI - would otherwise leave the CPU
- * in USR mode with the SVC stack as R13: James Pond, in MusicModule's
- * SWIs). The interrupted mode is restored afterwards. */
-static void call_irq1v(uint32_t irq_bit)
+static int irq_passed_on;                          /* the handler branched to OS_IRQ_ENTRY */
+
+/* An interrupt handler entered as the IRQ vector enters it: in IRQ mode,
+ * on an empty IRQ stack, with IOC's IRQ request A (&3200014) saying which
+ * interrupt this is, R14 = r14 (with the IRQ mode's bits); the interrupted
+ * mode is restored afterwards. */
+static void call_irq_entry(uint32_t a, uint32_t irq_bit, uint32_t r14)
 {
-    uint32_t a = RD32(0x100);
-    if (!a || !cpu_translated(a)) return;
     WR32(IOC + 0x14, irq_bit);
     WR32(IOC + 0x24, 0);
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF}, snpc = npc, smode = MODEBITS;
     memcpy(saved, R, sizeof R);
     bank_r13[2] = IRQ_STACK;
     set_psr_mode(MODE_IRQ);
-    R[14] = HANDLER_RET | MODE_IRQ;
+    R[14] = r14 | MODE_IRQ;
     npc = a;
     in_handler = 1;
     COV_ASYNC_ENTER();
     uint64_t i0 = icount;
     while (npc != HANDLER_RET) {
         if (npc == RETURN_TO_OS) finish("returned to OS");
+        if (npc == OS_IRQ_ENTRY) { irq_passed_on = 1; break; }   /* to the OS's handler */
         if (icount - i0 > 5000000) {
             fprintf(stderr, "IRQ handler %08x: bailing out after 5M instructions, pc=%08x\n", a, npc);
             break;
@@ -168,6 +166,47 @@ static void call_irq1v(uint32_t irq_bit)
     npc = snpc;
 }
 
+/* The raw handler at &100 (roger_config.irq1v), entered with R14 holding
+ * the mode to return to (a handler that returns with movs pc,lr while the
+ * interrupted code is in SVC mode - a SWI - would otherwise leave the CPU
+ * in USR mode with the SVC stack as R13: James Pond, in MusicModule's
+ * SWIs). */
+static void call_irq1v(uint32_t irq_bit)
+{
+    uint32_t a = RD32(0x100);
+    if (!a || !cpu_translated(a)) return;
+    call_irq_entry(a, irq_bit, HANDLER_RET);
+}
+
+/* The hardware IRQ vector at &18: the OS's branch there leads to the
+ * kernel's IRQ handler (OS_IRQ_ENTRY). A program may put a branch of its
+ * own there, taking every interrupt before the OS sees it, and pass some on
+ * by branching to where the OS's branch led (Lotus Turbo Challenge 2: its
+ * race drives the palette from IOC timer 1 itself and passes the vsync on;
+ * before that it times its CPU against the timer with the OS's handler out
+ * of the way). Its handler is entered as the vector is, R14 the return
+ * address + 4 (it returns with subs pc,lr,#4), for each interrupt IOC's
+ * mask A lets through; the OS's handlers (device vectors, &100, events)
+ * see only what it passes on. */
+static int irq_vector_taken(void) { return RD32(0x18) != OS_IRQ_VECTOR && (RD32(0x18) & 0xFF000000u) == 0xEA000000u; }
+
+/* the program's handler: 1 if it passed the interrupt on to the OS */
+static int program_irq(uint32_t irq_bit)
+{
+    uint32_t w = RD32(0x18);
+    irq_passed_on = 0;
+    call_irq_entry(0x18 + 8 + (uint32_t)((int32_t)(w << 8) >> 6), irq_bit, HANDLER_RET + 4);
+    return irq_passed_on;
+}
+
+/* timer 1's interrupt, with the vector at &18 the program's */
+static void program_timer1(void)
+{
+    if (!program_irq(0x40)) return;
+    if (rg->irq1v) call_irq1v(0x40);
+    if (devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
+}
+
 /* One frame's interrupts: vsync (VIDC flyback) first, then IOC timer 1 if
  * the program has it running - the usual way to change the palette part
  * way down the frame. The display gets the palette as the vsync handlers
@@ -175,25 +214,35 @@ static void call_irq1v(uint32_t irq_bit)
  * left it below. With roger_config.raster_palette the timer goes on firing
  * down the frame, every latch + 1 ticks (the latch as the handler leaves
  * it), and each line it fires on gets the palette its handler left: colour
- * bars. */
-static void frame_irq(void)
+ * bars. Returns 1 if the OS saw the vsync (the program's handler at &18,
+ * if it has one, passed it on). */
+static int frame_irq(void)
 {
     if (rg->raster_palette) video_raster_start();
     uint32_t written = MEM[IOC + 0x50] | MEM[IOC + 0x54] << 8;
     if (written) timer1_latch = written;          /* programmed since the last frame */
     MEM[IOC + 0x50] = MEM[IOC + 0x54] = 0;
-    call_device(DEV_VSYNC, 0x08);
-    if (rg->irq1v) call_irq1v(0x08);
+    int taken = irq_vector_taken(), os_vsync = 1;
+    if (taken) os_vsync = (MEM[IOC + 0x18] & 0x08) && program_irq(0x08);
+    if (os_vsync) {
+        call_device(DEV_VSYNC, 0x08);
+        if (rg->irq1v) call_irq1v(0x08);
+    }
     memcpy(vidc_palette_top, vidc_palette, sizeof vidc_palette_top);
     /* timer 1 latch (low &50, high &54), counting at 2MHz: 128 ticks a line */
     uint32_t latch = MEM[IOC + 0x50] | MEM[IOC + 0x54] << 8;
     if (!latch) latch = timer1_latch;
     int running = latch && (MEM[IOC + 0x18] & 0x40);
-    if (rg->irq1v && (running || rg->irq1v_timer_always)) call_irq1v(0x40);
-    if (running && devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
-    else if (!(rg->irq1v && running)) { palette_split = 0; return; }
+    if (taken) {
+        if (!running) { palette_split = 0; return os_vsync; }
+        program_timer1();
+    } else {
+        if (rg->irq1v && (running || rg->irq1v_timer_always)) call_irq1v(0x40);
+        if (running && devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
+        else if (!(rg->irq1v && running)) { palette_split = 0; return os_vsync; }
+    }
     palette_split = video_timer_line(latch);
-    if (!rg->raster_palette) return;
+    if (!rg->raster_palette) return os_vsync;
     uint32_t ticks = latch + 1;                   /* since flyback */
     video_raster_add(video_raster_line(ticks));
     for (int k = 0; k < 1024; k++) {
@@ -203,11 +252,15 @@ static void frame_irq(void)
         ticks += latch + 1;
         int line = video_raster_line(ticks);
         if (line >= 256) break;
-        if (rg->irq1v) call_irq1v(0x40);
-        if (devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
+        if (taken) program_timer1();
+        else {
+            if (rg->irq1v) call_irq1v(0x40);
+            if (devices[DEV_TIMER1].code) call_device(DEV_TIMER1, 0x40);
+        }
         video_raster_add(line);
     }
     timer1_latch = latch;                         /* the next frame's, unless the vsync handlers change it */
+    return os_vsync;
 }
 
 /* ---------------------------------------------------------------- SWIs */
@@ -371,7 +424,7 @@ static void vsync(void)
     interval_tick();
     vsync_counter--;
     video_pointer_frame();                       /* the pointer image, as the cursor DMA reads it */
-    frame_irq();
+    int os_vsync = frame_irq();
     if (rg->frame) rg->frame();
     /* event 4: vsync, raised from the kernel's VSync interrupt handler,
      * which is entered as device handlers are, with R3 = IOC: a claimant may
@@ -379,7 +432,7 @@ static void vsync(void)
      * the program's R3 a store into MEMC's control register that turned the
      * sound DMA off) */
     uint32_t r[4] = {4, 0, R[2], IOC};
-    call_vector(0x10, 4, r);
+    if (os_vsync) call_vector(0x10, 4, r);
     key_events();
 }
 

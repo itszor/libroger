@@ -128,9 +128,10 @@ struct roger_config {
     uint32_t stack;                       /* initial R13 (default: the RAM limit) */
     const char *floppy;                   /* the disc in drive 0, for programs that read it
                                              sector by sector (FileCore_DiscOp, ADFS_DiscOp:
-                                             copy protection): an HxC .hfe image (sector sizes
-                                             and CRC errors as on the disc) or a flat .adf
-                                             (800K or 1600K). --floppy=FILE overrides */
+                                             copy protection): an HxC .hfe image or a JASPP
+                                             .jfd, uncompressed (sector sizes and CRC errors
+                                             as on the disc), or a flat .adf (800K or
+                                             1600K). --floppy=FILE overrides */
     uint32_t ramfs_size;                  /* a RAM disc of this many bytes (RAM:, empty at
                                              start, as !Run would have sized it); 0: none */
     float mips;                           /* interactive runs: the CPU's speed, millions of

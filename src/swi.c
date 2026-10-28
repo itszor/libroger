@@ -120,6 +120,19 @@ static void os_byte(void)
         return;
     }
     if (op == 135) { R[1] = 0; R[2] = screen_mode; return; }
+    if (op >= 166) {                                   /* the other byte variables (166-255): */
+        static uint8_t var[256] = {                    /* (old AND R2) EOR R1, R1 the old value, */
+            [219] = 9, [220] = 27, [221] = 1, [222] = 1,   /* R2 the next one's (Lotus Turbo */
+            [223] = 1, [224] = 1, [225] = 1, [226] = 0x80, /* Challenge 2's protection sets *FX */
+            [227] = 0x90,                              /* 200,3 and reads it back) */
+        };
+        uint8_t old = var[op];
+        var[op] = (uint8_t)((old & R[2]) ^ R[1]);
+        ev("OS_Byte", "iii", op, R[1], R[2]);
+        R[1] = old;
+        R[2] = var[(op + 1) & 0xFF];
+        return;
+    }
     if (op == 106) pointer_shape = R[1] & 0x7F;      /* select pointer (bit 7: unlinked from the mouse) */   /* character at cursor, screen mode */
     /* OS_Byte 15 (flush all / current input buffer), 21 (flush buffer r1; 0 = keyboard) */
     if (rg_interactive && (op == 15 || (op == 21 && R[1] == 0))) key_buffer_flush();
@@ -419,15 +432,18 @@ static void territory_symbols(void)
 }
 
 /* OS_CRC: R0 the CRC so far, R1/R2 the block [start, end), R3 the step
- * between the bytes taken -> R0. The CRC-16 of the BBC's cassette and ROM
- * filing systems, which RISC OS keeps: polynomial &1021, top bit first. */
+ * between the bytes taken -> R0. The kernel's CRC-16 is the reflected one
+ * (each byte into the low end, shifted right, polynomial &A001), not the
+ * BBC cassette filing system's (&1021, top bit first): Lotus Turbo
+ * Challenge 2's protection compares OS_CRC of its decrypted code with a
+ * stored value. */
 static void os_crc(void)
 {
     uint32_t crc = R[0] & 0xFFFF;
     int32_t step = (int32_t)R[3] ? (int32_t)R[3] : 1;
     for (uint32_t a = R[1]; step > 0 ? a < R[2] : a > R[2]; a += step) {
-        crc ^= (uint32_t)MEM[a & 0x3FFFFFF] << 8;
-        for (int k = 0; k < 8; k++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+        crc ^= MEM[a & 0x3FFFFFF];
+        for (int k = 0; k < 8; k++) crc = crc & 1 ? (crc >> 1) ^ 0xA001 : crc >> 1;
     }
     R[0] = crc;
 }

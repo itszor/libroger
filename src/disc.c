@@ -7,7 +7,8 @@
  * Arculator .apd (uncompressed: SuperSpider's weave.py keeps it so) - their
  * MFM tracks are decoded here into the sectors on them, keeping each one's
  * ID (C, H, R, N) and whether its data CRC is good, so a protection track
- * of odd sizes and deliberate CRC errors reads as it did on the drive - or
+ * of odd sizes and deliberate CRC errors reads as it did on the drive - a
+ * JASPP .jfd (also uncompressed), which lists the same for each sector, or
  * a flat image (.adf: ADFS D/E, 800K, or F, 1600K; every sector good; a dump
  * short by whole tracks has those unformatted).
  *
@@ -177,6 +178,35 @@ static int load_apd(const uint8_t *d, long size)
     return pick_geometry(2);
 }
 
+/* A JASPP .jfd (ADFFS's "JFDI"; JASPP's are gzipped, this is the image
+ * inside, as weave.py keeps it): a track table at +24, a word per track
+ * side interleaved by side, each the offset in the sector table (+28) of
+ * the track's sectors or -1 (unformatted); a sector is two words, the
+ * first N in bits 0-1, a bad data CRC in bit 5, R in bits 8-15, the
+ * second its data's offset in the data area (+32) or -1 (an ID without
+ * data: not readable), the track's list ended by -1. Only the base image
+ * is read, not the delta of changes ADFFS writes back. */
+static int load_jfd(const uint8_t *d, long size)
+{
+#define W(o) ((uint32_t)d[o] | (uint32_t)d[(o) + 1] << 8 | (uint32_t)d[(o) + 2] << 16 | (uint32_t)d[(o) + 3] << 24)
+    if (size < 304) return 0;
+    uint32_t tt = W(24), st = W(28), dt = W(32);
+    if (tt > st || st > (uint32_t)size || dt > (uint32_t)size) return 0;
+    for (uint32_t i = 0; i < (st - tt) / 4 && i / 2 < CYLS; i++) {
+        uint32_t t = W(tt + 4 * i);
+        if (t == 0xFFFFFFFF) continue;
+        for (uint32_t p = st + t; p + 8 <= (uint32_t)size && W(p) != 0xFFFFFFFF; p += 8) {
+            uint32_t a = W(p), off = W(p + 4), n = 128u << (a & 3);
+            if (off == 0xFFFFFFFF || dt + off + n > (uint32_t)size) continue;
+            struct sector x = {i / 2, i % 2, (a >> 8) & 0xFF, a & 3, !(a & 0x20), malloc(n)};
+            memcpy(x.data, d + dt + off, n);
+            add_sector(i / 2, i % 2, x);
+        }
+    }
+#undef W
+    return pick_geometry(2);
+}
+
 /* the disc's own geometry: the commonest track layout */
 static int pick_geometry(int nsides)
 {
@@ -232,9 +262,10 @@ void disc_load(const char *path)
     if (fread(d, 1, size, f) != (size_t)size) size = 0;
     fclose(f);
     if (size >= 2 && d[0] == 0x1F && d[1] == 0x8B)
-        fprintf(stderr, "floppy: %s is gzipped: an .apd is read as the image inside\n", path);
+        fprintf(stderr, "floppy: %s is gzipped: an .apd or .jfd is read as the image inside\n", path);
     loaded = size >= 512 && !memcmp(d, "HXCPICFE", 8) ? load_hfe(d, size) :
-             size >= 8 && !memcmp(d, "APDX0001", 8) ? load_apd(d, size) : load_flat(d, size);
+             size >= 8 && !memcmp(d, "APDX0001", 8) ? load_apd(d, size) :
+             size >= 4 && !memcmp(d, "JFDI", 4) ? load_jfd(d, size) : load_flat(d, size);
     free(d);
     if (!loaded) fprintf(stderr, "floppy: %s: no disc read\n", path);
 }

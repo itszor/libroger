@@ -141,6 +141,11 @@ Implemented:
   IOC timer 1, the sound DMA buffer interrupt), the raw handler at &100
   (in IRQ mode on an empty IRQ stack, as the IRQ vector enters it; &100
   starts out as the OS's handler, which it may pass interrupts on to);
+  the hardware IRQ vector at &18 (the OS's branch there; a program's own
+  branch takes every interrupt IOC's mask A lets through, entered as the
+  vector enters it, and the OS sees only those it passes on by branching
+  where the OS's led: Lotus Turbo Challenge 2's race; mask A starts as
+  RISC OS leaves it, vsync and timer 0);
   OS_IntOff/IntOn (the I bit; interrupts wait); module SWIs run with
   interrupts enabled, as on RISC OS (one may wait for a handler; entered
   in SVC mode with R14's PSR bits saying so, as the kernel calls them);
@@ -197,8 +202,9 @@ Implemented:
   read it sector by sector, as copy protection does: FileCore_DiscOp and
   ADFS_DiscOp reads and verifies from an HxC .hfe image (its MFM tracks
   decoded with each sector's ID, size and CRC: odd sectors and CRC errors
-  as on the disc; a bad sector's data is transferred before the error) or
-  a flat 800K/1600K .adf, alternative disc records, ADFS_Retries;
+  as on the disc; a bad sector's data is transferred before the error), a
+  JASPP .jfd (uncompressed: its sector list, the same for each) or a flat
+  800K/1600K .adf, alternative disc records, ADFS_Retries;
   OS_FSControl 14 and 20 (ADFS's module base and FileCore instance);
   FileCore and ADFS as "ROM" modules at &3800000 that OS_Module 18 finds,
   whose SWI handlers come back to the same calls (src/disc.c)

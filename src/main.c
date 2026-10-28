@@ -359,10 +359,17 @@ int roger_main(int argc, char **argv, const struct roger_config *cfg)
     fclose(f);
     if (cfg->image->base + n != cfg->image->end) fprintf(stderr, "warning: image size differs from compiled image\n");
     bank_r13[3] = SVC_STACK; bank_r13[2] = IRQ_STACK;   /* privileged-mode stacks */
-    /* &100 holds the OS's IRQ handler, which the hardware vector at &18
-       loads the PC from: a program's handler put there (roger_config.irq1v)
+    /* &100 holds the OS's IRQ handler, which the kernel's IRQ code loads
+       the PC from: a program's handler put there (roger_config.irq1v)
        may pass each interrupt on to it, which ends the interrupt here */
     if (cfg->irq1v) WR32(0x100, HANDLER_RET);
+    /* the hardware IRQ vector, &18: the OS's branch to its IRQ handler,
+       which a program that puts its own there may read to pass
+       interrupts on to (irq.c) */
+    WR32(0x18, OS_IRQ_VECTOR);
+    /* IOC's IRQ mask A as RISC OS runs with it: vsync and timer 0 (a
+       program that takes the IRQ vector keeps the bits it finds) */
+    MEM[IOC + 0x18] = 0x28;
     /* the SWI vector, &8: the OS's branch to its SWI handler, which a
        program that puts its own there may read to pass SWIs on to */
     WR32(8, 0xEA000000u | (((OS_SWI_ENTRY - 16) >> 2) & 0xFFFFFF));
