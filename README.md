@@ -426,7 +426,9 @@ self-modified code is, so translated code leaves through the dispatcher
 there, and the gate fires once and is gone (it may be any code address; at
 one that isn't an entry of the translation, the code from there is
 interpreted on to the next one). So the crop changes only at the points
-named, and not again once the last has passed. Headless runs (no gates are
+named, and not again once the last has passed. The rows are the 256-line
+screen's: a frame of another height (a mode a module defines: Big Bang's
+128-line mini mode) is shown whole. Headless runs (no gates are
 armed) and screenshots (F12) are not cropped.
 
 Display shaders

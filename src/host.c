@@ -524,11 +524,13 @@ static float screen_shape(void)
 }
 
 /* the rows to show of a frame height rows high, at the shape aspect for
- * all of them: those asked for, and as few more as fill the screen */
+ * all of them: those asked for, and as few more as fill the screen. The
+ * rows are the 256-line screen's: a frame of another height (a mode a
+ * module defines, e.g. Big Bang's 128-line mini mode) is shown whole */
 static void crop_frame(int height, float aspect)
 {
     int first = crop_first, last = crop_last < height ? crop_last : height - 1;
-    if (first < 0 || first > last) { crop_rows = 0; return; }
+    if (first < 0 || first > last || height != 256) { crop_rows = 0; return; }
     int n = last - first + 1, fill = (int)(height * aspect / screen_shape() + 0.5f);
     int rows = n > fill ? n : fill > height ? height : fill;
     int top = first - (rows - n) / 2;
