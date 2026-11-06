@@ -307,7 +307,9 @@ void modules_init(void)
     rom_module(OS_MODULES + 0xC00, "TerritoryManager", "Territory Manager\t0.23 (19 Oct 1992)", 0x43040, NULL);
     rom_module(OS_MODULES + 0x1000, "SharedCLibrary", "SharedCLibrary\t5.17 (12 Mar 1998)", 0x80680,
                (const char *const[]){"SharedCLibrary", "LibInitAPCS_A", "LibInitAPCS_R", "LibInitModule", NULL});
-    rom_module(OS_MODULES + 0x1400, "UtilityModule", "RISC OS\t3.10 (30 Apr 1992)", 0, NULL);
+    /* the OS's version: RISC OS 3.5 on a Risc PC (vidc20), as the Wimp's */
+    rom_module(OS_MODULES + 0x1400, "UtilityModule", rg->vidc20 ? "RISC OS\t3.50 (28 Oct 1994)" : "RISC OS\t3.10 (30 Apr 1992)",
+               0, NULL);
     rom_module(OS_MODULES + 0x1800, "ColourTrans", "Colour Selector\t1.16 (20 Aug 1992)", 0x40740, NULL);
 }
 

@@ -134,6 +134,9 @@ static void os_byte(void)
         return;
     }
     if (op == 106) pointer_shape = R[1] & 0x7F;      /* select pointer (bit 7: unlinked from the mouse) */   /* character at cursor, screen mode */
+    /* OS_Byte 138 and 153: insert the character R2 into buffer R1 (0, the
+     * keyboard's, is the only one kept: OS_ReadC and INKEY read it) */
+    if ((op == 138 || op == 153) && R[1] == 0) key_buffer_put((int)(R[2] & 0xFF));
     /* OS_Byte 15 (flush all / current input buffer), 21 (flush buffer r1; 0 = keyboard) */
     if (rg_interactive && (op == 15 || (op == 21 && R[1] == 0))) key_buffer_flush();
     ev("OS_Byte", "iii", op, R[1], R[2]);

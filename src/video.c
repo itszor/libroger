@@ -47,6 +47,9 @@ static const struct rg_mode modes[] = {
     [26] = {640, 480, 2, 1, 1, 80, 60},
     [27] = {640, 480, 4, 1, 1, 80, 60},
     [28] = {640, 480, 8, 1, 1, 80, 60},
+    /* RISC OS 3.5's VGA 320x480 modes (VIDC20 only) */
+    [48] = {320, 480, 4, 2, 1, 40, 60},
+    [49] = {320, 480, 8, 2, 1, 40, 60},
 };
 uint32_t screen_mode = 12;                /* a mode number, or the selector's address (MODE_SEL) */
 uint32_t bank, display_bank;              /* OS_Byte 112 (VDU drivers) / 113 (display), 0-based */
@@ -491,16 +494,21 @@ uint32_t video_default_colour(int bpp, uint8_t p)
     return (uint32_t)((v & 0xF) * 17) << 16 | (uint32_t)((v >> 4 & 0xF) * 17) << 8 | (uint32_t)((v >> 8 & 0xF) * 17);
 }
 
-/* The palette a mode change sets up: the standard 16 colours, or for
- * 256-colour modes the 16 entries the default 256-colour palette needs
- * (bits 0-1 tint, bit 2 red 2, bit 3 blue 2). */
+/* The palette a mode change sets up: the standard 16 colours; black and
+ * white for 2-colour modes, black, red, yellow and white for 4-colour ones
+ * (the 16 entries repeating them); or for 256-colour modes the 16 entries
+ * the default 256-colour palette needs (bits 0-1 tint, bit 2 red 2, bit 3
+ * blue 2). */
 void video_default_palette(void)
 {
+    static const uint8_t two[2] = {0, 7}, four[4] = {0, 1, 3, 7};
     for (int c = 0; c < 16; c++) {
         if (cur_mode()->bpp == 8) {
             int t = c & 3;
             vidc_palette[c] = (uint32_t)((c >> 2 & 1) << 2 | t) | (uint32_t)t << 4 | (uint32_t)((c >> 3 & 1) << 2 | t) << 8;
-        } else vidc_palette[c] = std16[c];
+        } else if (cur_mode()->bpp == 1) vidc_palette[c] = std16[two[c & 1]];
+        else if (cur_mode()->bpp == 2) vidc_palette[c] = std16[four[c & 3]];
+        else vidc_palette[c] = std16[c];
     }
     if (full_palette())                       /* the same colours, in all 256 entries */
         for (int p = 0; p < 256; p++) vidc20_pal[p] = vidc1_rgb(vidc_palette, (uint8_t)p);
