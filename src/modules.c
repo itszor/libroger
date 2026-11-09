@@ -118,17 +118,24 @@ static const char *title_of(uint32_t base) { return (const char *)MEM + base + R
 /* run a module entry (init, final) in SVC mode with R10-R12 as given */
 /* a module's initialisation or finalisation entry: its error block, or 0.
  * R11: the instantiation number (0 the first, Base) */
-static uint32_t module_entry_n(uint32_t a, uint32_t r10, uint32_t pw, uint32_t r11)
+static uint32_t module_entry_x(uint32_t a, uint32_t r10, uint32_t pw, uint32_t r11, int program)
 {
     uint32_t saved[16], sf[4] = {NF, ZF, CF, VF};
     memcpy(saved, R, sizeof R);
     R[10] = r10; R[11] = r11; R[12] = pw;
     VF = 0;
-    call_code(a, MODE_SVC, HANDLER_RET | MODEBITS);
+    /* an initialisation that runs the game (roger_module.runs_program):
+     * interruptible, as the program is, with no limit */
+    if (program) call_swi_code(a, MODE_SVC, HANDLER_RET | MODEBITS);
+    else call_code(a, MODE_SVC, HANDLER_RET | MODEBITS);
     uint32_t err = VF ? (R[0] ? R[0] : ERROR_BUF) : 0;
     memcpy(R, saved, sizeof R);
     NF = sf[0]; ZF = sf[1]; CF = sf[2]; VF = sf[3];
     return err;
+}
+static uint32_t module_entry_n(uint32_t a, uint32_t r10, uint32_t pw, uint32_t r11)
+{
+    return module_entry_x(a, r10, pw, r11, 0);
 }
 static uint32_t module_entry(uint32_t a, uint32_t r10, uint32_t pw) { return module_entry_n(a, r10, pw, 0); }
 
@@ -202,7 +209,7 @@ static int module_insert(const struct roger_module *m, const uint8_t *buf, uint3
     uint32_t e;
     /* R10: the parameters (the environment string), as RISC OS gives them */
     if (!args) args = m->args ? m->args : "";
-    if (init && (e = module_entry(base + init, roger_scratch(args), pw)))
+    if (init && (e = module_entry_x(base + init, roger_scratch(args), pw, 0, m->runs_program)))
         fprintf(stderr, "module %s: initialisation returned an error: %s\n", m->path, error_text(e));
     return 1;
 }

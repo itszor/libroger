@@ -70,6 +70,11 @@ struct roger_module {
                                              (OS_Module 10, at its image's base); 2 copied into the
                                              RMA (OS_Module 11): to its image's base there, and
                                              `path` is its title, which it is known by */
+    int runs_program;                     /* its initialisation never returns: it goes on to run
+                                             the game (a protection module *RMRun: Magnetoids'
+                                             Magnet loads the game and enters it), so it is run
+                                             as the program is - interrupts taken, and no limit
+                                             on how long - not as a module entry */
 };
 
 /* An image that copies itself and runs from the copy: while `image` is the
